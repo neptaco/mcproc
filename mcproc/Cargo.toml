@@ -1,0 +1,56 @@
+[package]
+name = "mcproc"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+# Core dependencies
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+
+# CLI
+clap = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Async trait
+async-trait = { workspace = true }
+
+# Proto
+proto = { path = "../proto" }
+
+# MCP library
+mcp-rs = { path = "../mcp-rs", features = ["full"] }
+
+# Additional dependencies
+tokio-stream = { workspace = true }
+
+# Output formatting
+tabled = "0.18"
+colored = "2.2"
+
+# System
+dirs = { workspace = true }
+
+# Date/time
+chrono = { workspace = true }
+
+# System
+nix = { version = "0.30", features = ["signal"] }
+
+
+[dev-dependencies]
+mockall = { workspace = true }
+
+[[bin]]
+name = "mcproc"
+path = "src/main.rs"

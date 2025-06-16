@@ -1,0 +1,100 @@
+use crate::client::McpClient;
+use clap::Args;
+use colored::*;
+use proto::StartProcessRequest;
+
+#[derive(Debug, Args)]
+pub struct StartCommand {
+    /// Process name
+    name: String,
+    
+    /// Command to execute (use with shell)
+    #[arg(short, long, conflicts_with = "args")]
+    cmd: Option<String>,
+    
+    /// Command and arguments (direct execution)
+    #[arg(short, long, conflicts_with = "cmd", num_args = 1..)]
+    args: Option<Vec<String>>,
+    
+    /// Working directory
+    #[arg(short = 'd', long)]
+    cwd: Option<String>,
+    
+    /// Project name (defaults to directory name)
+    #[arg(short, long)]
+    project: Option<String>,
+    
+    /// Environment variables (KEY=VALUE)
+    #[arg(short, long)]
+    env: Vec<String>,
+}
+
+impl StartCommand {
+    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+        let mut env_map = std::collections::HashMap::new();
+        
+        for env_str in self.env {
+            if let Some((key, value)) = env_str.split_once('=') {
+                env_map.insert(key.to_string(), value.to_string());
+            }
+        }
+        
+        // Check that either cmd or args is provided
+        if self.cmd.is_none() && self.args.is_none() {
+            return Err("Must provide either --cmd or --args".into());
+        }
+        
+        // Determine project name if not provided (use current working directory where mcproc is run)
+        let project = self.project.or_else(|| {
+            std::env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                .and_then(|n| n.into_string().ok())
+        }).unwrap_or_else(|| "default".to_string());
+        
+        let request = StartProcessRequest {
+            name: self.name.clone(),
+            cmd: self.cmd,
+            args: self.args.unwrap_or_default(),
+            cwd: self.cwd,
+            project: Some(project.clone()),
+            env: env_map,
+        };
+        
+        match client.inner().start_process(request).await {
+            Ok(response) => {
+                let process = response.into_inner().process.unwrap();
+                
+                println!("{} Process started successfully", "✓".green());
+                println!("  Project: {}", project.bright_white());
+                println!("  Name: {}", process.name.bright_white());
+                println!("  ID: {}", process.id);
+                println!("  PID: {}", process.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".to_string()));
+                println!("  Status: {}", format_status(process.status));
+                println!("  Log file: {}", process.log_file.dimmed());
+            }
+            Err(e) => {
+                if e.code() == tonic::Code::AlreadyExists {
+                    println!("{} Process '{}' is already running", "!".yellow(), self.name);
+                    println!("  Use 'mcproc ps' to see the running process");
+                    println!("  Use 'mcproc restart {}' to restart it", self.name);
+                } else {
+                    println!("{} Failed to start process: {}", "✗".red(), e.message());
+                }
+                return Err(e.into());
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+fn format_status(status: i32) -> ColoredString {
+    match status {
+        1 => "Starting".yellow(),
+        2 => "Running".green(),
+        3 => "Stopping".yellow(),
+        4 => "Stopped".red(),
+        5 => "Failed".red().bold(),
+        _ => "Unknown".white(),
+    }
+}

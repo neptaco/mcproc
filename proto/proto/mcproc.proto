@@ -1,0 +1,116 @@
+syntax = "proto3";
+
+package mcproc;
+
+import "google/protobuf/timestamp.proto";
+
+// Process status enum
+enum ProcessStatus {
+  PROCESS_STATUS_UNKNOWN = 0;
+  PROCESS_STATUS_STARTING = 1;
+  PROCESS_STATUS_RUNNING = 2;
+  PROCESS_STATUS_STOPPING = 3;
+  PROCESS_STATUS_STOPPED = 4;
+  PROCESS_STATUS_FAILED = 5;
+}
+
+// Process information
+message ProcessInfo {
+  string id = 1;
+  string name = 2;
+  string cmd = 3;
+  string cwd = 4;
+  ProcessStatus status = 5;
+  google.protobuf.Timestamp start_time = 6;
+  optional uint32 pid = 7;
+  string log_file = 8;
+  string project = 9;
+}
+
+// Request messages
+message StartProcessRequest {
+  string name = 1;
+  // Either cmd or args must be provided
+  optional string cmd = 2;  // Shell command (e.g., "npm run dev")
+  repeated string args = 5; // Command args array (e.g., ["npm", "run", "dev"])
+  optional string cwd = 3;
+  map<string, string> env = 4;
+  optional string project = 6; // Project name (defaults to directory name)
+}
+
+message StopProcessRequest {
+  string name = 1;
+  optional bool force = 2;
+  optional string project = 3;
+}
+
+message RestartProcessRequest {
+  string name = 1;
+  optional string project = 2;
+}
+
+message GetProcessRequest {
+  string name = 1;
+  optional string project = 2;
+}
+
+message ListProcessesRequest {
+  optional ProcessStatus status_filter = 1;
+  optional string project_filter = 2;
+}
+
+message GetLogsRequest {
+  string name = 1;
+  optional uint32 from_line = 2;
+  optional uint32 to_line = 3;
+  optional bool follow = 4;
+  optional string project = 5;
+}
+
+// Response messages
+message StartProcessResponse {
+  ProcessInfo process = 1;
+}
+
+message StopProcessResponse {
+  bool success = 1;
+  optional string message = 2;
+}
+
+message RestartProcessResponse {
+  ProcessInfo process = 1;
+}
+
+message GetProcessResponse {
+  ProcessInfo process = 1;
+}
+
+message ListProcessesResponse {
+  repeated ProcessInfo processes = 1;
+}
+
+message LogEntry {
+  uint32 line_number = 1;
+  string content = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  enum LogLevel {
+    LOG_LEVEL_UNKNOWN = 0;
+    LOG_LEVEL_STDOUT = 1;
+    LOG_LEVEL_STDERR = 2;
+  }
+  LogLevel level = 4;
+}
+
+message GetLogsResponse {
+  repeated LogEntry entries = 1;
+}
+
+// Service definition
+service ProcessManager {
+  rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
+  rpc StopProcess(StopProcessRequest) returns (StopProcessResponse);
+  rpc RestartProcess(RestartProcessRequest) returns (RestartProcessResponse);
+  rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);
+  rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
+  rpc GetLogs(GetLogsRequest) returns (stream GetLogsResponse);
+}
