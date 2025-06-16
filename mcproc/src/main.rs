@@ -1,5 +1,6 @@
 mod client;
 mod commands;
+mod utils;
 
 use clap::{Parser, Subcommand};
 use client::McpClient;
@@ -71,12 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Ps(cmd) => cmd.execute(client).await?,
         Commands::Logs(cmd) => cmd.execute(client).await?,
         Commands::Logfile { name } => {
-            // For now, just print expected path
+            // For now, just print expected path (without project info)
             let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-            let log_path = home.join(".mcproc").join("log").join(format!("{}_{}.log", 
-                name, 
-                chrono::Utc::now().format("%Y%m%d")
-            ));
+            let log_path = home.join(".mcproc").join("log").join(format!("{}.log", name));
             println!("{}", log_path.display());
         }
         Commands::Mcp(cmd) => cmd.execute(client).await?,

@@ -1,4 +1,5 @@
 use crate::client::McpClient;
+use crate::utils::resolve_project_name_optional;
 use clap::Args;
 use colored::*;
 use proto::StopProcessRequest;
@@ -22,7 +23,7 @@ impl StopCommand {
         let request = StopProcessRequest {
             name: self.name.clone(),
             force: Some(self.force),
-            project: self.project,
+            project: resolve_project_name_optional(self.project),
         };
         
         let response = client.inner().stop_process(request).await?;

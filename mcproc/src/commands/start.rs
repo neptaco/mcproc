@@ -1,4 +1,5 @@
 use crate::client::McpClient;
+use crate::utils::resolve_project_name;
 use clap::Args;
 use colored::*;
 use proto::StartProcessRequest;
@@ -45,11 +46,7 @@ impl StartCommand {
         }
         
         // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = self.project.or_else(|| {
-            std::env::current_dir().ok()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .and_then(|n| n.into_string().ok())
-        }).unwrap_or_else(|| "default".to_string());
+        let project = resolve_project_name(self.project);
         
         let request = StartProcessRequest {
             name: self.name.clone(),

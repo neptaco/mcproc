@@ -61,10 +61,9 @@ message ListProcessesRequest {
 
 message GetLogsRequest {
   string name = 1;
-  optional uint32 from_line = 2;
-  optional uint32 to_line = 3;
-  optional bool follow = 4;
-  optional string project = 5;
+  optional uint32 tail = 2;  // Number of lines from the end (default: 100)
+  optional bool follow = 3;  // Continue streaming new log lines
+  optional string project = 4;
 }
 
 // Response messages

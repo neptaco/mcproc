@@ -49,10 +49,9 @@ impl ProcessManager {
         }
         
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
-        let log_file = self.config.log.dir.join(format!("{}_{}_{}.log", 
+        let log_file = self.config.log.dir.join(format!("{}_{}.log", 
             project.replace("/", "_"), // Sanitize project name for filesystem
-            name, 
-            chrono::Utc::now().format("%Y%m%d")
+            name
         ));
         
         // Determine command string for ProxyInfo
@@ -114,7 +113,9 @@ impl ProcessManager {
             "=== Process Started ===\nProject: {}\nName: {}\nCommand: {}\nWorking Directory: {}\nPID: {:?}\nStart Time: {}\n===================\n",
             project, name, cmd_string, cwd.display(), proxy.pid, proxy.start_time.format("%Y-%m-%d %H:%M:%S UTC")
         );
-        self.log_hub.append_log(&name, startup_info.as_bytes(), false).await;
+        if let Err(e) = self.log_hub.append_log(&process_key, startup_info.as_bytes(), false).await {
+            error!("Failed to write startup log for {}: {}", process_key, e);
+        }
         
         let proxy_arc = Arc::new(proxy);
         self.processes.insert(process_key.clone(), proxy_arc.clone());
@@ -125,14 +126,16 @@ impl ProcessManager {
         
         let log_hub = self.log_hub.clone();
         let proxy_stdout = proxy_arc.clone();
-        let name_stdout = name.clone();
+        let log_key_stdout = process_key.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             
             while let Ok(Some(line)) = lines.next_line().await {
-                log_hub.append_log(&name_stdout, line.as_bytes(), false).await;
+                if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
+                    error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
+                }
                 
                 if let Ok(mut ring) = proxy_stdout.ring.lock() {
                     let _ = ring.push_overwrite(line.into_bytes());
@@ -142,14 +145,16 @@ impl ProcessManager {
         
         let log_hub_stderr = self.log_hub.clone();
         let proxy_stderr = proxy_arc.clone();
-        let name_stderr = name.clone();
+        let log_key_stderr = process_key.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             
             while let Ok(Some(line)) = lines.next_line().await {
-                log_hub_stderr.append_log(&name_stderr, line.as_bytes(), true).await;
+                if let Err(e) = log_hub_stderr.append_log(&log_key_stderr, line.as_bytes(), true).await {
+                    error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
+                }
                 
                 if let Ok(mut ring) = proxy_stderr.ring.lock() {
                     let _ = ring.push_overwrite(line.into_bytes());
@@ -162,6 +167,7 @@ impl ProcessManager {
         let proxy_monitor = proxy_arc.clone();
         let name_clone = name.clone();
         let log_hub_monitor = self.log_hub.clone();
+        let log_key_monitor = process_key.clone();
         
         tokio::spawn(async move {
             match child.wait().await {
@@ -175,7 +181,9 @@ impl ProcessManager {
                         status,
                         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
                     );
-                    log_hub_monitor.append_log(&name_clone, exit_info.as_bytes(), false).await;
+                    if let Err(e) = log_hub_monitor.append_log(&log_key_monitor, exit_info.as_bytes(), false).await {
+                        error!("Failed to write exit log for {}: {}", log_key_monitor, e);
+                    }
                     
                     proxy_monitor.set_status(if status.success() {
                         ProcessStatus::Stopped
@@ -193,25 +201,27 @@ impl ProcessManager {
                         e,
                         chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
                     );
-                    log_hub_monitor.append_log(&name_clone, error_info.as_bytes(), true).await;
+                    if let Err(e) = log_hub_monitor.append_log(&log_key_monitor, error_info.as_bytes(), true).await {
+                        error!("Failed to write error log for {}: {}", log_key_monitor, e);
+                    }
                     
                     proxy_monitor.set_status(ProcessStatus::Failed);
                 }
             }
             
             // Close the log file handle
-            log_hub_monitor.close_log(&name_clone).await;
+            log_hub_monitor.close_log(&log_key_monitor).await;
             
             // Remove from active processes
-            processes.remove(&name_clone);
+            processes.remove(&log_key_monitor);
         });
         
         info!("Started process {} with PID {:?}", name, proxy_arc.pid);
         Ok(proxy_arc)
     }
     
-    pub async fn stop_process(&self, name_or_id: &str, force: bool) -> Result<()> {
-        let process = self.get_process_by_name_or_id(name_or_id)
+    pub async fn stop_process(&self, name_or_id: &str, project: Option<&str>, force: bool) -> Result<()> {
+        let process = self.get_process_by_name_or_id_with_project(name_or_id, project)
             .ok_or_else(|| McprocdError::ProcessNotFound(name_or_id.to_string()))?;
         
         process.set_status(ProcessStatus::Stopping);
@@ -250,7 +260,7 @@ impl ProcessManager {
             let cwd = process.cwd.clone();
             drop(process);
             
-            self.stop_process(name_or_id, false).await?;
+            self.stop_process(name_or_id, Some(&project), false).await?;
             
             // Wait a bit for process to stop
             tokio::time::sleep(tokio::time::Duration::from_millis(self.config.process.restart_delay_ms)).await;

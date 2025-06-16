@@ -1,4 +1,5 @@
 use crate::client::McpClient;
+use crate::utils::resolve_project_name_optional;
 use clap::Args;
 use colored::*;
 use proto::RestartProcessRequest;
@@ -17,7 +18,7 @@ impl RestartCommand {
     pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = RestartProcessRequest {
             name: self.name.clone(),
-            project: self.project,
+            project: resolve_project_name_optional(self.project),
         };
         
         println!("Restarting process '{}'...", self.name);

@@ -60,7 +60,7 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone(),
+                    project: process.project.clone()
                 };
                 
                 Ok(Response::new(StartProcessResponse {
@@ -82,7 +82,7 @@ impl ProcessManagerService for GrpcService {
     ) -> Result<Response<StopProcessResponse>, Status> {
         let req = request.into_inner();
         
-        match self.process_manager.stop_process(&req.name, req.force.unwrap_or(false)).await {
+        match self.process_manager.stop_process(&req.name, req.project.as_deref(), req.force.unwrap_or(false)).await {
             Ok(()) => Ok(Response::new(StopProcessResponse {
                 success: true,
                 message: None,
@@ -114,7 +114,7 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone(),
+                    project: process.project.clone()
                 };
                 
                 Ok(Response::new(RestartProcessResponse {
@@ -151,7 +151,7 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone(),
+                    project: process.project.clone()
                 };
                 
                 Ok(Response::new(GetProcessResponse {
@@ -193,7 +193,7 @@ impl ProcessManagerService for GrpcService {
                 }),
                 pid: process.pid,
                 log_file: process.log_file.to_string_lossy().to_string(),
-                project: process.project.clone(),
+                project: process.project.clone()
             }
         }).collect();
         
@@ -210,40 +210,23 @@ impl ProcessManagerService for GrpcService {
     ) -> Result<Response<Self::GetLogsStream>, Status> {
         let req = request.into_inner();
         
-        // Get the process to verify it exists
-        let process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref())
-            .ok_or_else(|| Status::not_found(format!("Process '{}' not found", req.name)))?;
+        // Construct the log file path
+        let project = req.project.clone().unwrap_or_else(|| "default".to_string());
         
-        // Get the log directory and find log files for this process
-        let log_dir = &self.log_hub.config.log.dir;
-        let mut log_files = Vec::new();
+        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+            project.replace("/", "_"),
+            req.name
+        ));
         
-        // Find all log files for this process
-        if let Ok(entries) = std::fs::read_dir(log_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
-                    let expected_prefix = format!("{}_{}_", process.project.replace("/", "_"), process.name);
-                    if filename.starts_with(&expected_prefix) && filename.ends_with(".log") {
-                        log_files.push(path);
-                    }
-                }
-            }
+        if !log_file.exists() {
+            return Err(Status::not_found(format!("Log file not found: {}", log_file.display())));
         }
         
-        // Sort log files by name (which includes date)
-        log_files.sort();
-        
-        if log_files.is_empty() {
-            return Err(Status::not_found("No log files found for process"));
-        }
-        
-        // Use the latest log file
-        let log_file = log_files.last().unwrap().clone();
-        
+        let tail = req.tail.unwrap_or(100) as usize;
         let follow = req.follow.unwrap_or(false);
-        let from_line = req.from_line.unwrap_or(0);
-        let to_line = req.to_line;
+        
+        // Get process for follow mode status check (optional)
+        let process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
         
         // Create stream from log file
         let stream = async_stream::try_stream! {
@@ -255,24 +238,27 @@ impl ProcessManagerService for GrpcService {
             
             let reader = BufReader::new(file);
             let mut lines = reader.lines();
-            let mut line_num = 0u32;
-            let mut entries = Vec::new();
+            let mut all_lines = Vec::new();
             
-            // Read lines
+            // Read all existing lines first
             while let Ok(Some(line)) = lines.next_line().await {
+                all_lines.push(line);
+            }
+            
+            // Get the tail
+            let start_idx = if follow {
+                // If follow mode, show all lines initially or tail amount
+                all_lines.len().saturating_sub(tail)
+            } else {
+                all_lines.len().saturating_sub(tail)
+            };
+            
+            let mut entries = Vec::new();
+            let mut line_num = start_idx as u32;
+            
+            // Send initial lines
+            for line in &all_lines[start_idx..] {
                 line_num += 1;
-                
-                // Skip lines before from_line
-                if line_num < from_line {
-                    continue;
-                }
-                
-                // Stop if we've reached to_line
-                if let Some(to) = to_line {
-                    if line_num > to {
-                        break;
-                    }
-                }
                 
                 // Parse log line
                 let (timestamp, level, content) = parse_log_line(&line);
@@ -297,15 +283,26 @@ impl ProcessManagerService for GrpcService {
                 yield GetLogsResponse { entries };
             }
             
-            // Follow mode: continue reading as new lines are added
+            // Follow mode: continue reading new lines
             if follow {
-                // Keep reading the file
+                // Re-open file for continuous reading
+                let file = File::open(&log_file).await
+                    .map_err(|e| Status::internal(format!("Failed to reopen log file: {}", e)))?;
+                
+                // Seek to end of file
+                use tokio::io::{AsyncSeekExt, SeekFrom};
+                let mut file = file;
+                file.seek(SeekFrom::End(0)).await
+                    .map_err(|e| Status::internal(format!("Failed to seek to end: {}", e)))?;
+                
+                let reader = BufReader::new(file);
+                let mut lines = reader.lines();
+                line_num = all_lines.len() as u32;
+                
                 loop {
-                    // Try to read new lines
                     match lines.next_line().await {
                         Ok(Some(line)) => {
                             line_num += 1;
-                            
                             let (timestamp, level, content) = parse_log_line(&line);
                             
                             yield GetLogsResponse {
@@ -318,16 +315,18 @@ impl ProcessManagerService for GrpcService {
                             };
                         }
                         Ok(None) => {
-                            // No more lines available, wait a bit
+                            // No more lines, wait and check process status
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                             
-                            // Check if process is still running
-                            if !matches!(process.get_status(), crate::process::ProcessStatus::Running) {
-                                break;
+                            // Check if process is still running (if process exists)
+                            if let Some(ref proc) = process {
+                                if !matches!(proc.get_status(), crate::process::ProcessStatus::Running) {
+                                    break;
+                                }
                             }
+                            // If no process found, continue following the file
                         }
                         Err(e) => {
-                            // Error reading, log and break
                             eprintln!("Error reading log file: {}", e);
                             break;
                         }

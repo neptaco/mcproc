@@ -56,9 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     
     // Handle shutdown
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            info!("Received shutdown signal");
+            info!("Received SIGINT (Ctrl+C)");
+        }
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM");
         }
         _ = grpc_handle => {
             error!("gRPC server terminated unexpectedly");
@@ -66,6 +71,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     info!("Shutting down mcprocd daemon");
+    
+    // Stop all managed processes
+    info!("Stopping all managed processes...");
+    let processes = process_manager.list_processes();
+    for process in processes {
+        if matches!(process.get_status(), mcprocd::process::ProcessStatus::Running | mcprocd::process::ProcessStatus::Starting) {
+            info!("Stopping process {}/{}", process.project, process.name);
+            if let Err(e) = process_manager.stop_process(&process.name, Some(&process.project), false).await {
+                error!("Failed to stop process {}/{}: {}", process.project, process.name, e);
+            }
+        }
+    }
+    
+    // Give processes time to shut down gracefully
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     
     // Remove PID file
     if let Err(e) = std::fs::remove_file(&config.daemon.pid_file) {

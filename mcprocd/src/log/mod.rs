@@ -18,7 +18,7 @@ impl LogHub {
         }
     }
     
-    pub async fn append_log(&self, process_name: &str, content: &[u8], is_stderr: bool) {
+    pub async fn append_log(&self, process_name: &str, content: &[u8], is_stderr: bool) -> Result<(), std::io::Error> {
         let content_str = String::from_utf8_lossy(content);
         let level = if is_stderr { "ERROR" } else { "INFO" };
         
@@ -39,7 +39,7 @@ impl LogHub {
                 }
                 Err(e) => {
                     eprintln!("Failed to open log file for {}: {}", process_name, e);
-                    return;
+                    return Err(e);
                 }
             }
         }
@@ -50,12 +50,14 @@ impl LogHub {
         
         // Write to file
         if let Some(file) = handles.get_mut(process_name) {
-            if let Err(e) = file.write_all(log_line.as_bytes()).await {
+            file.write_all(log_line.as_bytes()).await.map_err(|e| {
                 eprintln!("Failed to write log for {}: {}", process_name, e);
-            }
+                e
+            })?;
             // Ensure data is flushed
-            let _ = file.flush().await;
+            file.flush().await?;
         }
+        Ok(())
     }
     
     pub async fn get_log_file(&self, process_name: &str) -> Option<PathBuf> {
@@ -69,8 +71,9 @@ impl LogHub {
     }
     
     fn get_log_file_path(&self, process_name: &str) -> PathBuf {
-        let date = chrono::Utc::now().format("%Y%m%d");
-        self.config.log.dir.join(format!("{}_{}.log", process_name, date))
+        // Replace "/" with "_" to create valid filesystem paths
+        let sanitized_name = process_name.replace("/", "_");
+        self.config.log.dir.join(format!("{}.log", sanitized_name))
     }
     
     pub async fn close_log(&self, process_name: &str) {
