@@ -81,7 +81,7 @@ impl McpClient {
         };
         
         let endpoint = Endpoint::from_shared(format!("http://127.0.0.1:{}", port))?
-            .timeout(Duration::from_secs(2))
+            .timeout(Duration::from_secs(3600))  // 1 hour - sufficient for any wait_timeout value
             .connect_timeout(Duration::from_secs(2));
             
         let client = ProcessManagerClient::connect(endpoint).await

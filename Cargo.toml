@@ -28,6 +28,7 @@ tokio-tungstenite = "0.26"
 
 # Process management
 dashmap = "6.1"
+regex = "1.11"
 
 # Logging
 tracing = "0.1"

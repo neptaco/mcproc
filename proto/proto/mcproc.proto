@@ -37,6 +37,8 @@ message StartProcessRequest {
   optional string cwd = 3;
   map<string, string> env = 4;
   optional string project = 6; // Project name (defaults to directory name)
+  optional string wait_for_log = 7;  // Wait for this log pattern before considering the process ready (regex)
+  optional uint32 wait_timeout = 8;  // Timeout for log wait in seconds (default: 30)
 }
 
 message StopProcessRequest {

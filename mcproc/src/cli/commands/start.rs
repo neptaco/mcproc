@@ -3,6 +3,8 @@ use crate::cli::utils::resolve_project_name;
 use clap::Args;
 use colored::*;
 use proto::StartProcessRequest;
+use tonic::Request;
+use std::time::Duration;
 
 #[derive(Debug, Args)]
 pub struct StartCommand {
@@ -28,6 +30,14 @@ pub struct StartCommand {
     /// Environment variables (KEY=VALUE)
     #[arg(short, long)]
     env: Vec<String>,
+    
+    /// Wait for this log pattern before considering the process ready (regex)
+    #[arg(long)]
+    wait_for_log: Option<String>,
+    
+    /// Timeout for log wait in seconds (default: 30)
+    #[arg(long, default_value = "30")]
+    wait_timeout: u32,
 }
 
 impl StartCommand {
@@ -48,14 +58,21 @@ impl StartCommand {
         // Determine project name if not provided (use current working directory where mcproc is run)
         let project = resolve_project_name(self.project);
         
-        let request = StartProcessRequest {
+        let grpc_request = StartProcessRequest {
             name: self.name.clone(),
             cmd: self.cmd,
             args: self.args.unwrap_or_default(),
             cwd: self.cwd,
             project: Some(project.clone()),
             env: env_map,
+            wait_for_log: self.wait_for_log.clone(),
+            wait_timeout: Some(self.wait_timeout),
         };
+        
+        // Set timeout to wait_timeout + 5 seconds to allow for process startup
+        let timeout = Duration::from_secs((self.wait_timeout + 5) as u64);
+        let mut request = Request::new(grpc_request);
+        request.set_timeout(timeout);
         
         match client.inner().start_process(request).await {
             Ok(response) => {
@@ -68,6 +85,10 @@ impl StartCommand {
                 println!("  PID: {}", process.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".to_string()));
                 println!("  Status: {}", format_status(process.status));
                 println!("  Log file: {}", process.log_file.dimmed());
+                
+                if self.wait_for_log.is_some() {
+                    println!("  {} Process is ready (log pattern matched)", "✓".green());
+                }
             }
             Err(e) => {
                 if e.code() == tonic::Code::AlreadyExists {

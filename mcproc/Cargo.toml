@@ -23,6 +23,7 @@ tonic.workspace = true
 
 # Process management
 dashmap.workspace = true
+regex.workspace = true
 
 # Logging
 tracing.workspace = true

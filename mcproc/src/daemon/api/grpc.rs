@@ -39,6 +39,8 @@ impl ProcessManagerService for GrpcService {
             req.args,
             cwd,
             Some(req.env),
+            req.wait_for_log,
+            req.wait_timeout,
         ).await {
             Ok(process) => {
                 let info = ProcessInfo {

@@ -4,12 +4,14 @@ use crate::daemon::log::LogHub;
 use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use dashmap::DashMap;
+use regex::Regex;
 use ringbuf::traits::RingBuffer;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::{error, info, debug};
+use tokio::sync::oneshot;
+use tracing::{error, info, debug, warn};
 use uuid::Uuid;
 
 pub struct ProcessManager {
@@ -35,6 +37,8 @@ impl ProcessManager {
         args: Vec<String>,
         cwd: Option<PathBuf>,
         env: Option<std::collections::HashMap<String, String>>,
+        wait_for_log: Option<String>,
+        wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
         let project = project.expect("Project name must be provided");
         
@@ -121,6 +125,28 @@ impl ProcessManager {
         let proxy_arc = Arc::new(proxy);
         self.processes.insert(process_key.clone(), proxy_arc.clone());
         
+        // Setup log wait channel if pattern is provided
+        let log_ready_tx = if wait_for_log.is_some() {
+            let (tx, rx) = oneshot::channel();
+            let shared_tx = Arc::new(Mutex::new(Some(tx)));
+            Some((shared_tx, rx))
+        } else {
+            None
+        };
+        
+        // Compile regex pattern if provided
+        let log_pattern = if let Some(pattern) = &wait_for_log {
+            match Regex::new(pattern) {
+                Ok(regex) => Some(regex),
+                Err(e) => {
+                    warn!("Invalid log pattern '{}': {}", pattern, e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        
         // Setup stdout/stderr capture
         let stdout = child.stdout.take().expect("stdout should be captured");
         let stderr = child.stderr.take().expect("stderr should be captured");
@@ -128,6 +154,8 @@ impl ProcessManager {
         let log_hub = self.log_hub.clone();
         let proxy_stdout = proxy_arc.clone();
         let log_key_stdout = process_key.clone();
+        let log_pattern_stdout = log_pattern.clone();
+        let log_ready_tx_stdout = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -136,6 +164,18 @@ impl ProcessManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
                     error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
+                }
+                
+                // Check if line matches the wait pattern
+                if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stdout, &log_ready_tx_stdout) {
+                    if pattern.is_match(&line) {
+                        debug!("Found log pattern match: {}", line);
+                        if let Ok(mut tx_guard) = tx.lock() {
+                            if let Some(sender) = tx_guard.take() {
+                                let _ = sender.send(());
+                            }
+                        }
+                    }
                 }
                 
                 if let Ok(mut ring) = proxy_stdout.ring.lock() {
@@ -147,6 +187,8 @@ impl ProcessManager {
         let log_hub_stderr = self.log_hub.clone();
         let proxy_stderr = proxy_arc.clone();
         let log_key_stderr = process_key.clone();
+        let log_pattern_stderr = log_pattern;
+        let log_ready_tx_stderr = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -155,6 +197,18 @@ impl ProcessManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Err(e) = log_hub_stderr.append_log(&log_key_stderr, line.as_bytes(), true).await {
                     error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
+                }
+                
+                // Check if line matches the wait pattern
+                if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stderr, &log_ready_tx_stderr) {
+                    if pattern.is_match(&line) {
+                        debug!("Found log pattern match in stderr: {}", line);
+                        if let Ok(mut tx_guard) = tx.lock() {
+                            if let Some(sender) = tx_guard.take() {
+                                let _ = sender.send(());
+                            }
+                        }
+                    }
                 }
                 
                 if let Ok(mut ring) = proxy_stderr.ring.lock() {
@@ -269,6 +323,23 @@ impl ProcessManager {
             });
         }
         
+        // Wait for log pattern if specified
+        if let Some((_, rx)) = log_ready_tx {
+            let timeout_duration = tokio::time::Duration::from_secs(wait_timeout.unwrap_or(30) as u64);
+            
+            match tokio::time::timeout(timeout_duration, rx).await {
+                Ok(Ok(())) => {
+                    info!("Process {} is ready (log pattern matched)", name);
+                }
+                Ok(Err(_)) => {
+                    warn!("Log wait channel closed for process {}", name);
+                }
+                Err(_) => {
+                    warn!("Timeout waiting for log pattern for process {} after {}s", name, timeout_duration.as_secs());
+                }
+            }
+        }
+        
         info!("Started process {} with PID {:?}", name, proxy_arc.pid);
         Ok(proxy_arc)
     }
@@ -319,7 +390,7 @@ impl ProcessManager {
             tokio::time::sleep(tokio::time::Duration::from_millis(self.config.process.restart_delay_ms)).await;
             
             // For restart, we use the original command as a shell command
-            self.start_process(name, Some(project), Some(cmd), vec![], Some(cwd), None).await
+            self.start_process(name, Some(project), Some(cmd), vec![], Some(cwd), None, None, None).await
         } else {
             Err(McprocdError::ProcessNotFound(name_or_id.to_string()))
         }

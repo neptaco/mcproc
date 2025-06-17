@@ -57,6 +57,8 @@ use async_trait::async_trait;
 use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
 use serde_json::{json, Value};
 use serde::Deserialize;
+use tonic::Request;
+use std::time::Duration;
 
 // Helper function to convert status code to string
 fn format_status(status: i32) -> &'static str {
@@ -91,6 +93,8 @@ struct StartParams {
     cwd: Option<String>,
     project: Option<String>,
     env: Option<std::collections::HashMap<String, String>>,
+    wait_for_log: Option<String>,
+    wait_timeout: Option<u32>,
 }
 
 #[async_trait]
@@ -115,6 +119,14 @@ impl ToolHandler for StartTool {
                         "type": "object", 
                         "description": "Environment variables to set for the process",
                         "additionalProperties": { "type": "string" }
+                    },
+                    "wait_for_log": { 
+                        "type": "string", 
+                        "description": "Wait for this log pattern before considering the process ready (regex)" 
+                    },
+                    "wait_timeout": { 
+                        "type": "integer", 
+                        "description": "Timeout for log wait in seconds (default: 30)" 
                     }
                 },
                 "required": ["name"]
@@ -152,14 +164,21 @@ impl ToolHandler for StartTool {
         
         // Use gRPC client to start process
         let name = params.name.clone();
-        let request = proto::StartProcessRequest {
+        let grpc_request = proto::StartProcessRequest {
             name: params.name,
             cmd: params.cmd,
             args: params.args.unwrap_or_default(),
             cwd: params.cwd,
             project: Some(project),
             env: params.env.unwrap_or_default(),
+            wait_for_log: params.wait_for_log,
+            wait_timeout: params.wait_timeout,
         };
+        
+        // Set timeout to wait_timeout + 5 seconds to allow for process startup
+        let timeout = Duration::from_secs((params.wait_timeout.unwrap_or(30) + 5) as u64);
+        let mut request = Request::new(grpc_request);
+        request.set_timeout(timeout);
         
         let mut client = self.client.clone();
         match client.inner().start_process(request).await {
