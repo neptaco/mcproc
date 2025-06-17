@@ -97,7 +97,7 @@ struct StartParams {
 impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_start".to_string(),
+            name: "start".to_string(),
             description: "Start a development server or process (e.g., npm run dev, python app.py, etc.)".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -215,7 +215,7 @@ struct StopParams {
 impl ToolHandler for StopTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_stop".to_string(),
+            name: "stop".to_string(),
             description: "Stop a running development server or process".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -276,7 +276,7 @@ struct RestartParams {
 impl ToolHandler for RestartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_restart".to_string(),
+            name: "restart".to_string(),
             description: "Restart a development server or process".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -342,7 +342,7 @@ impl PsTool {
 impl ToolHandler for PsTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_ps".to_string(),
+            name: "ps".to_string(),
             description: "List all running development servers and processes managed by mcproc".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -407,7 +407,7 @@ struct LogsParams {
 impl ToolHandler for LogsTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_logs".to_string(),
+            name: "logs".to_string(),
             description: "View console output and logs from a running process".to_string(),
             input_schema: json!({
                 "type": "object",
@@ -511,7 +511,7 @@ struct StatusParams {
 impl ToolHandler for StatusTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "mcproc_status".to_string(),
+            name: "status".to_string(),
             description: "Get detailed status information for a specific process".to_string(),
             input_schema: json!({
                 "type": "object",
