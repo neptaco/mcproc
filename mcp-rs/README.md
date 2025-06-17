@@ -113,4 +113,4 @@ let mut server = ServerBuilder::new("my-server", "1.0.0")
 
 ## License
 
-MIT OR Apache-2.0
+MIT
