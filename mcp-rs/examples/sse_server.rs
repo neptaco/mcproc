@@ -18,7 +18,7 @@ impl ToolHandler for EchoTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "echo".to_string(),
-            description: Some("Echoes back the message".to_string()),
+            description: "Echoes back the message".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

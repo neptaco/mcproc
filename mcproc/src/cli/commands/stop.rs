@@ -1,5 +1,5 @@
 use crate::client::McpClient;
-use crate::utils::resolve_project_name_optional;
+use crate::cli::utils::resolve_project_name_optional;
 use clap::Args;
 use colored::*;
 use proto::StopProcessRequest;

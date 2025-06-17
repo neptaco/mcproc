@@ -168,18 +168,10 @@ fn is_daemon_running(pid_file: &PathBuf) -> bool {
 }
 
 fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
-    let mcprocd_path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-        .map(|p| p.join("mcprocd"))
-        .unwrap_or_else(|| PathBuf::from("mcprocd"));
+    let mcproc_path = std::env::current_exe()
+        .unwrap_or_else(|_| PathBuf::from("mcproc"));
     
-    // Check if mcprocd exists
-    if !mcprocd_path.exists() {
-        return Err(format!("mcprocd not found at: {}", mcprocd_path.display()).into());
-    }
-    
-    println!("Starting mcprocd from: {}", mcprocd_path.display());
+    println!("Starting mcprocd daemon...");
     
     // Create log file for daemon output
     let data_dir = dirs::home_dir()
@@ -192,8 +184,9 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .append(true)
         .open(data_dir.join("mcprocd.log"))?;
     
-    let mut cmd = std::process::Command::new(&mcprocd_path);
-    cmd.stdin(std::process::Stdio::null())
+    let mut cmd = std::process::Command::new(&mcproc_path);
+    cmd.arg("--daemon")
+        .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
         .stderr(log_file);
     

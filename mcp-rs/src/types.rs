@@ -108,15 +108,17 @@ pub enum McpMethod {
     Custom(String),
 }
 
-impl McpMethod {
-    pub fn from_str(method: &str) -> Self {
-        match method {
+impl std::str::FromStr for McpMethod {
+    type Err = std::convert::Infallible;
+    
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "initialize" => McpMethod::Initialize,
             "shutdown" => McpMethod::Shutdown,
             "tools/list" => McpMethod::ToolsList,
             "tools/call" => McpMethod::ToolsCall,
-            _ => McpMethod::Custom(method.to_string()),
-        }
+            _ => McpMethod::Custom(s.to_string()),
+        })
     }
 }
 

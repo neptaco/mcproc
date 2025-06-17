@@ -1,9 +1,8 @@
-use crate::config::Config;
-use crate::log::LogHub;
-use crate::process::{ProcessManager, ProcessStatus};
+use crate::daemon::config::Config;
+use crate::daemon::log::LogHub;
+use crate::daemon::process::{ProcessManager, ProcessStatus};
 use proto::process_manager_server::{ProcessManager as ProcessManagerService, ProcessManagerServer};
 use proto::*;
-use prost_types;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{transport::Server, Request, Response, Status};
@@ -31,7 +30,7 @@ impl ProcessManagerService for GrpcService {
         request: Request<StartProcessRequest>,
     ) -> Result<Response<StartProcessResponse>, Status> {
         let req = request.into_inner();
-        let cwd = req.cwd.map(|c| std::path::PathBuf::from(c));
+        let cwd = req.cwd.map(std::path::PathBuf::from);
         
         match self.process_manager.start_process(
             req.name,
@@ -68,7 +67,7 @@ impl ProcessManagerService for GrpcService {
                 }))
             }
             Err(e) => match e {
-                crate::error::McprocdError::ProcessAlreadyExists(name) => {
+                crate::daemon::error::McprocdError::ProcessAlreadyExists(name) => {
                     Err(Status::already_exists(format!("Process '{}' is already running", name)))
                 }
                 _ => Err(Status::internal(e.to_string())),
@@ -261,7 +260,7 @@ impl ProcessManagerService for GrpcService {
                 line_num += 1;
                 
                 // Parse log line
-                let (timestamp, level, content) = parse_log_line(&line);
+                let (timestamp, level, content) = parse_log_line(line);
                 
                 entries.push(LogEntry {
                     line_number: line_num,
@@ -320,7 +319,7 @@ impl ProcessManagerService for GrpcService {
                             
                             // Check if process is still running (if process exists)
                             if let Some(ref proc) = process {
-                                if !matches!(proc.get_status(), crate::process::ProcessStatus::Running) {
+                                if !matches!(proc.get_status(), crate::daemon::process::ProcessStatus::Running) {
                                     break;
                                 }
                             }
@@ -362,10 +361,10 @@ fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::Log
         
         // Parse level and content
         if let Some(rest) = parts.get(2) {
-            if rest.starts_with("[ERROR]") {
-                return (timestamp, log_entry::LogLevel::Stderr, rest[7..].trim().to_string());
-            } else if rest.starts_with("[INFO]") {
-                return (timestamp, log_entry::LogLevel::Stdout, rest[6..].trim().to_string());
+            if let Some(content) = rest.strip_prefix("[ERROR]") {
+                return (timestamp, log_entry::LogLevel::Stderr, content.trim().to_string());
+            } else if let Some(content) = rest.strip_prefix("[INFO]") {
+                return (timestamp, log_entry::LogLevel::Stdout, content.trim().to_string());
             }
         }
     }

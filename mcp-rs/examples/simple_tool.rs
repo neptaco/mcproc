@@ -20,7 +20,7 @@ impl ToolHandler for CalculatorTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "calculator".to_string(),
-            description: Some("Simple calculator tool".to_string()),
+            description: "Simple calculator tool".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {

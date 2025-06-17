@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::daemon::config::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
@@ -60,6 +60,7 @@ impl LogHub {
         Ok(())
     }
     
+    #[allow(dead_code)]
     pub async fn get_log_file(&self, process_name: &str) -> Option<PathBuf> {
         let log_file = self.get_log_file_path(process_name);
         

@@ -68,13 +68,13 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load() -> crate::error::Result<Self> {
+    pub fn load() -> crate::daemon::error::Result<Self> {
         // For now, just use defaults
         // TODO: Load from config file if exists
         Ok(Self::default())
     }
     
-    pub fn ensure_directories(&self) -> crate::error::Result<()> {
+    pub fn ensure_directories(&self) -> crate::daemon::error::Result<()> {
         std::fs::create_dir_all(&self.daemon.data_dir)?;
         std::fs::create_dir_all(&self.log.dir)?;
         Ok(())

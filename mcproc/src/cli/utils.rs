@@ -1,5 +1,4 @@
 /// Utility functions for mcproc
-
 /// Get the project name from the current working directory
 /// Returns None if unable to determine the project name
 pub fn get_project_from_cwd() -> Option<String> {

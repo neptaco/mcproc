@@ -1,5 +1,5 @@
 use crate::client::McpClient;
-use crate::utils::resolve_project_name_optional;
+use crate::cli::utils::resolve_project_name_optional;
 use chrono;
 use clap::Args;
 use colored::*;
@@ -65,7 +65,7 @@ fn print_log_entry(entry: &proto::LogEntry) {
                 .unwrap_or_else(chrono::Utc::now);
             dt.format("%Y-%m-%d %H:%M:%S").to_string()
         })
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
     
     let level_indicator = match entry.level {
         2 => "E".red().bold(),

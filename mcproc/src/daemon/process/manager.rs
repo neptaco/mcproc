@@ -1,7 +1,7 @@
-use crate::config::Config;
-use crate::error::{McprocdError, Result};
-use crate::log::LogHub;
-use crate::process::proxy::{ProcessStatus, ProxyInfo};
+use crate::daemon::config::Config;
+use crate::daemon::error::{McprocdError, Result};
+use crate::daemon::log::LogHub;
+use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use dashmap::DashMap;
 use ringbuf::traits::RingBuffer;
 use std::path::PathBuf;
@@ -272,10 +272,12 @@ impl ProcessManager {
         }
     }
     
+    #[allow(dead_code)]
     pub fn get_process(&self, name: &str) -> Option<Arc<ProxyInfo>> {
         self.processes.get(name).map(|p| p.clone())
     }
     
+    #[allow(dead_code)]
     pub fn get_process_by_id(&self, id: &str) -> Option<Arc<ProxyInfo>> {
         if let Ok(uuid) = Uuid::parse_str(id) {
             for entry in self.processes.iter() {
@@ -287,6 +289,7 @@ impl ProcessManager {
         None
     }
     
+    #[allow(dead_code)]
     pub fn get_process_by_name_or_id(&self, name_or_id: &str) -> Option<Arc<ProxyInfo>> {
         // First try as name
         if let Some(process) = self.get_process(name_or_id) {

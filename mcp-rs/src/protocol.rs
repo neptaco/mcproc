@@ -80,7 +80,7 @@ impl Protocol {
     }
     
     async fn handle_request(&self, req: JsonRpcRequest) -> JsonRpcResponse {
-        let result = match McpMethod::from_str(&req.method) {
+        let result = match req.method.parse::<McpMethod>().unwrap() {
             McpMethod::Initialize => self.handle_initialize(req.params).await,
             McpMethod::ToolsList => self.handle_tools_list(req.params).await,
             McpMethod::ToolsCall => self.handle_tools_call(req.params).await,

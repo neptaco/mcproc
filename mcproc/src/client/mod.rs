@@ -34,14 +34,12 @@ impl McpClient {
         if !daemon_running {
             eprintln!("mcprocd daemon is not running. Starting it automatically...");
             
-            // Start daemon in background
-            let mcprocd_path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                .map(|p| p.join("mcprocd"))
-                .unwrap_or_else(|| PathBuf::from("mcprocd"));
+            // Start daemon in background (use current binary with --daemon flag)
+            let mcproc_path = std::env::current_exe()
+                .unwrap_or_else(|_| PathBuf::from("mcproc"));
             
-            let mut cmd = std::process::Command::new(&mcprocd_path);
+            let mut cmd = std::process::Command::new(&mcproc_path);
+            cmd.arg("--daemon");
             cmd.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null());

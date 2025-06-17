@@ -1,5 +1,5 @@
 [workspace]
-members = ["mcp-rs", "mcprocd", "mcproc", "proto"]
+members = ["mcp-rs", "mcproc", "proto"]
 resolver = "2"
 
 [workspace.package]
@@ -19,6 +19,7 @@ jsonrpc-v2 = "0.13"
 # gRPC
 tonic = "0.12"
 prost = "0.13"
+prost-types = "0.13"
 tonic-build = "0.12"
 
 # HTTP/WebSocket

@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum McprocdError {
     #[error("Process not found: {0}")]
     ProcessNotFound(String),

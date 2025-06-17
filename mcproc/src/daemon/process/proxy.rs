@@ -40,6 +40,7 @@ pub struct ProxyInfo {
     pub ring: Arc<Mutex<HeapRb<Vec<u8>>>>,
     pub log_file: PathBuf,
     pub pid: Option<u32>,
+    #[allow(dead_code)]
     pub child_handle: Option<tokio::process::Child>,
 }
 

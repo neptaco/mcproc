@@ -21,6 +21,12 @@ impl StdioTransport {
     }
 }
 
+impl Default for StdioTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Transport for StdioTransport {
     async fn start(&mut self) -> Result<()> {

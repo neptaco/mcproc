@@ -1,5 +1,10 @@
-use mcprocd::{
-    api,
+pub mod api;
+pub mod config;
+pub mod error;
+pub mod log;
+pub mod process;
+
+use self::{
     config::Config,
     log::LogHub,
     process::ProcessManager,
@@ -8,8 +13,7 @@ use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -50,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc_log = log_hub.clone();
     
     let grpc_handle = tokio::spawn(async move {
-        if let Err(e) = api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log).await {
+        if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log).await {
             error!("gRPC server error: {}", e);
         }
     });
@@ -76,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Stopping all managed processes...");
     let processes = process_manager.list_processes();
     for process in processes {
-        if matches!(process.get_status(), mcprocd::process::ProcessStatus::Running | mcprocd::process::ProcessStatus::Starting) {
+        if matches!(process.get_status(), crate::daemon::process::ProcessStatus::Running | crate::daemon::process::ProcessStatus::Starting) {
             info!("Stopping process {}/{}", process.project, process.name);
             if let Err(e) = process_manager.stop_process(&process.name, Some(&process.project), false).await {
                 error!("Failed to stop process {}/{}: {}", process.project, process.name, e);
