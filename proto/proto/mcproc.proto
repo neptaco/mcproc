@@ -69,6 +69,18 @@ message GetLogsRequest {
   optional string project = 4;
 }
 
+message GrepLogsRequest {
+  string name = 1;
+  string pattern = 2;
+  optional string project = 3;
+  optional uint32 context = 4;  // Lines before and after (default: 3)
+  optional uint32 before = 5;   // Lines before match
+  optional uint32 after = 6;    // Lines after match
+  optional string since = 7;    // Time filter: since this time
+  optional string until = 8;    // Time filter: until this time
+  optional string last = 9;     // Time filter: last duration (e.g., "1h", "30m")
+}
+
 // Response messages
 message StartProcessResponse {
   ProcessInfo process = 1;
@@ -107,6 +119,16 @@ message GetLogsResponse {
   repeated LogEntry entries = 1;
 }
 
+message GrepMatch {
+  LogEntry matched_line = 1;
+  repeated LogEntry context_before = 2;
+  repeated LogEntry context_after = 3;
+}
+
+message GrepLogsResponse {
+  repeated GrepMatch matches = 1;
+}
+
 // Service definition
 service ProcessManager {
   rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
@@ -115,4 +137,5 @@ service ProcessManager {
   rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);
   rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
   rpc GetLogs(GetLogsRequest) returns (stream GetLogsResponse);
+  rpc GrepLogs(GrepLogsRequest) returns (GrepLogsResponse);
 }

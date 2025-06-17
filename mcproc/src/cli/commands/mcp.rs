@@ -43,6 +43,7 @@ async fn run_stdio_server(client: McpClient, name: String) -> Result<(), Box<dyn
         .add_tool(Arc::new(RestartTool::new(client.clone())))
         .add_tool(Arc::new(PsTool::new(client.clone())))
         .add_tool(Arc::new(LogsTool::new(client.clone())))
+        .add_tool(Arc::new(GrepTool::new(client.clone())))
         .add_tool(Arc::new(StatusTool::new(client)))
         .build(transport)
         .await?;
@@ -639,6 +640,161 @@ impl ToolHandler for StatusTool {
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
                     Err(McpError::InvalidParams(format!("Process '{}' not found", params.name)))
+                } else {
+                    Err(McpError::Internal(e.message().to_string()))
+                }
+            }
+        }
+    }
+}
+
+// Grep tool
+struct GrepTool {
+    client: McpClient,
+}
+
+impl GrepTool {
+    fn new(client: McpClient) -> Self {
+        Self { client }
+    }
+}
+
+#[derive(Deserialize)]
+struct GrepParams {
+    pattern: String,
+    name: String,
+    project: Option<String>,
+    context: Option<u32>,
+    before: Option<u32>,
+    after: Option<u32>,
+    since: Option<String>,
+    until: Option<String>,
+    last: Option<String>,
+}
+
+#[async_trait]
+impl ToolHandler for GrepTool {
+    fn tool_info(&self) -> ToolInfo {
+        ToolInfo {
+            name: "grep".to_string(),
+            description: "Search process logs with pattern matching and context".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Pattern to search for (regex supported)" },
+                    "name": { "type": "string", "description": "Process name" },
+                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" },
+                    "context": { "type": "integer", "description": "Lines of context around matches (default: 3)" },
+                    "before": { "type": "integer", "description": "Lines of context before matches" },
+                    "after": { "type": "integer", "description": "Lines of context after matches" },
+                    "since": { "type": "string", "description": "Show logs since this time (e.g., \"2025-06-17 10:30\", \"10:30\")" },
+                    "until": { "type": "string", "description": "Show logs until this time (e.g., \"2025-06-17 12:00\", \"12:00\")" },
+                    "last": { "type": "string", "description": "Show logs from last duration (e.g., \"1h\", \"30m\", \"2d\")" }
+                },
+                "required": ["pattern", "name"]
+            }),
+        }
+    }
+    
+    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+        let params = params
+            .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
+        
+        let params: GrepParams = serde_json::from_value(params)
+            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
+        
+        // Determine project name if not provided
+        let project = params.project.or_else(|| {
+            std::env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                .and_then(|n| n.into_string().ok())
+        }).unwrap_or_else(|| "default".to_string());
+        
+        let request = proto::GrepLogsRequest {
+            name: params.name.clone(),
+            pattern: params.pattern.clone(),
+            project: Some(project),
+            context: params.context,
+            before: params.before,
+            after: params.after,
+            since: params.since,
+            until: params.until,
+            last: params.last,
+        };
+        
+        let mut client = self.client.clone();
+        match client.inner().grep_logs(request).await {
+            Ok(response) => {
+                let grep_response = response.into_inner();
+                
+                let mut matches = Vec::new();
+                
+                for grep_match in grep_response.matches {
+                    let mut match_obj = json!({});
+                    
+                    // Matched line
+                    if let Some(matched_line) = grep_match.matched_line {
+                        match_obj["matched_line"] = json!({
+                            "line_number": matched_line.line_number,
+                            "content": matched_line.content,
+                            "timestamp": matched_line.timestamp.map(|t| {
+                                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
+                                    .unwrap_or_else(chrono::Utc::now);
+                                ts.to_rfc3339()
+                            }),
+                            "level": if matched_line.level == 2 { "error" } else { "info" }
+                        });
+                    }
+                    
+                    // Context before
+                    if !grep_match.context_before.is_empty() {
+                        let context_before: Vec<Value> = grep_match.context_before.iter().map(|entry| {
+                            json!({
+                                "line_number": entry.line_number,
+                                "content": entry.content,
+                                "timestamp": entry.timestamp.as_ref().map(|t| {
+                                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
+                                        .unwrap_or_else(chrono::Utc::now);
+                                    ts.to_rfc3339()
+                                }),
+                                "level": if entry.level == 2 { "error" } else { "info" }
+                            })
+                        }).collect();
+                        match_obj["context_before"] = Value::Array(context_before);
+                    }
+                    
+                    // Context after
+                    if !grep_match.context_after.is_empty() {
+                        let context_after: Vec<Value> = grep_match.context_after.iter().map(|entry| {
+                            json!({
+                                "line_number": entry.line_number,
+                                "content": entry.content,
+                                "timestamp": entry.timestamp.as_ref().map(|t| {
+                                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
+                                        .unwrap_or_else(chrono::Utc::now);
+                                    ts.to_rfc3339()
+                                }),
+                                "level": if entry.level == 2 { "error" } else { "info" }
+                            })
+                        }).collect();
+                        match_obj["context_after"] = Value::Array(context_after);
+                    }
+                    
+                    matches.push(match_obj);
+                }
+                
+                let response = json!({
+                    "pattern": params.pattern,
+                    "process": params.name,
+                    "total_matches": matches.len(),
+                    "matches": matches
+                });
+                
+                Ok(response)
+            }
+            Err(e) => {
+                if e.code() == tonic::Code::NotFound {
+                    Err(McpError::InvalidParams(format!("Log file for process \"{}\" not found", params.name)))
                 } else {
                     Err(McpError::Internal(e.message().to_string()))
                 }

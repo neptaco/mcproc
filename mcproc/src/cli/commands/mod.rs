@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod grep;
 pub mod logs;
 pub mod mcp;
 pub mod ps;
@@ -7,6 +8,7 @@ pub mod start;
 pub mod stop;
 
 pub use daemon::DaemonCommand;
+pub use grep::GrepCommand;
 pub use logs::LogsCommand;
 pub use mcp::MpcCommand;
 pub use ps::PsCommand;

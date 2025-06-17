@@ -342,6 +342,204 @@ impl ProcessManagerService for GrpcService {
         
         Ok(Response::new(Box::pin(stream)))
     }
+    
+    async fn grep_logs(
+        &self,
+        request: Request<GrepLogsRequest>,
+    ) -> Result<Response<GrepLogsResponse>, Status> {
+        let req = request.into_inner();
+        
+        // Construct the log file path
+        let project = req.project.clone().unwrap_or_else(|| "default".to_string());
+        
+        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+            project.replace("/", "_"),
+            req.name
+        ));
+        
+        if !log_file.exists() {
+            return Err(Status::not_found(format!("Log file not found: {}", log_file.display())));
+        }
+        
+        // Parse time filters
+        let (since_time, until_time) = parse_time_filters(&req.since, &req.until, &req.last)?;
+        
+        // Compile regex pattern
+        let pattern = regex::Regex::new(&req.pattern)
+            .map_err(|e| Status::invalid_argument(format!("Invalid regex pattern: {}", e)))?;
+        
+        // Determine context settings
+        let context = req.context.unwrap_or(3) as usize;
+        let before = req.before.map(|b| b as usize).unwrap_or(context);
+        let after = req.after.map(|a| a as usize).unwrap_or(context);
+        
+        // Read and process log file
+        let matches = grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?;
+        
+        Ok(Response::new(GrepLogsResponse { matches }))
+    }
+}
+
+fn parse_time_filters(
+    since: &Option<String>,
+    until: &Option<String>,
+    last: &Option<String>,
+) -> Result<(Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>), Status> {
+    let now = chrono::Utc::now();
+    
+    let since_time = if let Some(last_str) = last {
+        // Parse "last" duration (e.g., "1h", "30m", "2d")
+        let duration = parse_duration(last_str)
+            .map_err(|e| Status::invalid_argument(format!("Invalid duration '{}': {}", last_str, e)))?;
+        Some(now - duration)
+    } else if let Some(since_str) = since {
+        Some(parse_time_string(since_str)
+            .map_err(|e| Status::invalid_argument(format!("Invalid since time '{}': {}", since_str, e)))?)
+    } else {
+        None
+    };
+    
+    let until_time = if let Some(until_str) = until {
+        Some(parse_time_string(until_str)
+            .map_err(|e| Status::invalid_argument(format!("Invalid until time '{}': {}", until_str, e)))?)
+    } else {
+        None
+    };
+    
+    Ok((since_time, until_time))
+}
+
+fn parse_duration(duration_str: &str) -> Result<chrono::Duration, String> {
+    let duration_str = duration_str.trim();
+    
+    if duration_str.is_empty() {
+        return Err("Empty duration".to_string());
+    }
+    
+    let (num_str, unit) = if let Some(pos) = duration_str.rfind(char::is_alphabetic) {
+        duration_str.split_at(pos)
+    } else {
+        return Err("No time unit specified".to_string());
+    };
+    
+    let number: i64 = num_str.parse()
+        .map_err(|_| format!("Invalid number: {}", num_str))?;
+    
+    match unit {
+        "s" => Ok(chrono::Duration::seconds(number)),
+        "m" => Ok(chrono::Duration::minutes(number)),
+        "h" => Ok(chrono::Duration::hours(number)),
+        "d" => Ok(chrono::Duration::days(number)),
+        _ => Err(format!("Unknown time unit: {}", unit)),
+    }
+}
+
+fn parse_time_string(time_str: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    let time_str = time_str.trim();
+    
+    // Try different time formats
+    let formats = [
+        "%Y-%m-%d %H:%M:%S",     // 2025-06-17 10:30:00
+        "%Y-%m-%d %H:%M",        // 2025-06-17 10:30
+        "%H:%M:%S",              // 10:30:00 (today)
+        "%H:%M",                 // 10:30 (today)
+    ];
+    
+    for format in &formats {
+        if let Ok(naive_time) = chrono::NaiveDateTime::parse_from_str(time_str, format) {
+            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_time, chrono::Utc));
+        }
+        
+        // For time-only formats, combine with today's date
+        if format.starts_with("%H") {
+            if let Ok(naive_time) = chrono::NaiveTime::parse_from_str(time_str, format) {
+                let today = chrono::Utc::now().date_naive();
+                let naive_datetime = today.and_time(naive_time);
+                return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_datetime, chrono::Utc));
+            }
+        }
+    }
+    
+    Err(format!("Could not parse time: {}", time_str))
+}
+
+async fn grep_log_file(
+    log_file: &std::path::Path,
+    pattern: &regex::Regex,
+    before: usize,
+    after: usize,
+    since_time: Option<chrono::DateTime<chrono::Utc>>,
+    until_time: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<GrepMatch>, std::io::Error> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::fs::File;
+    
+    let file = File::open(log_file).await?;
+    let reader = BufReader::new(file);
+    let mut lines = reader.lines();
+    
+    let mut all_lines = Vec::new();
+    let mut line_num = 0u32;
+    
+    // Read all lines and parse them
+    while let Ok(Some(line)) = lines.next_line().await {
+        line_num += 1;
+        let (timestamp, level, content) = parse_log_line(&line);
+        
+        // Apply time filters
+        if let Some(ts) = &timestamp {
+            let log_time = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
+                .unwrap_or_else(chrono::Utc::now);
+            
+            if let Some(since) = since_time {
+                if log_time < since {
+                    continue;
+                }
+            }
+            
+            if let Some(until) = until_time {
+                if log_time > until {
+                    continue;
+                }
+            }
+        }
+        
+        all_lines.push(LogEntry {
+            line_number: line_num,
+            content,
+            timestamp,
+            level: level as i32,
+        });
+    }
+    
+    let mut matches = Vec::new();
+    
+    // Find matches and collect context
+    for (idx, entry) in all_lines.iter().enumerate() {
+        if pattern.is_match(&entry.content) {
+            let context_before = if before > 0 && idx >= before {
+                all_lines[idx.saturating_sub(before)..idx].to_vec()
+            } else {
+                all_lines[0..idx].to_vec()
+            };
+            
+            let context_after = if after > 0 && idx + 1 + after <= all_lines.len() {
+                all_lines[idx + 1..idx + 1 + after].to_vec()
+            } else {
+                all_lines[idx + 1..].to_vec()
+            };
+            
+            matches.push(GrepMatch {
+                matched_line: Some(entry.clone()),
+                context_before,
+                context_after,
+            });
+        }
+    }
+    
+    Ok(matches)
 }
 
 fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::LogLevel, String) {

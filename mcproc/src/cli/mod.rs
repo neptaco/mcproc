@@ -38,6 +38,9 @@ pub enum Commands {
     /// View process logs
     Logs(LogsCommand),
     
+    /// Search process logs
+    Grep(GrepCommand),
+    
     /// Get path to process log file
     Logfile {
         /// Process name
@@ -88,6 +91,7 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Restart(cmd) => cmd.execute(client).await?,
         Commands::Ps(cmd) => cmd.execute(client).await?,
         Commands::Logs(cmd) => cmd.execute(client).await?,
+        Commands::Grep(cmd) => cmd.execute(client).await?,
         Commands::Logfile { name } => {
             // For now, just print expected path (without project info)
             let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
