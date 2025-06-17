@@ -1,6 +1,7 @@
 use crate::daemon::config::Config;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
+use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use dashmap::DashMap;
 use ringbuf::traits::RingBuffer;
@@ -8,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::{error, info};
+use tracing::{error, info, debug};
 use uuid::Uuid;
 
 pub struct ProcessManager {
@@ -215,6 +216,58 @@ impl ProcessManager {
             // Remove from active processes
             processes.remove(&log_key_monitor);
         });
+        
+        // Start port detection task
+        if let Some(pid) = proxy_arc.pid {
+            let proxy_port = proxy_arc.clone();
+            tokio::spawn(async move {
+                // Initial delay to let the process start up (Next.js needs more time)
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                
+                // Detect ports periodically
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+                let mut consecutive_checks = 0;
+                let mut total_checks = 0;
+                
+                loop {
+                    interval.tick().await;
+                    
+                    // Stop checking if process is no longer running
+                    if !matches!(proxy_port.get_status(), ProcessStatus::Running) {
+                        break;
+                    }
+                    
+                    let detected_ports = port_detector::detect_ports(pid);
+                    
+                    // Update ports if changed
+                    if let Ok(mut ports) = proxy_port.ports.lock() {
+                        if *ports != detected_ports {
+                            debug!("Updated ports for PID {}: {:?}", pid, detected_ports);
+                            *ports = detected_ports.clone();
+                        }
+                        
+                        // Stop checking after finding stable ports
+                        if !detected_ports.is_empty() {
+                            consecutive_checks += 1;
+                            if consecutive_checks >= 3 {
+                                debug!("Port detection stabilized for PID {}, stopping checks", pid);
+                                break;
+                            }
+                        } else {
+                            consecutive_checks = 0;
+                        }
+                    }
+                    
+                    total_checks += 1;
+                    
+                    // Stop checking after 90 seconds (30 checks * 3 seconds)
+                    if total_checks >= 30 {
+                        debug!("Port detection timeout for PID {} after {} checks", pid, total_checks);
+                        break;
+                    }
+                }
+            });
+        }
         
         info!("Started process {} with PID {:?}", name, proxy_arc.pid);
         Ok(proxy_arc)

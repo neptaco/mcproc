@@ -178,6 +178,7 @@ impl ToolHandler for StartTool {
                             .unwrap_or_else(chrono::Utc::now);
                         ts.to_rfc3339()
                     }),
+                    "ports": process.ports,
                 });
                 
                 
@@ -378,6 +379,7 @@ impl ToolHandler for PsTool {
                         .unwrap_or_else(chrono::Utc::now);
                     ts.to_rfc3339()
                 }),
+                "ports": p.ports,
             })
         }).collect();
         
@@ -609,6 +611,7 @@ impl ToolHandler for StatusTool {
                         ts.to_rfc3339()
                     }),
                     "uptime": uptime,
+                    "ports": process.ports,
                     "recent_logs": logs_preview,
                 });
                 

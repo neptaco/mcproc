@@ -59,7 +59,8 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone()
+                    project: process.project.clone(),
+                    ports: process.ports.lock().unwrap().clone(),
                 };
                 
                 Ok(Response::new(StartProcessResponse {
@@ -113,7 +114,8 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone()
+                    project: process.project.clone(),
+                    ports: process.ports.lock().unwrap().clone(),
                 };
                 
                 Ok(Response::new(RestartProcessResponse {
@@ -150,7 +152,8 @@ impl ProcessManagerService for GrpcService {
                     }),
                     pid: process.pid,
                     log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone()
+                    project: process.project.clone(),
+                    ports: process.ports.lock().unwrap().clone(),
                 };
                 
                 Ok(Response::new(GetProcessResponse {
@@ -192,7 +195,8 @@ impl ProcessManagerService for GrpcService {
                 }),
                 pid: process.pid,
                 log_file: process.log_file.to_string_lossy().to_string(),
-                project: process.project.clone()
+                project: process.project.clone(),
+                ports: process.ports.lock().unwrap().clone(),
             }
         }).collect();
         

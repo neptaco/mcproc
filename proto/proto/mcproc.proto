@@ -25,6 +25,7 @@ message ProcessInfo {
   optional uint32 pid = 7;
   string log_file = 8;
   string project = 9;
+  repeated uint32 ports = 10;  // Listening ports
 }
 
 // Request messages

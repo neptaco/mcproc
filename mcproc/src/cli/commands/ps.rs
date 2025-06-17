@@ -24,6 +24,9 @@ struct ProcessRow {
     #[tabled(rename = "STATUS")]
     status: String,
     
+    #[tabled(rename = "PORTS")]
+    ports: String,
+    
     #[tabled(rename = "COMMAND")]
     cmd: String,
 }
@@ -49,6 +52,7 @@ impl PsCommand {
                 name: p.name,
                 pid: p.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "-".to_string()),
                 status: format_status_plain(p.status),
+                ports: format_ports(&p.ports),
                 cmd: truncate(&p.cmd, 40),
             }
         }).collect();
@@ -76,5 +80,16 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}...", &s[..max_len-3])
+    }
+}
+
+fn format_ports(ports: &[u32]) -> String {
+    if ports.is_empty() {
+        "-".to_string()
+    } else {
+        ports.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
