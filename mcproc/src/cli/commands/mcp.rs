@@ -1,7 +1,6 @@
 //! MCP server command implementation
 
 use crate::client::McpClient;
-use crate::cli::utils::resolve_project_name_optional;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -19,18 +18,22 @@ enum MpcSubcommand {
         /// Server name (defaults to "mcproc")
         #[arg(long, default_value = "mcproc")]
         name: String,
+        
+        /// Project name (defaults to directory name)
+        #[arg(long, short = 'p')]
+        project: Option<String>,
     },
 }
 
 impl MpcCommand {
     pub async fn execute(self, client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
         match self.subcommand {
-            MpcSubcommand::Serve { name } => run_stdio_server(client, name).await,
+            MpcSubcommand::Serve { name, project } => run_stdio_server(client, name, project).await,
         }
     }
 }
 
-async fn run_stdio_server(client: McpClient, name: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_stdio_server(client: McpClient, name: String, default_project: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     use mcp_rs::{ServerBuilder, StdioTransport};
     
     // Don't print any startup messages to stderr as it may be interpreted as errors
@@ -38,13 +41,13 @@ async fn run_stdio_server(client: McpClient, name: String) -> Result<(), Box<dyn
     let transport = Box::new(StdioTransport::new());
     
     let mut server = ServerBuilder::new(&name, env!("CARGO_PKG_VERSION"))
-        .add_tool(Arc::new(StartTool::new(client.clone())))
-        .add_tool(Arc::new(StopTool::new(client.clone())))
-        .add_tool(Arc::new(RestartTool::new(client.clone())))
+        .add_tool(Arc::new(StartTool::new(client.clone(), default_project.clone())))
+        .add_tool(Arc::new(StopTool::new(client.clone(), default_project.clone())))
+        .add_tool(Arc::new(RestartTool::new(client.clone(), default_project.clone())))
         .add_tool(Arc::new(PsTool::new(client.clone())))
-        .add_tool(Arc::new(LogsTool::new(client.clone())))
-        .add_tool(Arc::new(GrepTool::new(client.clone())))
-        .add_tool(Arc::new(StatusTool::new(client)))
+        .add_tool(Arc::new(LogsTool::new(client.clone(), default_project.clone())))
+        .add_tool(Arc::new(GrepTool::new(client.clone(), default_project.clone())))
+        .add_tool(Arc::new(StatusTool::new(client, default_project)))
         .build(transport)
         .await?;
     
@@ -76,11 +79,12 @@ fn format_status(status: i32) -> &'static str {
 // Start tool
 struct StartTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl StartTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -157,11 +161,13 @@ impl ToolHandler for StartTool {
         }
         
         // Determine project name if not provided
-        let project = params.project.or_else(|| {
-            std::env::current_dir().ok()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .and_then(|n| n.into_string().ok())
-        }).unwrap_or_else(|| "default".to_string());
+        let project = params.project
+            .or(self.default_project.clone())
+            .or_else(|| {
+                std::env::current_dir().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                    .and_then(|n| n.into_string().ok())
+            }).unwrap_or_else(|| "default".to_string());
         
         // Use gRPC client to start process
         let name = params.name.clone();
@@ -218,11 +224,12 @@ impl ToolHandler for StartTool {
 // Stop tool
 struct StopTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl StopTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -259,7 +266,7 @@ impl ToolHandler for StopTool {
         let request = proto::StopProcessRequest {
             name: params.name,
             force: None,
-            project: params.project,
+            project: params.project.or(self.default_project.clone()),
         };
         
         let mut client = self.client.clone();
@@ -279,11 +286,12 @@ impl ToolHandler for StopTool {
 // Restart tool
 struct RestartTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl RestartTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -319,7 +327,7 @@ impl ToolHandler for RestartTool {
         
         let request = proto::RestartProcessRequest {
             name: params.name.clone(),
-            project: params.project,
+            project: params.project.or(self.default_project.clone()),
         };
         
         let mut client = self.client.clone();
@@ -410,11 +418,12 @@ impl ToolHandler for PsTool {
 // Logs tool
 struct LogsTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl LogsTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -451,7 +460,11 @@ impl ToolHandler for LogsTool {
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
         
         // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = resolve_project_name_optional(params.project);
+        let project = params.project.or(self.default_project.clone()).or_else(|| {
+            std::env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                .and_then(|n| n.into_string().ok())
+        });
         
         // Use gRPC get_logs method instead of direct file access
         let mut client = self.client.clone();
@@ -515,11 +528,12 @@ impl ToolHandler for LogsTool {
 // Status tool (get detailed process status)
 struct StatusTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl StatusTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -554,7 +568,11 @@ impl ToolHandler for StatusTool {
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
         
         // Determine project name if not provided
-        let project = resolve_project_name_optional(params.project);
+        let project = params.project.or(self.default_project.clone()).or_else(|| {
+            std::env::current_dir().ok()
+                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                .and_then(|n| n.into_string().ok())
+        });
         
         let request = proto::GetProcessRequest {
             name: params.name.clone(),
@@ -651,11 +669,12 @@ impl ToolHandler for StatusTool {
 // Grep tool
 struct GrepTool {
     client: McpClient,
+    default_project: Option<String>,
 }
 
 impl GrepTool {
-    fn new(client: McpClient) -> Self {
-        Self { client }
+    fn new(client: McpClient, default_project: Option<String>) -> Self {
+        Self { client, default_project }
     }
 }
 
@@ -704,11 +723,13 @@ impl ToolHandler for GrepTool {
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
         
         // Determine project name if not provided
-        let project = params.project.or_else(|| {
-            std::env::current_dir().ok()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .and_then(|n| n.into_string().ok())
-        }).unwrap_or_else(|| "default".to_string());
+        let project = params.project
+            .or(self.default_project.clone())
+            .or_else(|| {
+                std::env::current_dir().ok()
+                    .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+                    .and_then(|n| n.into_string().ok())
+            }).unwrap_or_else(|| "default".to_string());
         
         let request = proto::GrepLogsRequest {
             name: params.name.clone(),
