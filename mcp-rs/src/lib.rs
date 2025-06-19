@@ -8,6 +8,7 @@
 //! - **streamable-http**: HTTP with Server-Sent Events (not yet implemented)
 
 pub mod error;
+pub mod notification;
 pub mod protocol;
 pub mod server;
 pub mod transport;
@@ -15,6 +16,7 @@ pub mod types;
 
 // Re-export commonly used types
 pub use error::{Error, Result};
+pub use notification::{NotificationSender, ToolContext};
 pub use protocol::{Protocol, ToolHandler};
 pub use server::{Server, ServerBuilder};
 pub use types::*;

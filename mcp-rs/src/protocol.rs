@@ -12,8 +12,8 @@ pub trait ToolHandler: Send + Sync {
     /// Get tool information
     fn tool_info(&self) -> ToolInfo;
     
-    /// Handle tool call
-    async fn handle(&self, params: Option<Value>) -> Result<Value>;
+    /// Handle tool call with context
+    async fn handle(&self, params: Option<Value>, context: crate::notification::ToolContext) -> Result<Value>;
 }
 
 /// MCP Protocol implementation
@@ -21,6 +21,7 @@ pub struct Protocol {
     server_info: ServerInfo,
     tools: Arc<RwLock<HashMap<String, Arc<dyn ToolHandler>>>>,
     custom_handlers: Arc<RwLock<HashMap<String, Box<dyn McpHandler>>>>,
+    notification_sender: Arc<RwLock<Option<Arc<dyn crate::notification::NotificationSender>>>>,
 }
 
 /// Generic handler for custom methods
@@ -35,7 +36,14 @@ impl Protocol {
             server_info: ServerInfo { name, version },
             tools: Arc::new(RwLock::new(HashMap::new())),
             custom_handlers: Arc::new(RwLock::new(HashMap::new())),
+            notification_sender: Arc::new(RwLock::new(None)),
         }
+    }
+    
+    /// Set the notification sender
+    pub async fn set_notification_sender(&self, sender: Arc<dyn crate::notification::NotificationSender>) {
+        let mut ns = self.notification_sender.write().await;
+        *ns = Some(sender);
     }
     
     /// Register a tool handler
@@ -51,11 +59,20 @@ impl Protocol {
         handlers.insert(method, handler);
     }
     
-    /// Handle incoming message
-    pub async fn handle_message(&self, message: JsonRpcMessage) -> Option<JsonRpcMessage> {
-        match message {
+    /// Handle incoming message and return response and any notifications
+    pub async fn handle_message(&self, message: JsonRpcMessage) -> (Option<JsonRpcMessage>, Vec<JsonRpcNotification>) {
+        // Create a queued notification sender for this request
+        let queued_sender = Arc::new(crate::notification::QueuedNotificationSender::new());
+        
+        // Temporarily set it as the active sender
+        {
+            let mut ns = self.notification_sender.write().await;
+            *ns = Some(queued_sender.clone());
+        }
+        
+        let response = match message {
             JsonRpcMessage::Request(req) => {
-                let response = self.handle_request(req).await;
+                let response = self.handle_request(req, queued_sender.clone()).await;
                 Some(JsonRpcMessage::Response(response))
             }
             JsonRpcMessage::Notification(notif) => {
@@ -65,7 +82,49 @@ impl Protocol {
             JsonRpcMessage::Batch(batch) => {
                 let mut responses = Vec::new();
                 for msg in batch {
-                    if let Some(resp) = Box::pin(self.handle_message(msg)).await {
+                    let (resp, _) = Box::pin(self.handle_message(msg)).await;
+                    if let Some(r) = resp {
+                        responses.push(r);
+                    }
+                }
+                if responses.is_empty() {
+                    None
+                } else {
+                    Some(JsonRpcMessage::Batch(responses))
+                }
+            }
+            JsonRpcMessage::Response(_) => None, // Server doesn't handle responses
+        };
+        
+        // Collect any notifications that were queued
+        let notifications = queued_sender.take_all().await;
+        
+        (response, notifications)
+    }
+    
+    pub async fn handle_message_realtime(&self, message: JsonRpcMessage) -> Option<JsonRpcMessage> {
+        match message {
+            JsonRpcMessage::Request(req) => {
+                // Use the real-time notification sender if available
+                let ns = self.notification_sender.read().await;
+                let sender = if let Some(ref sender) = *ns {
+                    sender.clone()
+                } else {
+                    // Fallback to queued sender
+                    Arc::new(crate::notification::QueuedNotificationSender::new())
+                };
+                drop(ns);
+                
+                Some(JsonRpcMessage::Response(self.handle_request_with_sender(req, sender).await))
+            }
+            JsonRpcMessage::Notification(notif) => {
+                self.handle_notification(notif).await;
+                None
+            }
+            JsonRpcMessage::Batch(batch) => {
+                let mut responses = Vec::new();
+                for msg in batch {
+                    if let Some(resp) = Box::pin(self.handle_message_realtime(msg)).await {
                         responses.push(resp);
                     }
                 }
@@ -79,13 +138,17 @@ impl Protocol {
         }
     }
     
-    async fn handle_request(&self, req: JsonRpcRequest) -> JsonRpcResponse {
+    async fn handle_request(&self, req: JsonRpcRequest, notification_sender: Arc<crate::notification::QueuedNotificationSender>) -> JsonRpcResponse {
+        self.handle_request_with_sender(req, notification_sender as Arc<dyn crate::notification::NotificationSender>).await
+    }
+    
+    async fn handle_request_with_sender(&self, req: JsonRpcRequest, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> JsonRpcResponse {
         let result = match req.method.parse::<McpMethod>().unwrap() {
             McpMethod::Initialize => self.handle_initialize(req.params).await,
             McpMethod::ToolsList => self.handle_tools_list(req.params).await,
-            McpMethod::ToolsCall => self.handle_tools_call(req.params).await,
+            McpMethod::ToolsCall => self.handle_tools_call(req.params, req.id.clone(), notification_sender).await,
             McpMethod::Shutdown => self.handle_shutdown(req.params).await,
-            McpMethod::Custom(method) => self.handle_custom(&method, req.params).await,
+            McpMethod::Custom(method) => self.handle_custom(&method, req.params, req.id.clone(), notification_sender).await,
         };
         
         match result {
@@ -138,7 +201,7 @@ impl Protocol {
         }))
     }
     
-    async fn handle_tools_call(&self, params: Option<Value>) -> Result<Value> {
+    async fn handle_tools_call(&self, params: Option<Value>, request_id: JsonRpcId, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> Result<Value> {
         let params = params.ok_or_else(|| Error::InvalidParams("Missing parameters".to_string()))?;
         
         let tool_name = params.get("name")
@@ -147,9 +210,22 @@ impl Protocol {
         
         let tool_params = params.get("arguments");
         
+        // Extract progress token from metadata if present
+        let progress_token = params.get("_meta")
+            .and_then(|meta| meta.get("progressToken"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        
         let tools = self.tools.read().await;
         if let Some(handler) = tools.get(tool_name) {
-            match handler.handle(tool_params.cloned()).await {
+            // Create tool context with notification sender
+            let context = crate::notification::ToolContext::new(
+                notification_sender,
+                progress_token,
+                Some(request_id),
+            );
+            
+            match handler.handle(tool_params.cloned(), context).await {
                 Ok(result) => {
                     // Wrap the result in MCP tool response format
                     Ok(json!({
@@ -176,11 +252,24 @@ impl Protocol {
         }
     }
     
-    async fn handle_custom(&self, method: &str, params: Option<Value>) -> Result<Value> {
+    async fn handle_custom(&self, method: &str, params: Option<Value>, request_id: JsonRpcId, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> Result<Value> {
         // First check if it's a tool method (e.g., "tool_name" format)
         let tools = self.tools.read().await;
         if let Some(handler) = tools.get(method) {
-            return handler.handle(params).await;
+            // Extract progress token from params if present
+            let progress_token = params.as_ref()
+                .and_then(|p| p.get("_meta"))
+                .and_then(|meta| meta.get("progressToken"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            
+            let context = crate::notification::ToolContext::new(
+                notification_sender,
+                progress_token,
+                Some(request_id),
+            );
+            
+            return handler.handle(params, context).await;
         }
         
         // Then check custom handlers

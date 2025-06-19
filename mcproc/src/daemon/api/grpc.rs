@@ -25,57 +25,106 @@ impl GrpcService {
 
 #[tonic::async_trait]
 impl ProcessManagerService for GrpcService {
+    type StartProcessStream = Pin<Box<dyn Stream<Item = Result<StartProcessResponse, Status>> + Send>>;
+    
     async fn start_process(
         &self,
         request: Request<StartProcessRequest>,
-    ) -> Result<Response<StartProcessResponse>, Status> {
+    ) -> Result<Response<Self::StartProcessStream>, Status> {
         let req = request.into_inner();
         let cwd = req.cwd.map(std::path::PathBuf::from);
         
-        match self.process_manager.start_process(
-            req.name,
-            req.project,
-            req.cmd,
-            req.args,
-            cwd,
-            Some(req.env),
-            req.wait_for_log,
-            req.wait_timeout,
-        ).await {
-            Ok(process) => {
-                let info = ProcessInfo {
-                    id: process.id.to_string(),
-                    name: process.name.clone(),
-                    cmd: process.cmd.clone(),
-                    cwd: process.cwd.to_string_lossy().to_string(),
-                    status: match process.get_status() {
-                        ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
-                        ProcessStatus::Running => proto::ProcessStatus::Running as i32,
-                        ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
-                        ProcessStatus::Stopped => proto::ProcessStatus::Stopped as i32,
-                        ProcessStatus::Failed => proto::ProcessStatus::Failed as i32,
-                    },
-                    start_time: Some(prost_types::Timestamp {
-                        seconds: process.start_time.timestamp(),
-                        nanos: process.start_time.timestamp_subsec_nanos() as i32,
-                    }),
-                    pid: process.pid,
-                    log_file: process.log_file.to_string_lossy().to_string(),
-                    project: process.project.clone(),
-                    ports: process.ports.lock().unwrap().clone(),
-                };
-                
-                Ok(Response::new(StartProcessResponse {
-                    process: Some(info),
-                }))
-            }
-            Err(e) => match e {
-                crate::daemon::error::McprocdError::ProcessAlreadyExists(name) => {
-                    Err(Status::already_exists(format!("Process '{}' is already running", name)))
+        let name = req.name.clone();
+        let project = req.project.clone();
+        let wait_for_log = req.wait_for_log.clone();
+        let wait_timeout = req.wait_timeout;
+        
+        // Create a channel for log streaming if wait_for_log is specified
+        let (log_tx, log_rx) = if wait_for_log.is_some() {
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+        
+        let process_manager = self.process_manager.clone();
+        let _log_hub = self.log_hub.clone();
+        
+        // Create the response stream
+        let stream = async_stream::try_stream! {
+            // Start the process with log streaming
+            match process_manager.start_process_with_log_stream(
+                name.clone(),
+                project.clone(),
+                req.cmd,
+                req.args,
+                cwd,
+                Some(req.env),
+                wait_for_log.clone(),
+                wait_timeout,
+                log_tx,
+            ).await {
+                Ok(process) => {
+                    // If we have a log receiver, stream logs until pattern matches or timeout
+                    if let Some(mut rx) = log_rx {
+                        // Stream logs until channel closes (pattern matched or process ends)
+                        while let Some(line) = rx.recv().await {
+                            // Create log entry
+                            let (timestamp, level, content) = parse_log_line(&line);
+                            
+                            yield StartProcessResponse {
+                                response: Some(start_process_response::Response::LogEntry(LogEntry {
+                                    line_number: 0,
+                                    content,
+                                    timestamp,
+                                    level: level as i32,
+                                })),
+                            };
+                        }
+                    }
+                    
+                    // Send final process info
+                    let info = ProcessInfo {
+                        id: process.id.to_string(),
+                        name: process.name.clone(),
+                        cmd: process.cmd.clone(),
+                        cwd: process.cwd.to_string_lossy().to_string(),
+                        status: match process.get_status() {
+                            ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
+                            ProcessStatus::Running => proto::ProcessStatus::Running as i32,
+                            ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
+                            ProcessStatus::Stopped => proto::ProcessStatus::Stopped as i32,
+                            ProcessStatus::Failed => proto::ProcessStatus::Failed as i32,
+                        },
+                        start_time: Some(prost_types::Timestamp {
+                            seconds: process.start_time.timestamp(),
+                            nanos: process.start_time.timestamp_subsec_nanos() as i32,
+                        }),
+                        pid: process.pid,
+                        log_file: process.log_file.to_string_lossy().to_string(),
+                        project: process.project.clone(),
+                        ports: process.ports.lock().unwrap().clone(),
+                    };
+                    
+                    yield StartProcessResponse {
+                        response: Some(start_process_response::Response::Process(info)),
+                    };
                 }
-                _ => Err(Status::internal(e.to_string())),
-            },
-        }
+                Err(e) => {
+                    // For streaming, we can't return early, so yield error as final message
+                    let status = match e {
+                        crate::daemon::error::McprocdError::ProcessAlreadyExists(name) => {
+                            Status::already_exists(format!("Process '{}' is already running", name))
+                        }
+                        _ => Status::internal(e.to_string()),
+                    };
+                    // Convert status to tonic::Status and propagate the error
+                    Err(status)?;
+                }
+            }
+        };
+        
+        Ok(Response::new(Box::pin(stream)))
     }
     
     async fn stop_process(

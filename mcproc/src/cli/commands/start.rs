@@ -76,7 +76,26 @@ impl StartCommand {
         
         match client.inner().start_process(request).await {
             Ok(response) => {
-                let process = response.into_inner().process.unwrap();
+                let mut stream = response.into_inner();
+                let mut process_info = None;
+                
+                // Process streaming responses
+                while let Ok(Some(msg)) = stream.message().await {
+                    match msg.response {
+                        Some(proto::start_process_response::Response::LogEntry(entry)) => {
+                            // Print log entries as they arrive if wait_for_log is enabled
+                            if self.wait_for_log.is_some() {
+                                println!("  {}", entry.content.dimmed());
+                            }
+                        }
+                        Some(proto::start_process_response::Response::Process(info)) => {
+                            process_info = Some(info);
+                        }
+                        None => {}
+                    }
+                }
+                
+                let process = process_info.expect("No process info received");
                 
                 println!("{} Process started successfully", "✓".green());
                 println!("  Project: {}", project.bright_white());

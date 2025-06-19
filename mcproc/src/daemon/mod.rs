@@ -96,11 +96,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         error!("Failed to remove PID file: {}", e);
     }
     
-    // Remove port file
-    let port_file = config.daemon.data_dir.join("mcprocd.port");
-    if let Err(e) = std::fs::remove_file(&port_file) {
-        error!("Failed to remove port file: {}", e);
-    }
+    // Port file is no longer used (using Unix sockets instead)
     
     Ok(())
 }

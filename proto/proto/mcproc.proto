@@ -83,7 +83,10 @@ message GrepLogsRequest {
 
 // Response messages
 message StartProcessResponse {
-  ProcessInfo process = 1;
+  oneof response {
+    LogEntry log_entry = 1;      // Streaming log entries during wait_for_log
+    ProcessInfo process = 2;      // Final process info when ready
+  }
 }
 
 message StopProcessResponse {
@@ -131,7 +134,7 @@ message GrepLogsResponse {
 
 // Service definition
 service ProcessManager {
-  rpc StartProcess(StartProcessRequest) returns (StartProcessResponse);
+  rpc StartProcess(StartProcessRequest) returns (stream StartProcessResponse);
   rpc StopProcess(StopProcessRequest) returns (StopProcessResponse);
   rpc RestartProcess(RestartProcessRequest) returns (RestartProcessResponse);
   rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);

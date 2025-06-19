@@ -139,7 +139,7 @@ impl ToolHandler for StartTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         
@@ -147,15 +147,16 @@ impl ToolHandler for StartTool {
             .map_err(|e| McpError::InvalidParams(e.to_string()))?;
         
         // Validate that either cmd or args is provided, but not both
+        // Note: Empty args array is treated as None
         match (&params.cmd, &params.args) {
-            (Some(_), Some(_)) => {
+            (Some(_), Some(args)) if !args.is_empty() => {
                 return Err(McpError::InvalidParams("Cannot specify both 'cmd' and 'args'".to_string()));
             }
             (None, None) => {
                 return Err(McpError::InvalidParams("Must specify either 'cmd' or 'args'".to_string()));
             }
             (None, Some(args)) if args.is_empty() => {
-                return Err(McpError::InvalidParams("args array cannot be empty".to_string()));
+                return Err(McpError::InvalidParams("Must specify either 'cmd' or 'args'".to_string()));
             }
             _ => {}
         }
@@ -171,6 +172,9 @@ impl ToolHandler for StartTool {
         
         // Use gRPC client to start process
         let name = params.name.clone();
+        let wait_for_log_flag = params.wait_for_log.is_some();
+        let wait_timeout_value = params.wait_timeout;
+        
         let grpc_request = proto::StartProcessRequest {
             name: params.name,
             cmd: params.cmd,
@@ -183,15 +187,75 @@ impl ToolHandler for StartTool {
         };
         
         // Set timeout to wait_timeout + 5 seconds to allow for process startup
-        let timeout = Duration::from_secs((params.wait_timeout.unwrap_or(30) + 5) as u64);
+        let timeout = Duration::from_secs((wait_timeout_value.unwrap_or(30) + 5) as u64);
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);
+        
+        // Send initial progress notification if we're waiting for log
+        if wait_for_log_flag {
+            context.send_log(
+                mcp_rs::MessageLevel::Info,
+                format!("Starting process '{}' and waiting for log pattern...", name),
+            ).await?;
+            
+            if let Some(ref _token) = context.progress_token {
+                context.send_progress(0, 100, Some("Starting process...".to_string())).await?;
+            }
+        }
         
         let mut client = self.client.clone();
         match client.inner().start_process(request).await {
             Ok(response) => {
-                let process = response.into_inner().process
+                let mut stream = response.into_inner();
+                let mut process_info = None;
+                let mut log_entries = Vec::new();
+                
+                // Collect all streaming responses
+                let mut log_count = 0;
+                
+                while let Some(msg) = stream.message().await.map_err(|e| McpError::Internal(e.to_string()))? {
+                    match msg.response {
+                        Some(proto::start_process_response::Response::LogEntry(entry)) => {
+                            // Send log entry as notification
+                            context.send_log(
+                                mcp_rs::MessageLevel::Info,
+                                entry.content.clone(),
+                            ).await?;
+                            
+                            log_count += 1;
+                            
+                            // Update progress if we have a token
+                            if let Some(ref _token) = context.progress_token {
+                                // Estimate progress based on time elapsed vs timeout
+                                let progress = std::cmp::min(90, (log_count * 10).min(90));
+                                context.send_progress(
+                                    progress,
+                                    100,
+                                    Some(format!("Received {} log lines...", log_count)),
+                                ).await?;
+                            }
+                            
+                            log_entries.push(entry);
+                        }
+                        Some(proto::start_process_response::Response::Process(info)) => {
+                            process_info = Some(info);
+                            
+                            // Send completion progress
+                            if let Some(ref _token) = context.progress_token {
+                                context.send_progress(
+                                    100,
+                                    100,
+                                    Some("Process started successfully".to_string()),
+                                ).await?;
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                
+                let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
+                
                 let response = json!({
                     "id": process.id,
                     "project": process.project,
@@ -206,7 +270,6 @@ impl ToolHandler for StartTool {
                     }),
                     "ports": process.ports,
                 });
-                
                 
                 Ok(response)
             }
@@ -256,7 +319,7 @@ impl ToolHandler for StopTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         
@@ -318,7 +381,7 @@ impl ToolHandler for RestartTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         
@@ -380,7 +443,7 @@ impl ToolHandler for PsTool {
         }
     }
     
-    async fn handle(&self, _params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, _params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let request = proto::ListProcessesRequest { 
             status_filter: None,
             project_filter: None,
@@ -452,7 +515,7 @@ impl ToolHandler for LogsTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         
@@ -560,7 +623,7 @@ impl ToolHandler for StatusTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         
@@ -715,7 +778,7 @@ impl ToolHandler for GrepTool {
         }
     }
     
-    async fn handle(&self, params: Option<Value>) -> McpResult<Value> {
+    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
         let params = params
             .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
         

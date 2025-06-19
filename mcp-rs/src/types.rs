@@ -69,6 +69,42 @@ pub struct ServerInfo {
     pub version: String,
 }
 
+// MCP Notification Types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageNotification {
+    pub level: MessageLevel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logger: Option<String>,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageLevel {
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressNotification {
+    #[serde(rename = "progressToken")]
+    pub progress_token: String,
+    pub progress: u64,
+    pub total: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+// Request metadata for progress tracking
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestMeta {
+    #[serde(rename = "progressToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress_token: Option<String>,
+}
+
 // These types are no longer used as we're returning JSON directly
 // keeping them commented for reference
 //

@@ -41,6 +41,31 @@ impl ProcessManager {
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
+        self.start_process_with_log_stream(
+            name,
+            project,
+            cmd,
+            args,
+            cwd,
+            env,
+            wait_for_log,
+            wait_timeout,
+            None,
+        ).await
+    }
+    
+    pub async fn start_process_with_log_stream(
+        &self,
+        name: String,
+        project: Option<String>,
+        cmd: Option<String>,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Option<std::collections::HashMap<String, String>>,
+        wait_for_log: Option<String>,
+        wait_timeout: Option<u32>,
+        log_stream_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    ) -> Result<Arc<ProxyInfo>> {
         let project = project.expect("Project name must be provided");
         
         // Create unique key for process: project/name
@@ -135,6 +160,12 @@ impl ProcessManager {
             None
         };
         
+        // Create a shared flag to track pattern match
+        let pattern_matched = Arc::new(Mutex::new(false));
+        
+        // Wrap log_stream_tx in Arc<Mutex> for shared access
+        let log_stream_tx_shared = log_stream_tx.map(|tx| Arc::new(Mutex::new(Some(tx))));
+        
         // Compile regex pattern if provided
         let log_pattern = if let Some(pattern) = &wait_for_log {
             match Regex::new(pattern) {
@@ -157,6 +188,8 @@ impl ProcessManager {
         let log_key_stdout = process_key.clone();
         let log_pattern_stdout = log_pattern.clone();
         let log_ready_tx_stdout = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
+        let log_stream_tx_stdout = log_stream_tx_shared.clone();
+        let pattern_matched_stdout = pattern_matched.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -165,6 +198,14 @@ impl ProcessManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
                     error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
+                }
+                
+                // Send log to stream if provided
+                if let Some(ref tx_shared) = log_stream_tx_stdout {
+                    let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(tx) = tx_opt {
+                        let _ = tx.send(line.clone()).await;
+                    }
                 }
                 
                 // Check if line matches the wait pattern
@@ -176,6 +217,18 @@ impl ProcessManager {
                                 let _ = sender.send(());
                             }
                         }
+                        // Mark pattern as matched
+                        if let Ok(mut matched) = pattern_matched_stdout.lock() {
+                            *matched = true;
+                        }
+                        // Close the channel to signal completion
+                        if let Some(ref tx_shared) = log_stream_tx_stdout {
+                            if let Ok(mut guard) = tx_shared.lock() {
+                                guard.take(); // Drop the sender by taking it out
+                            }
+                        }
+                        // Stop streaming logs
+                        break;
                     }
                 }
                 
@@ -190,6 +243,8 @@ impl ProcessManager {
         let log_key_stderr = process_key.clone();
         let log_pattern_stderr = log_pattern;
         let log_ready_tx_stderr = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
+        let log_stream_tx_stderr = log_stream_tx_shared;
+        let pattern_matched_stderr = pattern_matched.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -198,6 +253,14 @@ impl ProcessManager {
             while let Ok(Some(line)) = lines.next_line().await {
                 if let Err(e) = log_hub_stderr.append_log(&log_key_stderr, line.as_bytes(), true).await {
                     error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
+                }
+                
+                // Send log to stream if provided
+                if let Some(ref tx_shared) = log_stream_tx_stderr {
+                    let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
+                    if let Some(tx) = tx_opt {
+                        let _ = tx.send(line.clone()).await;
+                    }
                 }
                 
                 // Check if line matches the wait pattern
@@ -209,6 +272,18 @@ impl ProcessManager {
                                 let _ = sender.send(());
                             }
                         }
+                        // Mark pattern as matched
+                        if let Ok(mut matched) = pattern_matched_stderr.lock() {
+                            *matched = true;
+                        }
+                        // Close the channel to signal completion
+                        if let Some(ref tx_shared) = log_stream_tx_stderr {
+                            if let Ok(mut guard) = tx_shared.lock() {
+                                guard.take(); // Drop the sender by taking it out
+                            }
+                        }
+                        // Stop streaming logs
+                        break;
                     }
                 }
                 
