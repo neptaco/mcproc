@@ -64,7 +64,7 @@ impl ProcessManagerService for GrpcService {
                 wait_timeout,
                 log_tx,
             ).await {
-                Ok(process) => {
+                Ok((process, timeout_occurred)) => {
                     // If we have a log receiver, stream logs until pattern matches or timeout
                     if let Some(mut rx) = log_rx {
                         // Stream logs until channel closes (pattern matched or process ends)
@@ -104,6 +104,7 @@ impl ProcessManagerService for GrpcService {
                         log_file: process.log_file.to_string_lossy().to_string(),
                         project: process.project.clone(),
                         ports: process.ports.lock().unwrap().clone(),
+                        wait_timeout_occurred: if wait_for_log.is_some() { Some(timeout_occurred) } else { None },
                     };
                     
                     yield StartProcessResponse {
@@ -167,6 +168,7 @@ impl ProcessManagerService for GrpcService {
                     log_file: process.log_file.to_string_lossy().to_string(),
                     project: process.project.clone(),
                     ports: process.ports.lock().unwrap().clone(),
+                    wait_timeout_occurred: None,
                 };
                 
                 Ok(Response::new(RestartProcessResponse {
@@ -205,6 +207,7 @@ impl ProcessManagerService for GrpcService {
                     log_file: process.log_file.to_string_lossy().to_string(),
                     project: process.project.clone(),
                     ports: process.ports.lock().unwrap().clone(),
+                    wait_timeout_occurred: None,
                 };
                 
                 Ok(Response::new(GetProcessResponse {
@@ -248,6 +251,7 @@ impl ProcessManagerService for GrpcService {
                 log_file: process.log_file.to_string_lossy().to_string(),
                 project: process.project.clone(),
                 ports: process.ports.lock().unwrap().clone(),
+                wait_timeout_occurred: None,
             }
         }).collect();
         

@@ -26,6 +26,7 @@ message ProcessInfo {
   string log_file = 8;
   string project = 9;
   repeated uint32 ports = 10;  // Listening ports
+  optional bool wait_timeout_occurred = 11;  // True if wait_for_log timed out
 }
 
 // Request messages

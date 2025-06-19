@@ -256,7 +256,7 @@ impl ToolHandler for StartTool {
                 let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
                 
-                let response = json!({
+                let mut response = json!({
                     "id": process.id,
                     "project": process.project,
                     "name": process.name,
@@ -270,6 +270,14 @@ impl ToolHandler for StartTool {
                     }),
                     "ports": process.ports,
                 });
+                
+                // Add timeout information if available
+                if let Some(timeout_occurred) = process.wait_timeout_occurred {
+                    if timeout_occurred {
+                        response["wait_timeout_occurred"] = json!(true);
+                        response["message"] = json!("Process started but wait_for_log pattern was not found within timeout");
+                    }
+                }
                 
                 Ok(response)
             }

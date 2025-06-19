@@ -41,7 +41,7 @@ impl ProcessManager {
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
-        self.start_process_with_log_stream(
+        let (proxy, _timeout) = self.start_process_with_log_stream(
             name,
             project,
             cmd,
@@ -51,7 +51,8 @@ impl ProcessManager {
             wait_for_log,
             wait_timeout,
             None,
-        ).await
+        ).await?;
+        Ok(proxy)
     }
     
     pub async fn start_process_with_log_stream(
@@ -65,7 +66,7 @@ impl ProcessManager {
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
         log_stream_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    ) -> Result<Arc<ProxyInfo>> {
+    ) -> Result<(Arc<ProxyInfo>, bool)> {
         let project = project.expect("Project name must be provided");
         
         // Create unique key for process: project/name
@@ -163,12 +164,17 @@ impl ProcessManager {
         // Create a shared flag to track pattern match
         let pattern_matched = Arc::new(Mutex::new(false));
         
+        // Create a shared flag to track timeout
+        let timeout_occurred = Arc::new(Mutex::new(false));
+        
         // Wrap log_stream_tx in Arc<Mutex> for shared access
         let log_stream_tx_shared = log_stream_tx.map(|tx| Arc::new(Mutex::new(Some(tx))));
         
-        // Compile regex pattern if provided
+        // Compile regex pattern if provided (case-insensitive)
         let log_pattern = if let Some(pattern) = &wait_for_log {
-            match Regex::new(pattern) {
+            // Prepend (?i) to make the pattern case-insensitive
+            let case_insensitive_pattern = format!("(?i){}", pattern);
+            match Regex::new(&case_insensitive_pattern) {
                 Ok(regex) => Some(regex),
                 Err(e) => {
                     warn!("Invalid log pattern '{}': {}", pattern, e);
@@ -190,51 +196,89 @@ impl ProcessManager {
         let log_ready_tx_stdout = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
         let log_stream_tx_stdout = log_stream_tx_shared.clone();
         let pattern_matched_stdout = pattern_matched.clone();
+        let wait_timeout_stdout = wait_timeout;
+        let has_pattern_stdout = log_pattern_stdout.is_some();
+        let timeout_occurred_stdout = timeout_occurred.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
             
-            while let Ok(Some(line)) = lines.next_line().await {
-                if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
-                    error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
-                }
-                
-                // Send log to stream if provided
-                if let Some(ref tx_shared) = log_stream_tx_stdout {
-                    let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
-                    if let Some(tx) = tx_opt {
-                        let _ = tx.send(line.clone()).await;
-                    }
-                }
-                
-                // Check if line matches the wait pattern
-                if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stdout, &log_ready_tx_stdout) {
-                    if pattern.is_match(&line) {
-                        debug!("Found log pattern match: {}", line);
-                        if let Ok(mut tx_guard) = tx.lock() {
-                            if let Some(sender) = tx_guard.take() {
-                                let _ = sender.send(());
-                            }
+            // Set up timeout future if we're waiting for a pattern
+            let timeout_future = if has_pattern_stdout {
+                let duration = tokio::time::Duration::from_secs(wait_timeout_stdout.unwrap_or(30) as u64);
+                tokio::time::sleep(duration)
+            } else {
+                tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
+            };
+            tokio::pin!(timeout_future);
+            
+            loop {
+                tokio::select! {
+                    // Check for timeout
+                    _ = &mut timeout_future, if has_pattern_stdout => {
+                        warn!("Log streaming timeout reached for stdout");
+                        // Mark timeout occurred
+                        if let Ok(mut timeout_flag) = timeout_occurred_stdout.lock() {
+                            *timeout_flag = true;
                         }
-                        // Mark pattern as matched
-                        if let Ok(mut matched) = pattern_matched_stdout.lock() {
-                            *matched = true;
-                        }
-                        // Close the channel to signal completion
+                        // Close the channel on timeout
                         if let Some(ref tx_shared) = log_stream_tx_stdout {
                             if let Ok(mut guard) = tx_shared.lock() {
-                                guard.take(); // Drop the sender by taking it out
+                                guard.take();
                             }
                         }
-                        // Stop streaming logs
                         break;
                     }
-                }
-                
-                if let Ok(mut ring) = proxy_stdout.ring.lock() {
-                    let _ = ring.push_overwrite(line.into_bytes());
-                }
+                        // Read next line
+                        line_result = lines.next_line() => {
+                            match line_result {
+                                Ok(Some(line)) => {
+                                    if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
+                                        error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
+                                    }
+                                    
+                                    // Send log to stream if provided
+                                    if let Some(ref tx_shared) = log_stream_tx_stdout {
+                                        let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
+                                        if let Some(tx) = tx_opt {
+                                            let _ = tx.send(line.clone()).await;
+                                        }
+                                    }
+                                    
+                                    // Check if line matches the wait pattern
+                                    if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stdout, &log_ready_tx_stdout) {
+                                        if pattern.is_match(&line) {
+                                            debug!("Found log pattern match: {}", line);
+                                            if let Ok(mut tx_guard) = tx.lock() {
+                                                if let Some(sender) = tx_guard.take() {
+                                                    let _ = sender.send(());
+                                                }
+                                            }
+                                            // Mark pattern as matched
+                                            if let Ok(mut matched) = pattern_matched_stdout.lock() {
+                                                *matched = true;
+                                            }
+                                            // Close the channel to signal completion
+                                            if let Some(ref tx_shared) = log_stream_tx_stdout {
+                                                if let Ok(mut guard) = tx_shared.lock() {
+                                                    guard.take(); // Drop the sender by taking it out
+                                                }
+                                            }
+                                            // Stop streaming logs
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if let Ok(mut ring) = proxy_stdout.ring.lock() {
+                                        let _ = ring.push_overwrite(line.into_bytes());
+                                    }
+                                }
+                                Ok(None) => break, // EOF
+                                Err(_) => break,
+                            }
+                        }
+                    }
             }
         });
         
@@ -243,14 +287,46 @@ impl ProcessManager {
         let log_key_stderr = process_key.clone();
         let log_pattern_stderr = log_pattern;
         let log_ready_tx_stderr = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
-        let log_stream_tx_stderr = log_stream_tx_shared;
+        let log_stream_tx_stderr = log_stream_tx_shared.clone();
         let pattern_matched_stderr = pattern_matched.clone();
+        let wait_timeout_stderr = wait_timeout;
+        let has_pattern_stderr = log_pattern_stderr.is_some();
+        let timeout_occurred_stderr = timeout_occurred.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             
-            while let Ok(Some(line)) = lines.next_line().await {
+            // Set up timeout future if we're waiting for a pattern
+            let timeout_future = if has_pattern_stderr {
+                let duration = tokio::time::Duration::from_secs(wait_timeout_stderr.unwrap_or(30) as u64);
+                tokio::time::sleep(duration)
+            } else {
+                tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
+            };
+            tokio::pin!(timeout_future);
+            
+            loop {
+                tokio::select! {
+                    // Check for timeout
+                    _ = &mut timeout_future, if has_pattern_stderr => {
+                        warn!("Log streaming timeout reached for stderr");
+                        // Mark timeout occurred
+                        if let Ok(mut timeout_flag) = timeout_occurred_stderr.lock() {
+                            *timeout_flag = true;
+                        }
+                        // Close the channel on timeout
+                        if let Some(ref tx_shared) = log_stream_tx_stderr {
+                            if let Ok(mut guard) = tx_shared.lock() {
+                                guard.take();
+                            }
+                        }
+                        break;
+                    }
+                        // Read next line
+                        line_result = lines.next_line() => {
+                            match line_result {
+                                Ok(Some(line)) => {
                 if let Err(e) = log_hub_stderr.append_log(&log_key_stderr, line.as_bytes(), true).await {
                     error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
                 }
@@ -287,9 +363,15 @@ impl ProcessManager {
                     }
                 }
                 
-                if let Ok(mut ring) = proxy_stderr.ring.lock() {
-                    let _ = ring.push_overwrite(line.into_bytes());
-                }
+                                    if let Ok(mut ring) = proxy_stderr.ring.lock() {
+                                        let _ = ring.push_overwrite(line.into_bytes());
+                                    }
+                                }
+                                Ok(None) => break, // EOF
+                                Err(_) => break,
+                            }
+                        }
+                    }
             }
         });
         
@@ -412,12 +494,31 @@ impl ProcessManager {
                 }
                 Err(_) => {
                     warn!("Timeout waiting for log pattern for process {} after {}s", name, timeout_duration.as_secs());
+                    // Mark timeout occurred
+                    if let Ok(mut timeout_flag) = timeout_occurred.lock() {
+                        *timeout_flag = true;
+                    }
+                    // Close the log stream channel on timeout
+                    if let Some(ref tx_shared) = log_stream_tx_shared {
+                        if let Ok(mut guard) = tx_shared.lock() {
+                            guard.take(); // Drop the sender to close the channel
+                        }
+                    }
                 }
             }
         }
         
         info!("Started process {} with PID {:?}", name, proxy_arc.pid);
-        Ok(proxy_arc)
+        
+        // Add timeout status to the proxy info if it's available
+        if let Ok(timeout_flag) = timeout_occurred.lock() {
+            if *timeout_flag {
+                // Store timeout status in proxy (we'll need to modify ProxyInfo struct)
+                // For now, we'll handle this in the gRPC layer
+            }
+        }
+        
+        Ok((proxy_arc, timeout_occurred.lock().map(|g| *g).unwrap_or(false)))
     }
     
     pub async fn stop_process(&self, name_or_id: &str, project: Option<&str>, force: bool) -> Result<()> {

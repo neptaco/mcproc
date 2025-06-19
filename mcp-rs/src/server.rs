@@ -63,13 +63,12 @@ impl NotificationSender for RealtimeNotificationSender {
 pub struct Server {
     protocol: Arc<Protocol>,
     transport: Box<dyn Transport>,
-    notification_tx: mpsc::Sender<JsonRpcNotification>,
 }
 
 impl Server {
     /// Create a new server with the given protocol and transport
-    pub fn new(protocol: Arc<Protocol>, transport: Box<dyn Transport>, notification_tx: mpsc::Sender<JsonRpcNotification>) -> Self {
-        Self { protocol, transport, notification_tx }
+    pub fn new(protocol: Arc<Protocol>, transport: Box<dyn Transport>) -> Self {
+        Self { protocol, transport }
     }
     
     /// Start the server
@@ -157,9 +156,6 @@ impl ServerBuilder {
             protocol.register_tool(tool).await;
         }
         
-        // Create notification channel
-        let (notification_tx, _) = mpsc::channel(100);
-        
-        Ok(Server::new(protocol, transport, notification_tx))
+        Ok(Server::new(protocol, transport))
     }
 }
