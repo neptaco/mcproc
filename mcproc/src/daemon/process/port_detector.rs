@@ -13,7 +13,7 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
     for check_pid in all_pids {
         // Use lsof to find listening TCP ports for the process
         let output = match Command::new("lsof")
-            .args(&[
+            .args([
                 "-Pan",           // No name resolution, all network files
                 "-p", &check_pid.to_string(),  // Process ID
                 "-iTCP",          // TCP connections only
@@ -65,7 +65,7 @@ fn get_process_tree(pid: u32) -> Vec<u32> {
     
     // Use pgrep to find child processes
     if let Ok(output) = Command::new("pgrep")
-        .args(&["-P", &pid.to_string()])
+        .args(["-P", &pid.to_string()])
         .output()
     {
         if output.status.success() {
@@ -108,12 +108,12 @@ pub fn detect_ports_netstat(pid: u32) -> Vec<u32> {
     // Try netstat with different options based on OS
     let output = if cfg!(target_os = "macos") {
         Command::new("netstat")
-            .args(&["-anv", "-p", "tcp"])
+            .args(["-anv", "-p", "tcp"])
             .output()
     } else {
         // Linux
         Command::new("netstat")
-            .args(&["-tlnp"])
+            .args(["-tlnp"])
             .output()
     };
 

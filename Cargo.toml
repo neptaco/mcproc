@@ -11,16 +11,16 @@ repository = "https://github.com/neptaco/mcproc"
 
 [workspace.dependencies]
 # Async runtime
-tokio = { version = "1.43", features = ["full"] }
+tokio = { version = "1.45", features = ["full"] }
 
 # JSON-RPC for MCP
 jsonrpc-v2 = "0.13"
 
 # gRPC
-tonic = "0.12"
+tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
-tonic-build = "0.12"
+tonic-build = "0.13"
 
 # HTTP/WebSocket
 warp = "0.3"

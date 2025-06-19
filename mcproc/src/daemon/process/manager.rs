@@ -29,6 +29,7 @@ impl ProcessManager {
         }
     }
     
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_process(
         &self,
         name: String,

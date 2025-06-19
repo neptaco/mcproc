@@ -362,7 +362,8 @@ impl ProcessManagerService for GrpcService {
         }
         
         // Parse time filters
-        let (since_time, until_time) = parse_time_filters(&req.since, &req.until, &req.last)?;
+        let (since_time, until_time) = parse_time_filters(&req.since, &req.until, &req.last)
+            .map_err(|e| *e)?;
         
         // Compile regex pattern
         let pattern = regex::Regex::new(&req.pattern)
@@ -382,28 +383,30 @@ impl ProcessManagerService for GrpcService {
     }
 }
 
+type TimeRange = (Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>);
+
 fn parse_time_filters(
     since: &Option<String>,
     until: &Option<String>,
     last: &Option<String>,
-) -> Result<(Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>), Status> {
+) -> Result<TimeRange, Box<Status>> {
     let now = chrono::Utc::now();
     
     let since_time = if let Some(last_str) = last {
         // Parse "last" duration (e.g., "1h", "30m", "2d")
         let duration = parse_duration(last_str)
-            .map_err(|e| Status::invalid_argument(format!("Invalid duration '{}': {}", last_str, e)))?;
+            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid duration '{}': {}", last_str, e))))?;
         Some(now - duration)
     } else if let Some(since_str) = since {
         Some(parse_time_string(since_str)
-            .map_err(|e| Status::invalid_argument(format!("Invalid since time '{}': {}", since_str, e)))?)
+            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid since time '{}': {}", since_str, e))))?)
     } else {
         None
     };
     
     let until_time = if let Some(until_str) = until {
         Some(parse_time_string(until_str)
-            .map_err(|e| Status::invalid_argument(format!("Invalid until time '{}': {}", until_str, e)))?)
+            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid until time '{}': {}", until_str, e))))?)
     } else {
         None
     };
