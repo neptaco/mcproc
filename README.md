@@ -26,19 +26,32 @@ Traditional MCP tools are stateless and can't manage long-running processes effe
 
 ## Installation
 
-### Prerequisites
+### Using Homebrew (macOS and Linux)
+
+```bash
+# Add the tap
+brew tap neptaco/tap
+
+# Install mcproc
+brew install mcproc
+```
+
+### Build from source
+
+#### Prerequisites
 
 - Rust toolchain (rustc, cargo)
 - protobuf compiler:
   - macOS: `brew install protobuf`
   - Linux: `apt-get install protobuf-compiler`
 
-### Build from source
-
 ```bash
 git clone https://github.com/neptaco/mcproc.git
 cd mcproc
 cargo build --release
+
+# Install to PATH (optional)
+cargo install --path mcproc
 ```
 
 ## Usage
