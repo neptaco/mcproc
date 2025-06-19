@@ -106,17 +106,17 @@ struct StartParams {
 impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "start".to_string(),
-            description: "Start a development server or process (e.g., npm run dev, python app.py, etc.)".to_string(),
+            name: "start_process".to_string(),
+            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Unique name for this process (e.g., 'frontend', 'backend', 'api')" },
-                    "cmd": { "type": "string", "description": "Command to execute with shell (e.g., 'npm run dev', 'yarn start', 'python app.py'). Use this for commands with pipes, redirects, or shell features." },
+                    "name": { "type": "string", "description": "Unique identifier for this process. Use descriptive names like 'frontend-dev', 'backend-api', 'docs-server'. This name is used to reference the process in other commands." },
+                    "cmd": { "type": "string", "description": "Shell command to execute. Use this for commands that need shell features like pipes (|), redirects (>), or environment variable expansion. Examples: 'npm run dev', 'yarn start', 'python -m http.server 8000', 'NODE_ENV=development npm start'. Choose either 'cmd' or 'args', not both." },
                     "args": { 
                         "type": "array", 
                         "items": { "type": "string" },
-                        "description": "Command and arguments as array (e.g., ['npm', 'run', 'dev']). Use this for direct execution without shell."
+                        "description": "Command and arguments as an array for direct execution without shell interpretation. Safer than 'cmd' for user input. Examples: ['npm', 'run', 'dev'], ['python', '-m', 'http.server', '8000']. Choose either 'cmd' or 'args', not both."
                     },
                     "cwd": { "type": "string", "description": "Working directory path (defaults to current directory)" },
                     "project": { "type": "string", "description": "Project name (defaults to directory name)" },
@@ -127,7 +127,7 @@ impl ToolHandler for StartTool {
                     },
                     "wait_for_log": { 
                         "type": "string", 
-                        "description": "Wait for this log pattern before considering the process ready (regex)" 
+                        "description": "Optional regex pattern to wait for in the process output before considering it ready. Useful for servers that take time to start. Examples: 'Server running on', 'Compiled successfully', 'Ready on http://'. The tool will wait up to wait_timeout seconds." 
                     },
                     "wait_timeout": { 
                         "type": "integer", 
@@ -243,13 +243,13 @@ struct StopParams {
 impl ToolHandler for StopTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "stop".to_string(),
-            description: "Stop a running development server or process".to_string(),
+            name: "stop_process".to_string(),
+            description: "Gracefully stop a running process by name. This sends a SIGTERM signal to allow the process to clean up before exiting. Use this to stop servers, watchers, or any background process started with start_process.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Process name or ID" },
-                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" }
+                    "name": { "type": "string", "description": "Name of the process to stop (the same name used when starting it with start_process)" },
+                    "project": { "type": "string", "description": "Optional project name to scope the process lookup. Useful when multiple projects have processes with the same name." }
                 },
                 "required": ["name"]
             }),
@@ -305,13 +305,13 @@ struct RestartParams {
 impl ToolHandler for RestartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "restart".to_string(),
-            description: "Restart a development server or process".to_string(),
+            name: "restart_process".to_string(),
+            description: "Restart a running process by stopping it and starting it again with the same configuration. Useful when you need to reload configuration changes or recover from issues. The process will be started with the exact same command and environment as before.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Process name or ID" },
-                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" }
+                    "name": { "type": "string", "description": "Name of the process to restart (must be currently running or recently stopped)" },
+                    "project": { "type": "string", "description": "Optional project name to scope the process lookup. Useful when multiple projects have processes with the same name." }
                 },
                 "required": ["name"]
             }),
@@ -371,8 +371,8 @@ impl PsTool {
 impl ToolHandler for PsTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "ps".to_string(),
-            description: "List all running development servers and processes managed by mcproc".to_string(),
+            name: "list_processes".to_string(),
+            description: "List all processes managed by mcproc across all projects. Shows process names, status (running/stopped/failed), PIDs, start times, and detected ports. Use this to see what's currently running before starting new processes or to find process names for other commands.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {}
@@ -438,14 +438,14 @@ struct LogsParams {
 impl ToolHandler for LogsTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "logs".to_string(),
-            description: "View console output and logs from a running process".to_string(),
+            name: "get_process_logs".to_string(),
+            description: "Retrieve console output and logs from a process. Returns the most recent log entries including stdout, stderr, and any output from the process. Useful for debugging issues, checking server status, or monitoring process behavior. Logs are persisted even after process stops.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Process name" },
-                    "tail": { "type": "integer", "description": "Number of lines from the end (default: 100)" },
-                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" }
+                    "name": { "type": "string", "description": "Name of the process to get logs from" },
+                    "tail": { "type": "integer", "description": "Number of most recent lines to retrieve. Default is 100. Use larger values to see more history." },
+                    "project": { "type": "string", "description": "Optional project name to scope the process lookup. Useful when multiple projects have processes with the same name." }
                 },
                 "required": ["name"]
             }),
@@ -547,13 +547,13 @@ struct StatusParams {
 impl ToolHandler for StatusTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "status".to_string(),
-            description: "Get detailed status information for a specific process".to_string(),
+            name: "get_process_status".to_string(),
+            description: "Get comprehensive status information for a specific process including: current state (running/stopped/failed), PID, uptime, command line, working directory, detected ports, and recent log preview. Use this to check if a process is healthy or to debug why it might have stopped.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Process name" },
-                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" }
+                    "name": { "type": "string", "description": "Name of the process to check status for" },
+                    "project": { "type": "string", "description": "Optional project name to scope the process lookup. Useful when multiple projects have processes with the same name." }
                 },
                 "required": ["name"]
             }),
@@ -695,20 +695,20 @@ struct GrepParams {
 impl ToolHandler for GrepTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
-            name: "grep".to_string(),
-            description: "Search process logs with pattern matching and context".to_string(),
+            name: "search_process_logs".to_string(),
+            description: "Search through process logs using regex patterns to find specific errors, events, or messages. Returns matching lines with surrounding context to help understand what happened. Perfect for debugging issues like 'find all error messages' or 'show when the server started'. Searches through the entire log history, not just recent entries.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "pattern": { "type": "string", "description": "Pattern to search for (regex supported)" },
-                    "name": { "type": "string", "description": "Process name" },
-                    "project": { "type": "string", "description": "Project name (optional, helps disambiguate)" },
-                    "context": { "type": "integer", "description": "Lines of context around matches (default: 3)" },
-                    "before": { "type": "integer", "description": "Lines of context before matches" },
-                    "after": { "type": "integer", "description": "Lines of context after matches" },
-                    "since": { "type": "string", "description": "Show logs since this time (e.g., \"2025-06-17 10:30\", \"10:30\")" },
-                    "until": { "type": "string", "description": "Show logs until this time (e.g., \"2025-06-17 12:00\", \"12:00\")" },
-                    "last": { "type": "string", "description": "Show logs from last duration (e.g., \"1h\", \"30m\", \"2d\")" }
+                    "pattern": { "type": "string", "description": "Regex pattern to search for. Examples: 'error', 'failed.*connection', 'started on port \\d+', '\\[ERROR\\]|\\[WARN\\]'" },
+                    "name": { "type": "string", "description": "Name of the process whose logs to search" },
+                    "project": { "type": "string", "description": "Optional project name to scope the process lookup. Useful when multiple projects have processes with the same name." },
+                    "context": { "type": "integer", "description": "Number of lines to show before and after each match for context. Default is 3. Set to 0 for matches only." },
+                    "before": { "type": "integer", "description": "Override context - number of lines to show before each match" },
+                    "after": { "type": "integer", "description": "Override context - number of lines to show after each match" },
+                    "since": { "type": "string", "description": "Only search logs after this time. Format: 'YYYY-MM-DD HH:MM' or just 'HH:MM' for today" },
+                    "until": { "type": "string", "description": "Only search logs before this time. Format: 'YYYY-MM-DD HH:MM' or just 'HH:MM' for today" },
+                    "last": { "type": "string", "description": "Only search recent logs. Examples: '1h' (last hour), '30m' (last 30 minutes), '2d' (last 2 days)" }
                 },
                 "required": ["pattern", "name"]
             }),

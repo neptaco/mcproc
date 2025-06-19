@@ -60,13 +60,13 @@ Configure your MCP client to use mcproc:
 
 Once configured, AI agents can use these tools:
 
-- `start`: Start a development server or background process
-- `stop`: Stop a running process
-- `restart`: Restart a process
-- `ps`: List all running processes
-- `logs`: Retrieve process logs
-- `grep`: Search through process logs with pattern matching
-- `status`: Get detailed process information
+- `start_process`: Start a development server or background process
+- `stop_process`: Stop a running process
+- `restart_process`: Restart a process
+- `list_processes`: List all running processes
+- `get_process_logs`: Retrieve process logs
+- `search_process_logs`: Search through process logs with pattern matching
+- `get_process_status`: Get detailed process information
 
 ### For Developers (CLI)
 
