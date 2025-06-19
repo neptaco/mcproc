@@ -20,6 +20,8 @@ tokio.workspace = true
 
 # gRPC
 tonic.workspace = true
+tower = { version = "0.5", features = ["util"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 
 # Process management
 dashmap.workspace = true
@@ -60,7 +62,8 @@ sqlx.workspace = true
 dirs.workspace = true
 
 # HTTP/WebSocket (for MCP server)
-warp.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
 tokio-tungstenite.workspace = true
 
 # JSON-RPC (for MCP)

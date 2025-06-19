@@ -5,11 +5,11 @@ use async_trait::async_trait;
 #[cfg(feature = "stdio")]
 pub mod stdio;
 
-#[cfg(feature = "http")]
-pub mod http;
-
-#[cfg(feature = "http")]
+#[cfg(feature = "sse")]
 pub mod sse;
+
+#[cfg(feature = "streamable-http")]
+pub mod streamable_http;
 
 /// Transport trait for MCP communication
 #[async_trait]

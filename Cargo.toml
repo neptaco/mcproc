@@ -22,8 +22,9 @@ prost = "0.13"
 prost-types = "0.13"
 tonic-build = "0.13"
 
-# HTTP/WebSocket
-warp = "0.3"
+# HTTP/WebSocket (only used by mcprocd, not mcp-rs)
+axum = { version = "0.8", features = ["ws", "json"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
 tokio-tungstenite = "0.26"
 
 # Process management

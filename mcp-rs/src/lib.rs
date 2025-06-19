@@ -1,7 +1,11 @@
 //! Model Context Protocol (MCP) implementation for Rust
 //! 
-//! This library provides a complete implementation of the Model Context Protocol,
-//! supporting both stdio and HTTP+SSE transports.
+//! This library provides a complete implementation of the Model Context Protocol.
+//! 
+//! ## Supported Transports
+//! - **stdio**: Standard input/output transport (implemented)
+//! - **sse**: Server-Sent Events transport (not yet implemented)
+//! - **streamable-http**: HTTP with Server-Sent Events (not yet implemented)
 
 pub mod error;
 pub mod protocol;
@@ -18,8 +22,8 @@ pub use types::*;
 #[cfg(feature = "stdio")]
 pub use transport::stdio::StdioTransport;
 
-#[cfg(feature = "http")]
-pub use transport::http::{HttpTransport, HttpTransportConfig};
+#[cfg(feature = "sse")]
+pub use transport::sse::SseTransport;
 
-#[cfg(feature = "http")]
-pub use transport::sse::{SseTransport, SseTransportConfig};
+#[cfg(feature = "streamable-http")]
+pub use transport::streamable_http::StreamableHttpTransport;

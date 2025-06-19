@@ -23,9 +23,8 @@ pub enum Error {
     #[error("Internal error: {0}")]
     Internal(String),
     
-    #[cfg(feature = "http")]
-    #[error("HTTP error: {0}")]
-    Http(String),
+    #[error("Not implemented: {0}")]
+    NotImplemented(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

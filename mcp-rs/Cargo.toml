@@ -23,11 +23,10 @@ anyhow = "1.0"
 # Async trait
 async-trait = "0.1"
 
-# HTTP/SSE support
-warp = { version = "0.3", optional = true }
-tokio-tungstenite = { version = "0.26", optional = true }
+# Future HTTP/SSE support
 futures-util = "0.3"
 bytes = "1.9"
+http = "1.2"
 
 # Logging
 tracing = "0.1"
@@ -36,10 +35,11 @@ tracing = "0.1"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 
 [features]
-default = ["http", "stdio"]
-http = ["dep:warp", "dep:tokio-tungstenite"]
+default = ["stdio"]
 stdio = []
-full = ["http", "stdio"]
+sse = []
+streamable-http = []
+full = ["stdio", "sse", "streamable-http"]
 
 [dev-dependencies]
 tokio-test = "0.4"

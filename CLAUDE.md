@@ -85,17 +85,15 @@ The intended structure follows a workspace layout:
 ### MCP Integration
 mcproc acts as an MCP server that receives JSON-RPC 2.0 requests from LLMs:
 
-#### Streamable HTTP Transport (Current Implementation)
-1. **Single Endpoint**: `POST /mcp` - All JSON-RPC messages go through this endpoint
-2. **SSE Support**: `GET /mcp` - For Server-Sent Events (planned)
-3. **Port**: 3434 (shared with health endpoint)
+The mcprocd daemon communicates with MCP clients using its own HTTP API on port 3434.
 
-#### SSE Transport (Alternative, available in mcp-rs library)
-1. **Messages Endpoint**: `POST /messages` - Client to server messages
-2. **Events Endpoint**: `GET /events` - Server to client SSE stream
-3. **Port**: 3435 (dedicated SSE server)
+#### MCP Transport Support in mcp-rs Library
+The mcp-rs library provides transport implementations for creating MCP servers:
+1. **stdio**: Standard input/output transport (implemented)
+2. **sse**: Server-Sent Events transport (not yet implemented)
+3. **streamable-http**: HTTP with Server-Sent Events (not yet implemented)
 
-Both transports follow the same JSON-RPC 2.0 message format and tool definitions.
+All transports follow the same JSON-RPC 2.0 message format and tool definitions.
 
 Example MCP interactions:
 
@@ -146,7 +144,7 @@ Example MCP interactions:
 This project includes a reusable MCP library that can be used to create MCP servers easily:
 
 ```rust
-use mcp_rs::{ServerBuilder, StdioTransport, HttpTransport};
+use mcp_rs::{ServerBuilder, StdioTransport};
 
 // Create server with stdio transport
 let mut server = ServerBuilder::new("my-server", "1.0.0")
@@ -154,12 +152,8 @@ let mut server = ServerBuilder::new("my-server", "1.0.0")
     .build(Box::new(StdioTransport::new()))
     .await?;
 
-// Or with HTTP transport
-let config = HttpTransportConfig::default();
-let mut server = ServerBuilder::new("my-server", "1.0.0")
-    .add_tool(Arc::new(MyTool))
-    .build(Box::new(HttpTransport::new(config)))
-    .await?;
+// SSE and Streamable HTTP transports are not yet implemented
+// When implemented, they will follow a similar pattern
 ```
 
 ## Current Status

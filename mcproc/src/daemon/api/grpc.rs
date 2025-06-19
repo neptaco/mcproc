@@ -587,41 +587,42 @@ pub async fn start_grpc_server(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = GrpcService::new(process_manager, log_hub);
     
-    // Try to find an available port, starting from the configured port
-    let mut port = config.api.grpc_port;
-    let mut addr = None;
-    
-    for attempt in 0..10 {
-        let test_addr: std::net::SocketAddr = format!("127.0.0.1:{}", port).parse()?;
-        
-        // Check if port is available
-        match std::net::TcpListener::bind(test_addr) {
-            Ok(listener) => {
-                drop(listener); // Release the port
-                addr = Some(test_addr);
-                break;
-            }
-            Err(_) => {
-                if attempt < 9 {
-                    port += 1;
-                    continue;
-                }
-            }
-        }
+    // Remove old socket file if it exists
+    if config.daemon.socket_path.exists() {
+        std::fs::remove_file(&config.daemon.socket_path)?;
     }
     
-    let addr = addr.ok_or("Could not find available port for gRPC server")?;
+    // Ensure parent directory exists
+    if let Some(parent) = config.daemon.socket_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     
-    // Write the actual port to a file
-    let port_file = config.daemon.data_dir.join("mcprocd.port");
-    std::fs::write(&port_file, port.to_string())?;
+    #[cfg(unix)]
+    {
+        use tokio::net::UnixListener;
+        use tokio_stream::wrappers::UnixListenerStream;
+        
+        // Create Unix socket
+        let uds = UnixListener::bind(&config.daemon.socket_path)?;
+        let uds_stream = UnixListenerStream::new(uds);
+        
+        // Set permissions
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = std::fs::Permissions::from_mode(config.api.unix_socket_permissions);
+        std::fs::set_permissions(&config.daemon.socket_path, permissions)?;
     
-    info!("Starting gRPC server on {}", addr);
+        info!("Starting gRPC server on Unix socket: {:?}", config.daemon.socket_path);
     
-    Server::builder()
-        .add_service(ProcessManagerServer::new(service))
-        .serve(addr)
-        .await?;
+        Server::builder()
+            .add_service(ProcessManagerServer::new(service))
+            .serve_with_incoming(uds_stream)
+            .await?;
+    }
+    
+    #[cfg(not(unix))]
+    {
+        return Err("Unix sockets are not supported on this platform".into());
+    }
     
     Ok(())
 }

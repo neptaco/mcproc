@@ -1,7 +1,8 @@
 use proto::process_manager_client::ProcessManagerClient;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Channel, Endpoint, Uri};
 use std::path::PathBuf;
 use std::time::Duration;
+use tower::service_fn;
 
 #[derive(Clone)]
 pub struct McpClient {
@@ -14,7 +15,7 @@ impl McpClient {
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join(".mcproc");
         
-        let _socket_path = socket_path.unwrap_or_else(|| {
+        let socket_path = socket_path.unwrap_or_else(|| {
             data_dir.join("mcprocd.sock")
         });
         
@@ -69,25 +70,39 @@ impl McpClient {
             }
         }
         
-        // Read the port from file
-        let port_file = data_dir.join("mcprocd.port");
-        let port = if port_file.exists() {
-            std::fs::read_to_string(&port_file)
-                .ok()
-                .and_then(|s| s.trim().parse::<u16>().ok())
-                .unwrap_or(50051)
-        } else {
-            50051
-        };
+        // Connect to Unix socket
+        #[cfg(unix)]
+        {
+            use tokio::net::UnixStream;
+            use hyper_util::rt::tokio::TokioIo;
+            
+            // Check if socket exists
+            if !socket_path.exists() {
+                return Err(format!("Unix socket not found at {:?}. Is mcprocd running?", socket_path).into());
+            }
+            
+            // Create a channel using Unix socket transport
+            // The URI here is ignored for Unix sockets, but required by the API
+            let channel = Endpoint::try_from("http://[::]:50051")?
+                .connect_timeout(Duration::from_secs(5))
+                .connect_with_connector(service_fn(move |_: Uri| {
+                    let socket_path = socket_path.clone();
+                    async move {
+                        let stream = UnixStream::connect(&socket_path).await?;
+                        Ok::<_, std::io::Error>(TokioIo::new(stream))
+                    }
+                }))
+                .await?;
+            
+            let client = ProcessManagerClient::new(channel);
+            
+            return Ok(Self { client });
+        }
         
-        let endpoint = Endpoint::from_shared(format!("http://127.0.0.1:{}", port))?
-            .timeout(Duration::from_secs(3600))  // 1 hour - sufficient for any wait_timeout value
-            .connect_timeout(Duration::from_secs(2));
-            
-        let client = ProcessManagerClient::connect(endpoint).await
-            .map_err(|e| format!("Failed to connect to mcprocd on port {}: {}", port, e))?;
-            
-        Ok(Self { client })
+        #[cfg(not(unix))]
+        {
+            return Err("Unix sockets are not supported on this platform".into());
+        }
     }
     
     
