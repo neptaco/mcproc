@@ -56,9 +56,20 @@ cargo install --path mcproc
 
 ## Usage
 
-### For MCP Clients (AI Agents)
+### Setup as MCP Server
 
-Configure your MCP client to use mcproc:
+After installing mcproc, you need to register it as an MCP server with your AI assistant.
+
+#### For Claude Code
+
+```bash
+# Register mcproc as an MCP server
+claude mcp add mcproc mcproc mcp serve
+```
+
+#### For Other MCP Clients
+
+Configure your MCP client by adding mcproc to your configuration:
 
 ```json
 {
@@ -71,7 +82,9 @@ Configure your MCP client to use mcproc:
 }
 ```
 
-Once configured, AI agents can use these tools:
+### Available MCP Tools
+
+Once registered, AI agents can use these tools:
 
 - `start_process`: Start a development server or background process
 - `stop_process`: Stop a running process
@@ -84,6 +97,31 @@ Once configured, AI agents can use these tools:
 ### For Developers (CLI)
 
 While AI agents manage processes in the background, you can monitor and control them:
+
+#### CLI Commands
+
+| Command | Description | Flags | Example |
+|---------|-------------|-------|---------|
+| 🗒️ `ps` | List all running processes | `-j, --json` Output in JSON format<br>`-p, --project <NAME>` Filter by project | `mcproc ps -p myapp` |
+| 🚀 `start **<NAME>**` | Start a new process | `-c, --cmd <CMD>` Command to run<br>`-d, --cwd <DIR>` Working directory<br>`-e, --env <KEY=VAL>` Environment variables<br>`-p, --project <NAME>` Project name<br>`-w, --wait-for <PATTERN>` Wait for log pattern<br>`-t, --timeout <SECS>` Wait timeout | `mcproc start web -c "npm run dev" -d ./app` |
+| 🛑 `stop **<NAME>**` | Stop a running process | `-p, --project <NAME>` Project name<br>`-f, --force` Force kill (SIGKILL) | `mcproc stop web -p myapp` |
+| 🔄 `restart **<NAME>**` | Restart a process | `-p, --project <NAME>` Project name | `mcproc restart web` |
+| 📜 `logs **<NAME>**` | View process logs | `-p, --project <NAME>` Project name<br>`-f, --follow` Follow log output<br>`-n, --lines <NUM>` Number of lines to show<br>`--since <TIME>` Show logs since time<br>`--until <TIME>` Show logs until time<br>`--last <DURATION>` Show logs from last duration | `mcproc logs web -f --last 5m` |
+| 🔍 `grep **<NAME>** **<PATTERN>**` | Search logs with regex | `-p, --project <NAME>` Project name<br>`-C, --context <NUM>` Context lines<br>`-i, --ignore-case` Case insensitive<br>`--since <TIME>` Search since time<br>`--until <TIME>` Search until time<br>`--last <DURATION>` Search last duration | `mcproc grep web "error" -C 3 -i` |
+| 🎛️ `daemon start` | Start mcproc daemon | None | `mcproc daemon start` |
+| 🎛️ `daemon stop` | Stop mcproc daemon | None | `mcproc daemon stop` |
+| 🎛️ `daemon status` | Check daemon status | None | `mcproc daemon status` |
+| 🔌 `mcp serve` | Run as MCP server | `--stdio` Use stdio transport (default)<br>`--project <NAME>` Set project context | `mcproc mcp serve --project myapp` |
+| ℹ️ `--version` | Show version info | None | `mcproc --version` |
+| ❓ `--help` | Show help message | None | `mcproc --help` |
+
+#### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `-r, --remote <ADDR>` | Remote mcprocd address (default: http://127.0.0.1:50051) |
+
+#### Examples
 
 ```bash
 # Start the daemon (if not already running)
