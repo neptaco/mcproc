@@ -115,11 +115,6 @@ While AI agents manage processes in the background, you can monitor and control 
 | ℹ️ `--version` | Show version info | None | `mcproc --version` |
 | ❓ `--help` | Show help message | None | `mcproc --help` |
 
-#### Global Flags
-
-| Flag | Description |
-|------|-------------|
-| `-r, --remote <ADDR>` | Remote mcprocd address (default: http://127.0.0.1:50051) |
 
 #### Examples
 

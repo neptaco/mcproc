@@ -90,10 +90,6 @@ impl McpClient {
         Ok(Self { client })
     }
     
-    pub async fn connect_remote(addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let client = ProcessManagerClient::connect(addr.to_string()).await?;
-        Ok(Self { client })
-    }
     
     pub fn inner(&mut self) -> &mut ProcessManagerClient<Channel> {
         &mut self.client

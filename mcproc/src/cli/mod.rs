@@ -9,10 +9,6 @@ use commands::*;
 #[command(name = "mcproc")]
 #[command(about = "CLI tool for managing development processes via mcprocd", long_about = None)]
 pub struct Cli {
-    /// Remote mcprocd address (default: local unix socket)
-    #[arg(short, long)]
-    remote: Option<String>,
-    
     /// Run as daemon
     #[arg(long, hide = true)]
     daemon: bool,
@@ -78,11 +74,7 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // Connect to mcprocd
-    let client = if let Some(remote) = cli.remote {
-        McpClient::connect_remote(&remote).await?
-    } else {
-        McpClient::connect(None).await?
-    };
+    let client = McpClient::connect(None).await?;
     
     // Execute command
     match command {
