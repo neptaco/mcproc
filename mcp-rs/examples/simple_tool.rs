@@ -1,7 +1,7 @@
 //! Example of creating a simple MCP tool
 
 use async_trait::async_trait;
-use mcp_rs::{Result, ServerBuilder, StdioTransport, ToolHandler, ToolInfo};
+use mcp_rs::{Result, ServerBuilder, StdioTransport, ToolContext, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -35,14 +35,14 @@ impl ToolHandler for CalculatorTool {
             }),
         }
     }
-    
-    async fn handle(&self, params: Option<Value>) -> Result<Value> {
-        let params = params
-            .ok_or_else(|| mcp_rs::Error::InvalidParams("Missing parameters".to_string()))?;
-        
+
+    async fn handle(&self, params: Option<Value>, _ctx: ToolContext) -> Result<Value> {
+        let params =
+            params.ok_or_else(|| mcp_rs::Error::InvalidParams("Missing parameters".to_string()))?;
+
         let params: CalculatorParams = serde_json::from_value(params)
             .map_err(|e| mcp_rs::Error::InvalidParams(e.to_string()))?;
-        
+
         let result = match params.operation.as_str() {
             "add" => params.a + params.b,
             "subtract" => params.a - params.b,
@@ -53,9 +53,13 @@ impl ToolHandler for CalculatorTool {
                 }
                 params.a / params.b
             }
-            _ => return Err(mcp_rs::Error::InvalidParams("Invalid operation".to_string())),
+            _ => {
+                return Err(mcp_rs::Error::InvalidParams(
+                    "Invalid operation".to_string(),
+                ))
+            }
         };
-        
+
         Ok(json!({ "result": result }))
     }
 }
@@ -64,17 +68,17 @@ impl ToolHandler for CalculatorTool {
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt::init();
-    
+
     // Create server with stdio transport
     let transport = Box::new(StdioTransport::new());
-    
+
     let mut server = ServerBuilder::new("calculator-mcp", "0.1.0")
         .add_tool(Arc::new(CalculatorTool))
         .build(transport)
         .await?;
-    
+
     // Start server
     server.start().await?;
-    
+
     Ok(())
 }
