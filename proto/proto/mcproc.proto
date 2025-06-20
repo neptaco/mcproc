@@ -120,6 +120,7 @@ message LogEntry {
     LOG_LEVEL_STDERR = 2;
   }
   LogLevel level = 4;
+  optional string process_name = 5;  // Process name (for multi-process logs)
 }
 
 message GetLogsResponse {

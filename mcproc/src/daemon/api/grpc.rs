@@ -86,6 +86,7 @@ impl ProcessManagerService for GrpcService {
                                     content,
                                     timestamp,
                                     level: level as i32,
+                                    process_name: None,
                                 })),
                             };
                         }
@@ -395,6 +396,7 @@ impl ProcessManagerService for GrpcService {
                     content,
                     timestamp,
                     level: level as i32,
+                    process_name: None,
                 });
                 
                 // Send batch of entries
@@ -442,6 +444,7 @@ impl ProcessManagerService for GrpcService {
                                     content,
                                     timestamp,
                                     level: level as i32,
+                                    process_name: None,
                                 }],
                             };
                         }
@@ -665,6 +668,7 @@ async fn grep_log_file(
             content,
             timestamp,
             level: level as i32,
+            process_name: None,
         });
     }
     
