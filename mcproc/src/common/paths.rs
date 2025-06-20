@@ -30,7 +30,7 @@ impl Default for McprocPaths {
         let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
-                let uid = nix::unistd::getuid();
+                let uid = unsafe { libc::getuid() };
                 PathBuf::from("/tmp").join(format!("mcproc-{}", uid))
             })
             .join("mcproc");
