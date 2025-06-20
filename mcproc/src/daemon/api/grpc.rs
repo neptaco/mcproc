@@ -3,22 +3,26 @@ use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
 use proto::process_manager_server::{ProcessManager as ProcessManagerService, ProcessManagerServer};
 use proto::*;
+use ringbuf::traits::Consumer;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{transport::Server, Request, Response, Status};
 use tokio_stream::Stream;
-use tracing::info;
+use tracing::{info, error};
+use uuid::Uuid;
 
 pub struct GrpcService {
     process_manager: Arc<ProcessManager>,
     log_hub: Arc<LogHub>,
+    config: Arc<Config>,
 }
 
 impl GrpcService {
-    pub fn new(process_manager: Arc<ProcessManager>, log_hub: Arc<LogHub>) -> Self {
+    pub fn new(process_manager: Arc<ProcessManager>, log_hub: Arc<LogHub>, config: Arc<Config>) -> Self {
         Self {
             process_manager,
             log_hub,
+            config,
         }
     }
 }
@@ -38,6 +42,9 @@ impl ProcessManagerService for GrpcService {
         let project = req.project.clone();
         let wait_for_log = req.wait_for_log.clone();
         let wait_timeout = req.wait_timeout;
+        let cmd_for_error = req.cmd.clone();  // Clone for use in error handling
+        let cwd_for_error = cwd.clone();  // Clone for use in error handling
+        let log_dir = self.config.log.dir.clone();  // Clone for use in async block
         
         // Create a channel for log streaming if wait_for_log is specified
         let (log_tx, log_rx) = if wait_for_log.is_some() {
@@ -84,12 +91,37 @@ impl ProcessManagerService for GrpcService {
                     }
                     
                     // Send final process info
+                    let current_status = process.get_status();
+                    let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
+                        // Get exit details if process failed
+                        let code = process.exit_code.lock().unwrap().clone();
+                        let reason = code.map(|c| match c {
+                            0 => "Process exited normally",
+                            1 => "General error",
+                            2 => "Misuse of shell builtin",
+                            126 => "Command cannot execute",
+                            127 => "Command not found",
+                            _ if c > 128 => "Terminated by signal",
+                            _ => "Unknown error",
+                        }.to_string());
+                        let stderr = process.ring.lock().ok().map(|ring| {
+                            ring.iter()
+                                .take(5)
+                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        }).unwrap_or_default();
+                        (code, reason, Some(stderr))
+                    } else {
+                        (None, None, None)
+                    };
+                    
                     let info = ProcessInfo {
                         id: process.id.to_string(),
                         name: process.name.clone(),
                         cmd: process.cmd.clone(),
                         cwd: process.cwd.to_string_lossy().to_string(),
-                        status: match process.get_status() {
+                        status: match current_status {
                             ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
                             ProcessStatus::Running => proto::ProcessStatus::Running as i32,
                             ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
@@ -105,6 +137,9 @@ impl ProcessManagerService for GrpcService {
                         project: process.project.clone(),
                         ports: process.ports.lock().unwrap().clone(),
                         wait_timeout_occurred: if wait_for_log.is_some() { Some(timeout_occurred) } else { None },
+                        exit_code,
+                        exit_reason,
+                        stderr_tail,
                     };
                     
                     yield StartProcessResponse {
@@ -112,15 +147,50 @@ impl ProcessManagerService for GrpcService {
                     };
                 }
                 Err(e) => {
-                    // For streaming, we can't return early, so yield error as final message
-                    let status = match e {
+                    // Return ProcessInfo with failed status instead of error
+                    match &e {
                         crate::daemon::error::McprocdError::ProcessAlreadyExists(name) => {
-                            Status::already_exists(format!("Process '{}' is already running", name))
+                            // For already exists, still return as error for backward compatibility
+                            let status = Status::already_exists(format!("Process '{}' is already running", name));
+                            Err(status)?;
                         }
-                        _ => Status::internal(e.to_string()),
+                        crate::daemon::error::McprocdError::ProcessFailedToStart { name, exit_code, exit_reason, stderr } => {
+                            error!("Process '{}' failed to start: {} (exit code: {})", name, exit_reason, exit_code);
+                            
+                            // Create a failed ProcessInfo
+                            let failed_info = ProcessInfo {
+                                id: Uuid::new_v4().to_string(),
+                                name: name.clone(),
+                                cmd: cmd_for_error.clone().unwrap_or_default(),
+                                cwd: cwd_for_error.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+                                status: proto::ProcessStatus::Failed as i32,
+                                start_time: Some(prost_types::Timestamp {
+                                    seconds: chrono::Utc::now().timestamp(),
+                                    nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                }),
+                                pid: None,
+                                log_file: log_dir.join(format!("{}_{}.log", 
+                                    project.as_ref().unwrap_or(&"default".to_string()).replace("/", "_"), 
+                                    name
+                                )).to_string_lossy().to_string(),
+                                project: project.clone().unwrap_or_default(),
+                                ports: vec![],
+                                wait_timeout_occurred: None,
+                                exit_code: Some(*exit_code),
+                                exit_reason: Some(exit_reason.clone()),
+                                stderr_tail: Some(stderr.clone()),
+                            };
+                            
+                            yield StartProcessResponse {
+                                response: Some(start_process_response::Response::Process(failed_info)),
+                            };
+                        }
+                        _ => {
+                            // Other errors still return as status errors
+                            let status = Status::internal(e.to_string());
+                            Err(status)?;
+                        }
                     };
-                    // Convert status to tonic::Status and propagate the error
-                    Err(status)?;
                 }
             }
         };
@@ -169,6 +239,9 @@ impl ProcessManagerService for GrpcService {
                     project: process.project.clone(),
                     ports: process.ports.lock().unwrap().clone(),
                     wait_timeout_occurred: None,
+                    exit_code: None,
+                    exit_reason: None,
+                    stderr_tail: None,
                 };
                 
                 Ok(Response::new(RestartProcessResponse {
@@ -208,6 +281,9 @@ impl ProcessManagerService for GrpcService {
                     project: process.project.clone(),
                     ports: process.ports.lock().unwrap().clone(),
                     wait_timeout_occurred: None,
+                    exit_code: None,
+                    exit_reason: None,
+                    stderr_tail: None,
                 };
                 
                 Ok(Response::new(GetProcessResponse {
@@ -252,6 +328,9 @@ impl ProcessManagerService for GrpcService {
                 project: process.project.clone(),
                 ports: process.ports.lock().unwrap().clone(),
                 wait_timeout_occurred: None,
+                exit_code: None,
+                exit_reason: None,
+                stderr_tail: None,
             }
         }).collect();
         
@@ -638,7 +717,7 @@ pub async fn start_grpc_server(
     process_manager: Arc<ProcessManager>,
     log_hub: Arc<LogHub>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service = GrpcService::new(process_manager, log_hub);
+    let service = GrpcService::new(process_manager, log_hub, config.clone());
     
     // Remove old socket file if it exists
     if config.daemon.socket_path.exists() {

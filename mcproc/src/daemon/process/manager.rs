@@ -5,7 +5,7 @@ use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use dashmap::DashMap;
 use regex::Regex;
-use ringbuf::traits::RingBuffer;
+use ringbuf::traits::{RingBuffer, Consumer};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -121,6 +121,12 @@ impl ProcessManager {
         } else {
             return Err(McprocdError::SpawnError("No command provided".to_string()));
         };
+        
+        // Set up process group for Unix systems
+        #[cfg(unix)]
+        {
+            command.process_group(0); // Create new process group
+        }
         
         command
             .current_dir(&cwd)
@@ -387,6 +393,14 @@ impl ProcessManager {
                 Ok(status) => {
                     info!("Process {} exited with status: {:?}", name_clone, status);
                     
+                    // Store exit code and time
+                    if let Ok(mut exit_code) = proxy_monitor.exit_code.lock() {
+                        *exit_code = status.code();
+                    }
+                    if let Ok(mut exit_time) = proxy_monitor.exit_time.lock() {
+                        *exit_time = Some(chrono::Utc::now());
+                    }
+                    
                     // Write exit information to log
                     let exit_info = format!(
                         "\n=== Process Exited ===\nName: {}\nExit Status: {:?}\nExit Time: {}\n===================\n",
@@ -481,7 +495,7 @@ impl ProcessManager {
             });
         }
         
-        // Wait for log pattern if specified
+        // Wait for log pattern if specified, or perform health check after 500ms
         if let Some((_, rx)) = log_ready_tx {
             let timeout_duration = tokio::time::Duration::from_secs(wait_timeout.unwrap_or(30) as u64);
             
@@ -503,6 +517,50 @@ impl ProcessManager {
                         if let Ok(mut guard) = tx_shared.lock() {
                             guard.take(); // Drop the sender to close the channel
                         }
+                    }
+                }
+            }
+        } else {
+            // No wait_for_log pattern, perform health check after 500ms
+            debug!("No wait_for_log pattern, will check health after 500ms for process {}", name);
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            
+            // Check if process is still running
+            let current_status = proxy_arc.get_status();
+            debug!("Health check for process {}: status = {:?}", name, current_status);
+            
+            if !matches!(current_status, ProcessStatus::Running) {
+                // Process has already exited
+                if let Ok(exit_code) = proxy_arc.exit_code.lock() {
+                    debug!("Process {} exited with code: {:?}", name, *exit_code);
+                    if let Some(code) = *exit_code {
+                        let exit_reason = match code {
+                            0 => "Process exited normally",
+                            1 => "General error",
+                            2 => "Misuse of shell builtin",
+                            126 => "Command cannot execute",
+                            127 => "Command not found",
+                            _ if code > 128 => &format!("Terminated by signal {}", code - 128),
+                            _ => "Unknown error",
+                        };
+                        
+                        // Get recent logs for error context
+                        let recent_logs = if let Ok(ring) = proxy_arc.ring.lock() {
+                            ring.iter()
+                                .take(5)
+                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            String::new()
+                        };
+                        
+                        return Err(McprocdError::ProcessFailedToStart {
+                            name: name.clone(),
+                            exit_code: code,
+                            exit_reason: exit_reason.to_string(),
+                            stderr: recent_logs,
+                        });
                     }
                 }
             }
@@ -532,22 +590,50 @@ impl ProcessManager {
             use nix::unistd::Pid;
             
             let signal = if force { Signal::SIGKILL } else { Signal::SIGTERM };
+            let process_pid = Pid::from_raw(pid as i32);
             
-            match signal::kill(Pid::from_raw(pid as i32), signal) {
-                Ok(()) => {
-                    info!("Sent {} to process {} (PID {})", signal, process.name, pid);
-                    // Remove from processes map after sending signal
-                    if force {
-                        let process_key = format!("{}/{}", process.project, process.name);
-                        self.processes.remove(&process_key);
+            // Try to kill the entire process group
+            #[cfg(unix)]
+            {
+                // Get the process group ID (usually same as PID for group leaders)
+                match nix::unistd::getpgid(Some(process_pid)) {
+                    Ok(pgid) => {
+                        // Kill the entire process group
+                        match signal::kill(Pid::from_raw(-pgid.as_raw()), signal) {
+                            Ok(()) => {
+                                info!("Sent {} to process group {} for process {}", signal, pgid, process.name);
+                            }
+                            Err(e) => {
+                                warn!("Failed to kill process group {}: {}, falling back to single process", pgid, e);
+                                // Fall back to killing just the process
+                                signal::kill(process_pid, signal)
+                                    .map_err(|e| McprocdError::StopError(format!("Failed to stop process: {}", e)))?;
+                            }
+                        }
                     }
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to send signal to process {}: {}", process.name, e);
-                    Err(McprocdError::StopError(format!("Failed to stop process: {}", e)))
+                    Err(e) => {
+                        warn!("Failed to get process group for PID {}: {}, killing single process", pid, e);
+                        // Fall back to killing just the process
+                        signal::kill(process_pid, signal)
+                            .map_err(|e| McprocdError::StopError(format!("Failed to stop process: {}", e)))?;
+                    }
                 }
             }
+            
+            #[cfg(not(unix))]
+            {
+                // On non-Unix systems, just kill the single process
+                signal::kill(process_pid, signal)
+                    .map_err(|e| McprocdError::StopError(format!("Failed to stop process: {}", e)))?;
+            }
+            
+            info!("Sent {} to process {} (PID {})", signal, process.name, pid);
+            // Remove from processes map after sending signal
+            if force {
+                let process_key = format!("{}/{}", process.project, process.name);
+                self.processes.remove(&process_key);
+            }
+            Ok(())
         } else {
             Err(McprocdError::StopError("Process has no PID".to_string()))
         }

@@ -163,3 +163,13 @@ Basic implementation complete. Remaining tasks:
 - Log streaming functionality
 - Process state persistence with SQLite
 - Integration tests
+
+## Critical Development Rules
+
+### No Hardcoded Paths
+- **NEVER hardcode absolute paths, especially user home directories**
+  - ❌ Bad: `/Users/username/.mcproc/log/`
+  - ✅ Good: `config.log.dir.join("filename.log")`
+- Always retrieve paths dynamically from configuration
+- Use cross-platform APIs like `dirs::home_dir()`
+- This applies to both code AND documentation - never expose user information

@@ -95,7 +95,32 @@ impl StartCommand {
                     }
                 }
                 
-                let process = process_info.expect("No process info received");
+                let process = match process_info {
+                    Some(p) => p,
+                    None => {
+                        println!("{} Failed to start process", "✗".red());
+                        return Err("No process info received - process may have failed to start".into());
+                    }
+                };
+                
+                // Check if process failed to start
+                if process.status == proto::ProcessStatus::Failed as i32 {
+                    println!("{} Process '{}' failed to start", "✗".red(), process.name);
+                    if let (Some(exit_code), Some(exit_reason)) = (process.exit_code, process.exit_reason) {
+                        println!("  Exit code: {}", exit_code);
+                        println!("  Reason: {}", exit_reason);
+                    }
+                    if let Some(stderr) = process.stderr_tail {
+                        if !stderr.is_empty() {
+                            println!("  Recent logs:");
+                            for line in stderr.lines() {
+                                println!("    {}", line.dimmed());
+                            }
+                        }
+                    }
+                    return Err(format!("Process failed with exit code: {}", 
+                        process.exit_code.unwrap_or(-1)).into());
+                }
                 
                 println!("{} Process started successfully", "✓".green());
                 println!("  Project: {}", project.bright_white());
@@ -114,6 +139,9 @@ impl StartCommand {
                     println!("{} Process '{}' is already running", "!".yellow(), self.name);
                     println!("  Use 'mcproc ps' to see the running process");
                     println!("  Use 'mcproc restart {}' to restart it", self.name);
+                } else if e.code() == tonic::Code::FailedPrecondition {
+                    // Process failed to start - show detailed error
+                    println!("{} {}", "✗".red(), e.message());
                 } else {
                     println!("{} Failed to start process: {}", "✗".red(), e.message());
                 }

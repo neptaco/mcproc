@@ -27,6 +27,9 @@ message ProcessInfo {
   string project = 9;
   repeated uint32 ports = 10;  // Listening ports
   optional bool wait_timeout_occurred = 11;  // True if wait_for_log timed out
+  optional int32 exit_code = 12;  // Exit code if process failed
+  optional string exit_reason = 13;  // Human-readable exit reason
+  optional string stderr_tail = 14;  // Last few lines of stderr for debugging
 }
 
 // Request messages

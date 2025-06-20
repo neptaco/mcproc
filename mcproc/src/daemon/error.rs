@@ -29,6 +29,14 @@ pub enum McprocdError {
     
     #[error("Log error: {0}")]
     LogError(String),
+    
+    #[error("Process failed to start: {name} (exit code: {exit_code}, reason: {exit_reason})")]
+    ProcessFailedToStart {
+        name: String,
+        exit_code: i32,
+        exit_reason: String,
+        stderr: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, McprocdError>;

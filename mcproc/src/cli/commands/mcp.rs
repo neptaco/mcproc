@@ -271,6 +271,19 @@ impl ToolHandler for StartTool {
                     "ports": process.ports,
                 });
                 
+                // Add exit information if process failed
+                if process.status == proto::ProcessStatus::Failed as i32 {
+                    if let Some(exit_code) = process.exit_code {
+                        response["exit_code"] = json!(exit_code);
+                    }
+                    if let Some(exit_reason) = process.exit_reason {
+                        response["exit_reason"] = json!(exit_reason);
+                    }
+                    if let Some(stderr_tail) = process.stderr_tail {
+                        response["stderr_tail"] = json!(stderr_tail);
+                    }
+                }
+                
                 // Add timeout information if available
                 if let Some(timeout_occurred) = process.wait_timeout_occurred {
                     if timeout_occurred {

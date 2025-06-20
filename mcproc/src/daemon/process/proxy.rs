@@ -43,6 +43,8 @@ pub struct ProxyInfo {
     pub ports: Arc<Mutex<Vec<u32>>>,
     #[allow(dead_code)]
     pub child_handle: Option<tokio::process::Child>,
+    pub exit_code: Arc<Mutex<Option<i32>>>,
+    pub exit_time: Arc<Mutex<Option<DateTime<Utc>>>>,
 }
 
 impl ProxyInfo {
@@ -60,6 +62,8 @@ impl ProxyInfo {
             pid: None,
             ports: Arc::new(Mutex::new(Vec::new())),
             child_handle: None,
+            exit_code: Arc::new(Mutex::new(None)),
+            exit_time: Arc::new(Mutex::new(None)),
         }
     }
     
