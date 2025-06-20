@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name_optional;
 use clap::Args;
 use colored::*;
@@ -15,7 +15,7 @@ pub struct RestartCommand {
 }
 
 impl RestartCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = RestartProcessRequest {
             name: self.name.clone(),
             project: resolve_project_name_optional(self.project),

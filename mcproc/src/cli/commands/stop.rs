@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name_optional;
 use clap::Args;
 use colored::*;
@@ -19,7 +19,7 @@ pub struct StopCommand {
 }
 
 impl StopCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = StopProcessRequest {
             name: self.name.clone(),
             force: Some(self.force),

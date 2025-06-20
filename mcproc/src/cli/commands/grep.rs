@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name_optional;
 use chrono;
 use clap::Args;
@@ -43,7 +43,7 @@ pub struct GrepCommand {
 }
 
 impl GrepCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         // Determine project name if not provided
         let project = resolve_project_name_optional(self.project);
         

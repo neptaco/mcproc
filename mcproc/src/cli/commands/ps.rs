@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use clap::Args;
 use proto::ListProcessesRequest;
@@ -33,7 +33,7 @@ struct ProcessRow {
 }
 
 impl PsCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = ListProcessesRequest {
             status_filter: None, // TODO: Parse status filter
             project_filter: None,

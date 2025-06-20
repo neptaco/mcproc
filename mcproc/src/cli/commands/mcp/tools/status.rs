@@ -1,6 +1,6 @@
 //! Status tool implementation
 
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
 use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
@@ -9,12 +9,12 @@ use serde::Deserialize;
 use tokio_stream::StreamExt;
 
 pub struct StatusTool {
-    client: McpClient,
+    client: DaemonClient,
     default_project: Option<String>,
 }
 
 impl StatusTool {
-    pub fn new(client: McpClient, default_project: Option<String>) -> Self {
+    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
         Self { client, default_project }
     }
 }

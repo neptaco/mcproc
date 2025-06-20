@@ -1,18 +1,18 @@
 //! Grep tool implementation
 
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use async_trait::async_trait;
 use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
 use serde_json::{json, Value};
 use serde::Deserialize;
 
 pub struct GrepTool {
-    client: McpClient,
+    client: DaemonClient,
     default_project: Option<String>,
 }
 
 impl GrepTool {
-    pub fn new(client: McpClient, default_project: Option<String>) -> Self {
+    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
         Self { client, default_project }
     }
 }

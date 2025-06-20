@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name_optional;
 use chrono;
 use clap::Args;
@@ -25,7 +25,7 @@ pub struct LogsCommand {
 }
 
 impl LogsCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         // Determine project name if not provided (use current working directory where mcproc is run)
         let project = resolve_project_name_optional(self.project);
         

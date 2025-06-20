@@ -2,7 +2,7 @@
 
 pub mod tools;
 
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ enum McpSubcommands {
 }
 
 impl McpCommand {
-    pub async fn execute(self, client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         match self.command {
             McpSubcommands::Serve => {
                 println!("Starting MCP server on stdio...");
@@ -29,7 +29,7 @@ impl McpCommand {
     }
 }
 
-async fn serve_mcp(client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
     use mcp_rs::{ServerBuilder, StdioTransport};
     use tools::{StartTool, StopTool, RestartTool, PsTool, LogsTool, StatusTool, GrepTool};
 

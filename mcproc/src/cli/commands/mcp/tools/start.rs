@@ -1,6 +1,6 @@
 //! Start process tool implementation
 
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
 use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
@@ -10,12 +10,12 @@ use tonic::Request;
 use std::time::Duration;
 
 pub struct StartTool {
-    client: McpClient,
+    client: DaemonClient,
     default_project: Option<String>,
 }
 
 impl StartTool {
-    pub fn new(client: McpClient) -> Self {
+    pub fn new(client: DaemonClient) -> Self {
         Self { 
             client,
             default_project: None,
@@ -23,7 +23,7 @@ impl StartTool {
     }
     
     #[allow(dead_code)]
-    pub fn with_project(client: McpClient, default_project: Option<String>) -> Self {
+    pub fn with_project(client: DaemonClient, default_project: Option<String>) -> Self {
         Self { client, default_project }
     }
 }

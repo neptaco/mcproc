@@ -1,17 +1,17 @@
 //! Process list tool implementation
 
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
 use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
 use serde_json::{json, Value};
 
 pub struct PsTool {
-    client: McpClient,
+    client: DaemonClient,
 }
 
 impl PsTool {
-    pub fn new(client: McpClient) -> Self {
+    pub fn new(client: DaemonClient) -> Self {
         Self { client }
     }
 }

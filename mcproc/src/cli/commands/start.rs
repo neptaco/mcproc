@@ -1,4 +1,4 @@
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name;
 use crate::common::status::format_status_colored;
 use clap::Args;
@@ -42,7 +42,7 @@ pub struct StartCommand {
 }
 
 impl StartCommand {
-    pub async fn execute(self, mut client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let mut env_map = std::collections::HashMap::new();
         
         for env_str in self.env {

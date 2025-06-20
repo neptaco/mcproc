@@ -6,11 +6,11 @@ use tower::service_fn;
 use crate::common::paths::McprocPaths;
 
 #[derive(Clone)]
-pub struct McpClient {
+pub struct DaemonClient {
     client: ProcessManagerClient<Channel>,
 }
 
-impl McpClient {
+impl DaemonClient {
     pub async fn connect(socket_path: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
         let paths = McprocPaths::new();
         

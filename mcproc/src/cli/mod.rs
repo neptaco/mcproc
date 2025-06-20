@@ -2,7 +2,7 @@ pub mod commands;
 pub mod utils;
 
 use clap::{Parser, Subcommand};
-use crate::client::McpClient;
+use crate::client::DaemonClient;
 use crate::common::paths::McprocPaths;
 use commands::*;
 
@@ -75,7 +75,7 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     }
     
     // Connect to mcprocd
-    let client = McpClient::connect(None).await?;
+    let client = DaemonClient::connect(None).await?;
     
     // Execute command
     match command {
