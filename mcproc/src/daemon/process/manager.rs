@@ -1,3 +1,4 @@
+use crate::common::exit_code::format_exit_reason;
 use crate::daemon::config::Config;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
@@ -534,15 +535,7 @@ impl ProcessManager {
                 if let Ok(exit_code) = proxy_arc.exit_code.lock() {
                     debug!("Process {} exited with code: {:?}", name, *exit_code);
                     if let Some(code) = *exit_code {
-                        let exit_reason = match code {
-                            0 => "Process exited normally",
-                            1 => "General error",
-                            2 => "Misuse of shell builtin",
-                            126 => "Command cannot execute",
-                            127 => "Command not found",
-                            _ if code > 128 => &format!("Terminated by signal {}", code - 128),
-                            _ => "Unknown error",
-                        };
+                        let exit_reason = format_exit_reason(code);
                         
                         // Get recent logs for error context
                         let recent_logs = if let Ok(ring) = proxy_arc.ring.lock() {
@@ -558,7 +551,7 @@ impl ProcessManager {
                         return Err(McprocdError::ProcessFailedToStart {
                             name: name.clone(),
                             exit_code: code,
-                            exit_reason: exit_reason.to_string(),
+                            exit_reason,
                             stderr: recent_logs,
                         });
                     }

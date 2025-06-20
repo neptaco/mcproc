@@ -29,6 +29,19 @@ impl From<u8> for ProcessStatus {
     }
 }
 
+impl From<ProcessStatus> for proto::ProcessStatus {
+    fn from(status: ProcessStatus) -> Self {
+        // Safe because the numeric values are identical
+        match status {
+            ProcessStatus::Starting => proto::ProcessStatus::Starting,
+            ProcessStatus::Running => proto::ProcessStatus::Running,
+            ProcessStatus::Stopping => proto::ProcessStatus::Stopping,
+            ProcessStatus::Stopped => proto::ProcessStatus::Stopped,
+            ProcessStatus::Failed => proto::ProcessStatus::Failed,
+        }
+    }
+}
+
 pub struct ProxyInfo {
     pub id: Uuid,
     pub name: String,

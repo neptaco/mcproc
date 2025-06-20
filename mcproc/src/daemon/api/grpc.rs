@@ -1,3 +1,4 @@
+use crate::common::exit_code::format_exit_reason;
 use crate::daemon::config::Config;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
@@ -95,15 +96,7 @@ impl ProcessManagerService for GrpcService {
                     let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
                         // Get exit details if process failed
                         let code = process.exit_code.lock().unwrap().clone();
-                        let reason = code.map(|c| match c {
-                            0 => "Process exited normally",
-                            1 => "General error",
-                            2 => "Misuse of shell builtin",
-                            126 => "Command cannot execute",
-                            127 => "Command not found",
-                            _ if c > 128 => "Terminated by signal",
-                            _ => "Unknown error",
-                        }.to_string());
+                        let reason = code.map(format_exit_reason);
                         let stderr = process.ring.lock().ok().map(|ring| {
                             ring.iter()
                                 .take(5)
@@ -121,13 +114,7 @@ impl ProcessManagerService for GrpcService {
                         name: process.name.clone(),
                         cmd: process.cmd.clone(),
                         cwd: process.cwd.to_string_lossy().to_string(),
-                        status: match current_status {
-                            ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
-                            ProcessStatus::Running => proto::ProcessStatus::Running as i32,
-                            ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
-                            ProcessStatus::Stopped => proto::ProcessStatus::Stopped as i32,
-                            ProcessStatus::Failed => proto::ProcessStatus::Failed as i32,
-                        },
+                        status: proto::ProcessStatus::from(current_status).into(),
                         start_time: Some(prost_types::Timestamp {
                             seconds: process.start_time.timestamp(),
                             nanos: process.start_time.timestamp_subsec_nanos() as i32,

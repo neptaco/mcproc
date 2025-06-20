@@ -3,6 +3,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use std::path::PathBuf;
 use std::time::Duration;
 use tower::service_fn;
+use crate::common::paths::McprocPaths;
 
 #[derive(Clone)]
 pub struct McpClient {
@@ -11,17 +12,12 @@ pub struct McpClient {
 
 impl McpClient {
     pub async fn connect(socket_path: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".mcproc");
+        let paths = McprocPaths::new();
         
-        let socket_path = socket_path.unwrap_or_else(|| {
-            data_dir.join("mcprocd.sock")
-        });
+        let socket_path = socket_path.unwrap_or(paths.socket_path.clone());
         
         // Check if daemon is running by checking PID file
-        let pid_file = data_dir.join("mcprocd.pid");
-        let daemon_running = if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+        let daemon_running = if let Ok(pid_str) = std::fs::read_to_string(&paths.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
                 // Check if process is actually running
                 nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()

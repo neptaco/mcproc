@@ -1,5 +1,6 @@
 use crate::client::McpClient;
 use crate::cli::utils::resolve_project_name;
+use crate::common::status::format_status_colored;
 use clap::Args;
 use colored::*;
 use proto::StartProcessRequest;
@@ -127,7 +128,7 @@ impl StartCommand {
                 println!("  Name: {}", process.name.bright_white());
                 println!("  ID: {}", process.id);
                 println!("  PID: {}", process.pid.map(|p| p.to_string()).unwrap_or_else(|| "N/A".to_string()));
-                println!("  Status: {}", format_status(process.status));
+                println!("  Status: {}", format_status_colored(process.status));
                 println!("  Log file: {}", process.log_file.dimmed());
                 
                 if self.wait_for_log.is_some() {
@@ -153,13 +154,3 @@ impl StartCommand {
     }
 }
 
-fn format_status(status: i32) -> ColoredString {
-    match status {
-        1 => "Starting".yellow(),
-        2 => "Running".green(),
-        3 => "Stopping".yellow(),
-        4 => "Stopped".red(),
-        5 => "Failed".red().bold(),
-        _ => "Unknown".white(),
-    }
-}

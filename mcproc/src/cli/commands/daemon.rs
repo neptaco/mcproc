@@ -1,8 +1,8 @@
 //! Daemon management commands
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
 use std::time::Duration;
+use crate::common::paths::McprocPaths;
 
 #[derive(Parser)]
 pub struct DaemonCommand {
@@ -27,17 +27,13 @@ enum DaemonSubcommands {
 
 impl DaemonCommand {
     pub async fn execute(self) -> Result<(), Box<dyn std::error::Error>> {
-        let data_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".mcproc");
-            
-        let pid_file = data_dir.join("mcprocd.pid");
-        let port_file = data_dir.join("mcprocd.port");
+        let paths = McprocPaths::new();
+        paths.ensure_directories()?;
         
         match self.command {
             DaemonSubcommands::Start => {
                 // Check if already running
-                if is_daemon_running(&pid_file) {
+                if is_daemon_running(&paths.pid_file) {
                     println!("mcprocd daemon is already running");
                     return Ok(());
                 }
@@ -48,12 +44,12 @@ impl DaemonCommand {
             }
             
             DaemonSubcommands::Stop => {
-                if !is_daemon_running(&pid_file) {
+                if !is_daemon_running(&paths.pid_file) {
                     println!("mcprocd daemon is not running");
                     return Ok(());
                 }
                 
-                let pid = std::fs::read_to_string(&pid_file)?
+                let pid = std::fs::read_to_string(&paths.pid_file)?
                     .trim()
                     .parse::<i32>()?;
                 
@@ -66,7 +62,7 @@ impl DaemonCommand {
                 // Wait for daemon to stop
                 for _ in 0..10 {
                     tokio::time::sleep(Duration::from_millis(100)).await;
-                    if !is_daemon_running(&pid_file) {
+                    if !is_daemon_running(&paths.pid_file) {
                         println!("Stopped mcprocd daemon");
                         return Ok(());
                     }
@@ -79,8 +75,7 @@ impl DaemonCommand {
                 )?;
                 
                 // Clean up files
-                let _ = std::fs::remove_file(&pid_file);
-                let _ = std::fs::remove_file(&port_file);
+                let _ = std::fs::remove_file(&paths.pid_file);
                 
                 println!("Forcefully stopped mcprocd daemon");
                 Ok(())
@@ -88,10 +83,10 @@ impl DaemonCommand {
             
             DaemonSubcommands::Restart => {
                 // Stop if running
-                if is_daemon_running(&pid_file) {
+                if is_daemon_running(&paths.pid_file) {
                     println!("Stopping mcprocd daemon...");
                     
-                    let pid = std::fs::read_to_string(&pid_file)?
+                    let pid = std::fs::read_to_string(&paths.pid_file)?
                         .trim()
                         .parse::<i32>()?;
                     
@@ -103,7 +98,7 @@ impl DaemonCommand {
                     // Wait for stop
                     for _ in 0..10 {
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        if !is_daemon_running(&pid_file) {
+                        if !is_daemon_running(&paths.pid_file) {
                             break;
                         }
                     }
@@ -116,37 +111,25 @@ impl DaemonCommand {
             }
             
             DaemonSubcommands::Status => {
-                if !pid_file.exists() {
+                if !paths.pid_file.exists() {
                     println!("mcprocd daemon is not running (no PID file)");
                     return Ok(());
                 }
                 
-                if !is_daemon_running(&pid_file) {
+                if !is_daemon_running(&paths.pid_file) {
                     println!("mcprocd daemon is not running (stale PID file)");
                     // Clean up stale PID file
-                    let _ = std::fs::remove_file(&pid_file);
+                    let _ = std::fs::remove_file(&paths.pid_file);
                     return Ok(());
                 }
                 
-                let pid = std::fs::read_to_string(&pid_file)?
+                let pid = std::fs::read_to_string(&paths.pid_file)?
                     .trim()
                     .parse::<i32>()?;
-                    
-                let port = if port_file.exists() {
-                    std::fs::read_to_string(&port_file)
-                        .ok()
-                        .and_then(|s| s.trim().parse::<u16>().ok())
-                        .unwrap_or(0)
-                } else {
-                    0
-                };
                 
                 println!("mcprocd daemon is running");
                 println!("  PID:  {}", pid);
-                if port > 0 {
-                    println!("  Port: {}", port);
-                }
-                println!("  Data: {}", data_dir.display());
+                println!("  Data: {}", paths.data_dir.display());
                 
                 Ok(())
             }
@@ -154,7 +137,7 @@ impl DaemonCommand {
     }
 }
 
-fn is_daemon_running(pid_file: &PathBuf) -> bool {
+fn is_daemon_running(pid_file: &std::path::Path) -> bool {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             // Check if process is actually running
@@ -169,20 +152,18 @@ fn is_daemon_running(pid_file: &PathBuf) -> bool {
 
 fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let mcproc_path = std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("mcproc"));
+        .unwrap_or_else(|_| std::path::PathBuf::from("mcproc"));
     
     println!("Starting mcprocd daemon...");
     
-    // Create log file for daemon output
-    let data_dir = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".mcproc");
-    std::fs::create_dir_all(&data_dir)?;
+    // Get paths and create directories
+    let paths = McprocPaths::new();
+    paths.ensure_directories()?;
     
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(data_dir.join("mcprocd.log"))?;
+        .open(&paths.daemon_log_file)?;
     
     let mut cmd = std::process::Command::new(&mcproc_path);
     cmd.arg("--daemon")
@@ -208,11 +189,9 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
             println!("Spawned mcprocd with PID: {}", child.id());
             
             // Wait for daemon to start and create PID file
-            let pid_file = data_dir.join("mcprocd.pid");
-            
             for i in 0..20 {  // Wait up to 2 seconds
                 std::thread::sleep(Duration::from_millis(100));
-                if pid_file.exists() {
+                if paths.pid_file.exists() {
                     println!("Daemon started successfully");
                     return Ok(());
                 }

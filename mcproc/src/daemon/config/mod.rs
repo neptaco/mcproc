@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::common::paths::McprocPaths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -39,17 +40,16 @@ pub struct ProcessConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let data_dir = home.join(".mcproc");
+        let paths = McprocPaths::new();
         
         Self {
             daemon: DaemonConfig {
-                data_dir: data_dir.clone(),
-                pid_file: data_dir.join("mcprocd.pid"),
-                socket_path: data_dir.join("mcprocd.sock"),
+                data_dir: paths.data_dir.clone(),
+                pid_file: paths.pid_file,
+                socket_path: paths.socket_path,
             },
             log: LogConfig {
-                dir: data_dir.join("log"),
+                dir: paths.log_dir,
                 max_size_mb: 100,
                 max_files: 10,
                 ring_buffer_size: 10000,

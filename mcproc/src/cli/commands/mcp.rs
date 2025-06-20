@@ -1,6 +1,7 @@
 //! MCP server command implementation
 
 use crate::client::McpClient;
+use crate::common::status::format_status;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use tokio_stream::StreamExt;
@@ -64,17 +65,6 @@ use serde::Deserialize;
 use tonic::Request;
 use std::time::Duration;
 
-// Helper function to convert status code to string
-fn format_status(status: i32) -> &'static str {
-    match status {
-        1 => "starting",
-        2 => "running",
-        3 => "stopping",
-        4 => "stopped",
-        5 => "failed",
-        _ => "unknown",
-    }
-}
 
 // Start tool
 struct StartTool {

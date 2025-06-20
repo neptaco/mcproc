@@ -3,6 +3,7 @@ pub mod utils;
 
 use clap::{Parser, Subcommand};
 use crate::client::McpClient;
+use crate::common::paths::McprocPaths;
 use commands::*;
 
 #[derive(Parser)]
@@ -85,9 +86,8 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Logs(cmd) => cmd.execute(client).await?,
         Commands::Grep(cmd) => cmd.execute(client).await?,
         Commands::Logfile { name } => {
-            // For now, just print expected path (without project info)
-            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-            let log_path = home.join(".mcproc").join("log").join(format!("{}.log", name));
+            let paths = McprocPaths::new();
+            let log_path = paths.process_log_file(&name);
             println!("{}", log_path.display());
         }
         Commands::Mcp(cmd) => cmd.execute(client).await?,

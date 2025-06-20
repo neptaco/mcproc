@@ -1,4 +1,5 @@
 use crate::client::McpClient;
+use crate::common::status::format_status;
 use clap::Args;
 use proto::ListProcessesRequest;
 use tabled::{Table, Tabled};
@@ -51,7 +52,7 @@ impl PsCommand {
                 project: p.project,
                 name: p.name,
                 pid: p.pid.map(|pid| pid.to_string()).unwrap_or_else(|| "-".to_string()),
-                status: format_status_plain(p.status),
+                status: format_status(p.status),
                 ports: format_ports(&p.ports),
                 cmd: truncate(&p.cmd, 40),
             }
@@ -64,16 +65,6 @@ impl PsCommand {
     }
 }
 
-fn format_status_plain(status: i32) -> String {
-    match status {
-        1 => "Starting",
-        2 => "Running",
-        3 => "Stopping",
-        4 => "Stopped",
-        5 => "Failed",
-        _ => "Unknown",
-    }.to_string()
-}
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {

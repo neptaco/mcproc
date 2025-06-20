@@ -1,6 +1,7 @@
 mod daemon;
 mod cli;
 mod client;
+mod common;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
