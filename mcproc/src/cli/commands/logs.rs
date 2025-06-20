@@ -136,7 +136,7 @@ fn print_log_entry(entry: &proto::LogEntry) {
             let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
                 .unwrap_or_else(chrono::Utc::now);
             let local_dt: chrono::DateTime<chrono::Local> = dt.into();
-            local_dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            local_dt.format("%H:%M:%S").to_string()
         })
         .unwrap_or_default();
     
@@ -163,7 +163,7 @@ fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: us
             let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
                 .unwrap_or_else(chrono::Utc::now);
             let local_dt: chrono::DateTime<chrono::Local> = dt.into();
-            local_dt.format("%Y-%m-%d %H:%M:%S").to_string()
+            local_dt.format("%H:%M:%S").to_string()
         })
         .unwrap_or_default();
     
