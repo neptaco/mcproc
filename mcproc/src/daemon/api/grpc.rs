@@ -2,14 +2,16 @@ use crate::common::exit_code::format_exit_reason;
 use crate::daemon::config::Config;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
-use proto::process_manager_server::{ProcessManager as ProcessManagerService, ProcessManagerServer};
+use proto::process_manager_server::{
+    ProcessManager as ProcessManagerService, ProcessManagerServer,
+};
 use proto::*;
 use ringbuf::traits::Consumer;
 use std::pin::Pin;
 use std::sync::Arc;
-use tonic::{transport::Server, Request, Response, Status};
 use tokio_stream::Stream;
-use tracing::{info, error};
+use tonic::{transport::Server, Request, Response, Status};
+use tracing::{error, info};
 use uuid::Uuid;
 
 pub struct GrpcService {
@@ -19,7 +21,11 @@ pub struct GrpcService {
 }
 
 impl GrpcService {
-    pub fn new(process_manager: Arc<ProcessManager>, log_hub: Arc<LogHub>, config: Arc<Config>) -> Self {
+    pub fn new(
+        process_manager: Arc<ProcessManager>,
+        log_hub: Arc<LogHub>,
+        config: Arc<Config>,
+    ) -> Self {
         Self {
             process_manager,
             log_hub,
@@ -30,23 +36,24 @@ impl GrpcService {
 
 #[tonic::async_trait]
 impl ProcessManagerService for GrpcService {
-    type StartProcessStream = Pin<Box<dyn Stream<Item = Result<StartProcessResponse, Status>> + Send>>;
-    
+    type StartProcessStream =
+        Pin<Box<dyn Stream<Item = Result<StartProcessResponse, Status>> + Send>>;
+
     async fn start_process(
         &self,
         request: Request<StartProcessRequest>,
     ) -> Result<Response<Self::StartProcessStream>, Status> {
         let req = request.into_inner();
         let cwd = req.cwd.map(std::path::PathBuf::from);
-        
+
         let name = req.name.clone();
         let project = req.project.clone();
         let wait_for_log = req.wait_for_log.clone();
         let wait_timeout = req.wait_timeout;
-        let cmd_for_error = req.cmd.clone();  // Clone for use in error handling
-        let cwd_for_error = cwd.clone();  // Clone for use in error handling
-        let log_dir = self.config.log.dir.clone();  // Clone for use in async block
-        
+        let cmd_for_error = req.cmd.clone(); // Clone for use in error handling
+        let cwd_for_error = cwd.clone(); // Clone for use in error handling
+        let log_dir = self.config.log.dir.clone(); // Clone for use in async block
+
         // Create a channel for log streaming if wait_for_log is specified
         let (log_tx, log_rx) = if wait_for_log.is_some() {
             let (tx, rx) = tokio::sync::mpsc::channel(100);
@@ -54,10 +61,10 @@ impl ProcessManagerService for GrpcService {
         } else {
             (None, None)
         };
-        
+
         let process_manager = self.process_manager.clone();
         let _log_hub = self.log_hub.clone();
-        
+
         // Create the response stream
         let stream = async_stream::try_stream! {
             // Start the process with log streaming
@@ -79,7 +86,7 @@ impl ProcessManagerService for GrpcService {
                         while let Some(line) = rx.recv().await {
                             // Create log entry
                             let (timestamp, level, content) = parse_log_line(&line);
-                            
+
                             yield StartProcessResponse {
                                 response: Some(start_process_response::Response::LogEntry(LogEntry {
                                     line_number: 0,
@@ -90,7 +97,7 @@ impl ProcessManagerService for GrpcService {
                             };
                         }
                     }
-                    
+
                     // Send final process info
                     let current_status = process.get_status();
                     let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
@@ -108,7 +115,7 @@ impl ProcessManagerService for GrpcService {
                     } else {
                         (None, None, None)
                     };
-                    
+
                     let info = ProcessInfo {
                         id: process.id.to_string(),
                         name: process.name.clone(),
@@ -128,7 +135,7 @@ impl ProcessManagerService for GrpcService {
                         exit_reason,
                         stderr_tail,
                     };
-                    
+
                     yield StartProcessResponse {
                         response: Some(start_process_response::Response::Process(info)),
                     };
@@ -143,7 +150,7 @@ impl ProcessManagerService for GrpcService {
                         }
                         crate::daemon::error::McprocdError::ProcessFailedToStart { name, exit_code, exit_reason, stderr } => {
                             error!("Process '{}' failed to start: {} (exit code: {})", name, exit_reason, exit_code);
-                            
+
                             // Create a failed ProcessInfo
                             let failed_info = ProcessInfo {
                                 id: Uuid::new_v4().to_string(),
@@ -156,8 +163,8 @@ impl ProcessManagerService for GrpcService {
                                     nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
                                 }),
                                 pid: None,
-                                log_file: log_dir.join(format!("{}_{}.log", 
-                                    project.as_ref().unwrap_or(&"default".to_string()).replace("/", "_"), 
+                                log_file: log_dir.join(format!("{}_{}.log",
+                                    project.as_ref().unwrap_or(&"default".to_string()).replace("/", "_"),
                                     name
                                 )).to_string_lossy().to_string(),
                                 project: project.clone().unwrap_or_default(),
@@ -167,7 +174,7 @@ impl ProcessManagerService for GrpcService {
                                 exit_reason: Some(exit_reason.clone()),
                                 stderr_tail: Some(stderr.clone()),
                             };
-                            
+
                             yield StartProcessResponse {
                                 response: Some(start_process_response::Response::Process(failed_info)),
                             };
@@ -181,17 +188,25 @@ impl ProcessManagerService for GrpcService {
                 }
             }
         };
-        
+
         Ok(Response::new(Box::pin(stream)))
     }
-    
+
     async fn stop_process(
         &self,
         request: Request<StopProcessRequest>,
     ) -> Result<Response<StopProcessResponse>, Status> {
         let req = request.into_inner();
-        
-        match self.process_manager.stop_process(&req.name, req.project.as_deref(), req.force.unwrap_or(false)).await {
+
+        match self
+            .process_manager
+            .stop_process(
+                &req.name,
+                req.project.as_deref(),
+                req.force.unwrap_or(false),
+            )
+            .await
+        {
             Ok(()) => Ok(Response::new(StopProcessResponse {
                 success: true,
                 message: None,
@@ -202,14 +217,18 @@ impl ProcessManagerService for GrpcService {
             })),
         }
     }
-    
+
     async fn restart_process(
         &self,
         request: Request<RestartProcessRequest>,
     ) -> Result<Response<RestartProcessResponse>, Status> {
         let req = request.into_inner();
-        
-        match self.process_manager.restart_process(&req.name, req.project).await {
+
+        match self
+            .process_manager
+            .restart_process(&req.name, req.project)
+            .await
+        {
             Ok(process) => {
                 let info = ProcessInfo {
                     id: process.id.to_string(),
@@ -230,7 +249,7 @@ impl ProcessManagerService for GrpcService {
                     exit_reason: None,
                     stderr_tail: None,
                 };
-                
+
                 Ok(Response::new(RestartProcessResponse {
                     process: Some(info),
                 }))
@@ -238,14 +257,17 @@ impl ProcessManagerService for GrpcService {
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
-    
+
     async fn get_process(
         &self,
         request: Request<GetProcessRequest>,
     ) -> Result<Response<GetProcessResponse>, Status> {
         let req = request.into_inner();
-        
-        match self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref()) {
+
+        match self
+            .process_manager
+            .get_process_by_name_or_id_with_project(&req.name, req.project.as_deref())
+        {
             Some(process) => {
                 let info = ProcessInfo {
                     id: process.id.to_string(),
@@ -272,7 +294,7 @@ impl ProcessManagerService for GrpcService {
                     exit_reason: None,
                     stderr_tail: None,
                 };
-                
+
                 Ok(Response::new(GetProcessResponse {
                     process: Some(info),
                 }))
@@ -280,21 +302,22 @@ impl ProcessManagerService for GrpcService {
             None => Err(Status::not_found("Process not found")),
         }
     }
-    
+
     async fn list_processes(
         &self,
         request: Request<ListProcessesRequest>,
     ) -> Result<Response<ListProcessesResponse>, Status> {
         let req = request.into_inner();
         let mut processes = self.process_manager.list_processes();
-        
+
         // Filter by project if specified
         if let Some(project_filter) = req.project_filter {
             processes.retain(|p| p.project == project_filter);
         }
-        
-        let process_infos: Vec<ProcessInfo> = processes.into_iter().map(|process| {
-            ProcessInfo {
+
+        let process_infos: Vec<ProcessInfo> = processes
+            .into_iter()
+            .map(|process| ProcessInfo {
                 id: process.id.to_string(),
                 name: process.name.clone(),
                 cmd: process.cmd.clone(),
@@ -318,57 +341,63 @@ impl ProcessManagerService for GrpcService {
                 exit_code: None,
                 exit_reason: None,
                 stderr_tail: None,
-            }
-        }).collect();
-        
+            })
+            .collect();
+
         Ok(Response::new(ListProcessesResponse {
             processes: process_infos,
         }))
     }
-    
+
     type GetLogsStream = Pin<Box<dyn Stream<Item = Result<GetLogsResponse, Status>> + Send>>;
-    
+
     async fn get_logs(
         &self,
         request: Request<GetLogsRequest>,
     ) -> Result<Response<Self::GetLogsStream>, Status> {
         let req = request.into_inner();
-        
+
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
-        
-        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+
+        let log_file = self.log_hub.config.log.dir.join(format!(
+            "{}_{}.log",
             project.replace("/", "_"),
             req.name
         ));
-        
+
         if !log_file.exists() {
-            return Err(Status::not_found(format!("Log file not found: {}", log_file.display())));
+            return Err(Status::not_found(format!(
+                "Log file not found: {}",
+                log_file.display()
+            )));
         }
-        
+
         let tail = req.tail.unwrap_or(100) as usize;
         let follow = req.follow.unwrap_or(false);
-        
+
         // Get process for follow mode status check (optional)
-        let process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
-        
+        let process = self
+            .process_manager
+            .get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
+
         // Create stream from log file
         let stream = async_stream::try_stream! {
             use tokio::io::{AsyncBufReadExt, BufReader};
             use tokio::fs::File;
-            
+
             let file = File::open(&log_file).await
                 .map_err(|e| Status::internal(format!("Failed to open log file: {}", e)))?;
-            
+
             let reader = BufReader::new(file);
             let mut lines = reader.lines();
             let mut all_lines = Vec::new();
-            
+
             // Read all existing lines first
             while let Ok(Some(line)) = lines.next_line().await {
                 all_lines.push(line);
             }
-            
+
             // Get the tail
             let start_idx = if follow {
                 // If follow mode, show all lines initially or tail amount
@@ -376,24 +405,24 @@ impl ProcessManagerService for GrpcService {
             } else {
                 all_lines.len().saturating_sub(tail)
             };
-            
+
             let mut entries = Vec::new();
             let mut line_num = start_idx as u32;
-            
+
             // Send initial lines
             for line in &all_lines[start_idx..] {
                 line_num += 1;
-                
+
                 // Parse log line
                 let (timestamp, level, content) = parse_log_line(line);
-                
+
                 entries.push(LogEntry {
                     line_number: line_num,
                     content,
                     timestamp,
                     level: level as i32,
                 });
-                
+
                 // Send batch of entries
                 if entries.len() >= 100 {
                     yield GetLogsResponse {
@@ -401,34 +430,34 @@ impl ProcessManagerService for GrpcService {
                     };
                 }
             }
-            
+
             // Send remaining entries
             if !entries.is_empty() {
                 yield GetLogsResponse { entries };
             }
-            
+
             // Follow mode: continue reading new lines
             if follow {
                 // Re-open file for continuous reading
                 let file = File::open(&log_file).await
                     .map_err(|e| Status::internal(format!("Failed to reopen log file: {}", e)))?;
-                
+
                 // Seek to end of file
                 use tokio::io::{AsyncSeekExt, SeekFrom};
                 let mut file = file;
                 file.seek(SeekFrom::End(0)).await
                     .map_err(|e| Status::internal(format!("Failed to seek to end: {}", e)))?;
-                
+
                 let reader = BufReader::new(file);
                 let mut lines = reader.lines();
                 line_num = all_lines.len() as u32;
-                
+
                 loop {
                     match lines.next_line().await {
                         Ok(Some(line)) => {
                             line_num += 1;
                             let (timestamp, level, content) = parse_log_line(&line);
-                            
+
                             yield GetLogsResponse {
                                 entries: vec![LogEntry {
                                     line_number: line_num,
@@ -441,7 +470,7 @@ impl ProcessManagerService for GrpcService {
                         Ok(None) => {
                             // No more lines, wait and check process status
                             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                            
+
                             // Check if process is still running (if process exists)
                             if let Some(ref proc) = process {
                                 if !matches!(proc.get_status(), crate::daemon::process::ProcessStatus::Running) {
@@ -458,51 +487,58 @@ impl ProcessManagerService for GrpcService {
                 }
             }
         };
-        
+
         Ok(Response::new(Box::pin(stream)))
     }
-    
+
     async fn grep_logs(
         &self,
         request: Request<GrepLogsRequest>,
     ) -> Result<Response<GrepLogsResponse>, Status> {
         let req = request.into_inner();
-        
+
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
-        
-        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+
+        let log_file = self.log_hub.config.log.dir.join(format!(
+            "{}_{}.log",
             project.replace("/", "_"),
             req.name
         ));
-        
+
         if !log_file.exists() {
-            return Err(Status::not_found(format!("Log file not found: {}", log_file.display())));
+            return Err(Status::not_found(format!(
+                "Log file not found: {}",
+                log_file.display()
+            )));
         }
-        
+
         // Parse time filters
-        let (since_time, until_time) = parse_time_filters(&req.since, &req.until, &req.last)
-            .map_err(|e| *e)?;
-        
+        let (since_time, until_time) =
+            parse_time_filters(&req.since, &req.until, &req.last).map_err(|e| *e)?;
+
         // Compile regex pattern
         let pattern = regex::Regex::new(&req.pattern)
             .map_err(|e| Status::invalid_argument(format!("Invalid regex pattern: {}", e)))?;
-        
+
         // Determine context settings
         let context = req.context.unwrap_or(3) as usize;
         let before = req.before.map(|b| b as usize).unwrap_or(context);
         let after = req.after.map(|a| a as usize).unwrap_or(context);
-        
+
         // Read and process log file
         let matches = grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
             .await
             .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?;
-        
+
         Ok(Response::new(GrepLogsResponse { matches }))
     }
 }
 
-type TimeRange = (Option<chrono::DateTime<chrono::Utc>>, Option<chrono::DateTime<chrono::Utc>>);
+type TimeRange = (
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+);
 
 fn parse_time_filters(
     since: &Option<String>,
@@ -510,45 +546,58 @@ fn parse_time_filters(
     last: &Option<String>,
 ) -> Result<TimeRange, Box<Status>> {
     let now = chrono::Utc::now();
-    
+
     let since_time = if let Some(last_str) = last {
         // Parse "last" duration (e.g., "1h", "30m", "2d")
-        let duration = parse_duration(last_str)
-            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid duration '{}': {}", last_str, e))))?;
+        let duration = parse_duration(last_str).map_err(|e| {
+            Box::new(Status::invalid_argument(format!(
+                "Invalid duration '{}': {}",
+                last_str, e
+            )))
+        })?;
         Some(now - duration)
     } else if let Some(since_str) = since {
-        Some(parse_time_string(since_str)
-            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid since time '{}': {}", since_str, e))))?)
+        Some(parse_time_string(since_str).map_err(|e| {
+            Box::new(Status::invalid_argument(format!(
+                "Invalid since time '{}': {}",
+                since_str, e
+            )))
+        })?)
     } else {
         None
     };
-    
+
     let until_time = if let Some(until_str) = until {
-        Some(parse_time_string(until_str)
-            .map_err(|e| Box::new(Status::invalid_argument(format!("Invalid until time '{}': {}", until_str, e))))?)
+        Some(parse_time_string(until_str).map_err(|e| {
+            Box::new(Status::invalid_argument(format!(
+                "Invalid until time '{}': {}",
+                until_str, e
+            )))
+        })?)
     } else {
         None
     };
-    
+
     Ok((since_time, until_time))
 }
 
 fn parse_duration(duration_str: &str) -> Result<chrono::Duration, String> {
     let duration_str = duration_str.trim();
-    
+
     if duration_str.is_empty() {
         return Err("Empty duration".to_string());
     }
-    
+
     let (num_str, unit) = if let Some(pos) = duration_str.rfind(char::is_alphabetic) {
         duration_str.split_at(pos)
     } else {
         return Err("No time unit specified".to_string());
     };
-    
-    let number: i64 = num_str.parse()
+
+    let number: i64 = num_str
+        .parse()
         .map_err(|_| format!("Invalid number: {}", num_str))?;
-    
+
     match unit {
         "s" => Ok(chrono::Duration::seconds(number)),
         "m" => Ok(chrono::Duration::minutes(number)),
@@ -560,30 +609,36 @@ fn parse_duration(duration_str: &str) -> Result<chrono::Duration, String> {
 
 fn parse_time_string(time_str: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     let time_str = time_str.trim();
-    
+
     // Try different time formats
     let formats = [
-        "%Y-%m-%d %H:%M:%S",     // 2025-06-17 10:30:00
-        "%Y-%m-%d %H:%M",        // 2025-06-17 10:30
-        "%H:%M:%S",              // 10:30:00 (today)
-        "%H:%M",                 // 10:30 (today)
+        "%Y-%m-%d %H:%M:%S", // 2025-06-17 10:30:00
+        "%Y-%m-%d %H:%M",    // 2025-06-17 10:30
+        "%H:%M:%S",          // 10:30:00 (today)
+        "%H:%M",             // 10:30 (today)
     ];
-    
+
     for format in &formats {
         if let Ok(naive_time) = chrono::NaiveDateTime::parse_from_str(time_str, format) {
-            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_time, chrono::Utc));
+            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                naive_time,
+                chrono::Utc,
+            ));
         }
-        
+
         // For time-only formats, combine with today's date
         if format.starts_with("%H") {
             if let Ok(naive_time) = chrono::NaiveTime::parse_from_str(time_str, format) {
                 let today = chrono::Utc::now().date_naive();
                 let naive_datetime = today.and_time(naive_time);
-                return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(naive_datetime, chrono::Utc));
+                return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
+                    naive_datetime,
+                    chrono::Utc,
+                ));
             }
         }
     }
-    
+
     Err(format!("Could not parse time: {}", time_str))
 }
 
@@ -595,39 +650,40 @@ async fn grep_log_file(
     since_time: Option<chrono::DateTime<chrono::Utc>>,
     until_time: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<GrepMatch>, std::io::Error> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::fs::File;
-    
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
     let file = File::open(log_file).await?;
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
-    
+
     let mut all_lines = Vec::new();
     let mut line_num = 0u32;
-    
+
     // Read all lines and parse them
     while let Ok(Some(line)) = lines.next_line().await {
         line_num += 1;
         let (timestamp, level, content) = parse_log_line(&line);
-        
+
         // Apply time filters
         if let Some(ts) = &timestamp {
-            let log_time = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
-                .unwrap_or_else(chrono::Utc::now);
-            
+            let log_time =
+                chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
+                    .unwrap_or_else(chrono::Utc::now);
+
             if let Some(since) = since_time {
                 if log_time < since {
                     continue;
                 }
             }
-            
+
             if let Some(until) = until_time {
                 if log_time > until {
                     continue;
                 }
             }
         }
-        
+
         all_lines.push(LogEntry {
             line_number: line_num,
             content,
@@ -635,9 +691,9 @@ async fn grep_log_file(
             level: level as i32,
         });
     }
-    
+
     let mut matches = Vec::new();
-    
+
     // Find matches and collect context
     for (idx, entry) in all_lines.iter().enumerate() {
         if pattern.is_match(&entry.content) {
@@ -646,13 +702,13 @@ async fn grep_log_file(
             } else {
                 all_lines[0..idx].to_vec()
             };
-            
+
             let context_after = if after > 0 && idx + 1 + after <= all_lines.len() {
                 all_lines[idx + 1..idx + 1 + after].to_vec()
             } else {
                 all_lines[idx + 1..].to_vec()
             };
-            
+
             matches.push(GrepMatch {
                 matched_line: Some(entry.clone()),
                 context_before,
@@ -660,23 +716,24 @@ async fn grep_log_file(
             });
         }
     }
-    
+
     Ok(matches)
 }
 
 fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::LogLevel, String) {
     // Expected format: "2025-06-16 12:30:45.123 [INFO] Log message"
     // or: "2025-06-16 12:30:45.123 [ERROR] Error message"
-    
+
     let parts: Vec<&str> = line.splitn(3, ' ').collect();
-    
+
     if parts.len() >= 3 {
         // Try to parse timestamp
         let timestamp = if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(
-            &format!("{} {}", parts[0], parts[1]), 
-            "%Y-%m-%d %H:%M:%S%.3f"
+            &format!("{} {}", parts[0], parts[1]),
+            "%Y-%m-%d %H:%M:%S%.3f",
         ) {
-            let dt_utc = chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
+            let dt_utc =
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
             Some(prost_types::Timestamp {
                 seconds: dt_utc.timestamp(),
                 nanos: dt_utc.timestamp_subsec_nanos() as i32,
@@ -684,17 +741,25 @@ fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::Log
         } else {
             None
         };
-        
+
         // Parse level and content
         if let Some(rest) = parts.get(2) {
             if let Some(content) = rest.strip_prefix("[ERROR]") {
-                return (timestamp, log_entry::LogLevel::Stderr, content.trim().to_string());
+                return (
+                    timestamp,
+                    log_entry::LogLevel::Stderr,
+                    content.trim().to_string(),
+                );
             } else if let Some(content) = rest.strip_prefix("[INFO]") {
-                return (timestamp, log_entry::LogLevel::Stdout, content.trim().to_string());
+                return (
+                    timestamp,
+                    log_entry::LogLevel::Stdout,
+                    content.trim().to_string(),
+                );
             }
         }
     }
-    
+
     // Fallback: treat entire line as content
     (None, log_entry::LogLevel::Stdout, line.to_string())
 }
@@ -705,43 +770,46 @@ pub async fn start_grpc_server(
     log_hub: Arc<LogHub>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let service = GrpcService::new(process_manager, log_hub, config.clone());
-    
+
     // Remove old socket file if it exists
     if config.daemon.socket_path.exists() {
         std::fs::remove_file(&config.daemon.socket_path)?;
     }
-    
+
     // Ensure parent directory exists
     if let Some(parent) = config.daemon.socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    
+
     #[cfg(unix)]
     {
         use tokio::net::UnixListener;
         use tokio_stream::wrappers::UnixListenerStream;
-        
+
         // Create Unix socket
         let uds = UnixListener::bind(&config.daemon.socket_path)?;
         let uds_stream = UnixListenerStream::new(uds);
-        
+
         // Set permissions
         use std::os::unix::fs::PermissionsExt;
         let permissions = std::fs::Permissions::from_mode(config.api.unix_socket_permissions);
         std::fs::set_permissions(&config.daemon.socket_path, permissions)?;
-    
-        info!("Starting gRPC server on Unix socket: {:?}", config.daemon.socket_path);
-    
+
+        info!(
+            "Starting gRPC server on Unix socket: {:?}",
+            config.daemon.socket_path
+        );
+
         Server::builder()
             .add_service(ProcessManagerServer::new(service))
             .serve_with_incoming(uds_stream)
             .await?;
     }
-    
+
     #[cfg(not(unix))]
     {
         return Err("Unix sockets are not supported on this platform".into());
     }
-    
+
     Ok(())
 }

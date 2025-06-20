@@ -3,7 +3,7 @@
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
-use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
+use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde_json::{json, Value};
 
 pub struct PsTool {
@@ -28,20 +28,25 @@ impl ToolHandler for PsTool {
             }),
         }
     }
-    
-    async fn handle(&self, _params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
-        let request = proto::ListProcessesRequest { 
+
+    async fn handle(
+        &self,
+        _params: Option<Value>,
+        _context: mcp_rs::ToolContext,
+    ) -> McpResult<Value> {
+        let request = proto::ListProcessesRequest {
             status_filter: None,
             project_filter: None,
         };
-        
+
         let mut client = self.client.clone();
-        let response = client.inner()
+        let response = client
+            .inner()
             .list_processes(request)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?
             .into_inner();
-        
+
         let processes: Vec<Value> = response.processes.into_iter().map(|p| {
             json!({
                 "id": p.id,
@@ -59,7 +64,7 @@ impl ToolHandler for PsTool {
                 "ports": p.ports,
             })
         }).collect();
-        
+
         Ok(json!({ "processes": processes }))
     }
 }

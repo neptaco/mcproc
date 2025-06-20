@@ -2,9 +2,9 @@
 
 use crate::client::DaemonClient;
 use async_trait::async_trait;
-use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
-use serde_json::{json, Value};
+use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 pub struct GrepTool {
     client: DaemonClient,
@@ -13,7 +13,10 @@ pub struct GrepTool {
 
 impl GrepTool {
     pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self { client, default_project }
+        Self {
+            client,
+            default_project,
+        }
     }
 }
 
@@ -53,23 +56,30 @@ impl ToolHandler for GrepTool {
             }),
         }
     }
-    
-    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
-        let params = params
-            .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
-        
-        let params: GrepParams = serde_json::from_value(params)
-            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
-        
+
+    async fn handle(
+        &self,
+        params: Option<Value>,
+        _context: mcp_rs::ToolContext,
+    ) -> McpResult<Value> {
+        let params =
+            params.ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
+
+        let params: GrepParams =
+            serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
         // Determine project name if not provided
-        let project = params.project
+        let project = params
+            .project
             .or(self.default_project.clone())
             .or_else(|| {
-                std::env::current_dir().ok()
+                std::env::current_dir()
+                    .ok()
                     .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                     .and_then(|n| n.into_string().ok())
-            }).unwrap_or_else(|| "default".to_string());
-        
+            })
+            .unwrap_or_else(|| "default".to_string());
+
         let request = proto::GrepLogsRequest {
             name: params.name.clone(),
             pattern: params.pattern.clone(),
@@ -81,17 +91,17 @@ impl ToolHandler for GrepTool {
             until: params.until,
             last: params.last,
         };
-        
+
         let mut client = self.client.clone();
         match client.inner().grep_logs(request).await {
             Ok(response) => {
                 let grep_response = response.into_inner();
-                
+
                 let mut matches = Vec::new();
-                
+
                 for grep_match in grep_response.matches {
                     let mut match_obj = json!({});
-                    
+
                     // Matched line
                     if let Some(matched_line) = grep_match.matched_line {
                         match_obj["matched_line"] = json!({
@@ -105,7 +115,7 @@ impl ToolHandler for GrepTool {
                             "level": if matched_line.level == 2 { "error" } else { "info" }
                         });
                     }
-                    
+
                     // Context before
                     if !grep_match.context_before.is_empty() {
                         let context_before: Vec<Value> = grep_match.context_before.iter().map(|entry| {
@@ -122,7 +132,7 @@ impl ToolHandler for GrepTool {
                         }).collect();
                         match_obj["context_before"] = Value::Array(context_before);
                     }
-                    
+
                     // Context after
                     if !grep_match.context_after.is_empty() {
                         let context_after: Vec<Value> = grep_match.context_after.iter().map(|entry| {
@@ -139,22 +149,25 @@ impl ToolHandler for GrepTool {
                         }).collect();
                         match_obj["context_after"] = Value::Array(context_after);
                     }
-                    
+
                     matches.push(match_obj);
                 }
-                
+
                 let response = json!({
                     "pattern": params.pattern,
                     "process": params.name,
                     "total_matches": matches.len(),
                     "matches": matches
                 });
-                
+
                 Ok(response)
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
-                    Err(McpError::InvalidParams(format!("Log file for process \"{}\" not found", params.name)))
+                    Err(McpError::InvalidParams(format!(
+                        "Log file for process \"{}\" not found",
+                        params.name
+                    )))
                 } else {
                     Err(McpError::Internal(e.message().to_string()))
                 }

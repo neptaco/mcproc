@@ -1,6 +1,6 @@
+use crate::common::paths::McprocPaths;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::common::paths::McprocPaths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -41,7 +41,7 @@ pub struct ProcessConfig {
 impl Default for Config {
     fn default() -> Self {
         let paths = McprocPaths::new();
-        
+
         Self {
             daemon: DaemonConfig {
                 data_dir: paths.data_dir.clone(),
@@ -73,7 +73,7 @@ impl Config {
         // TODO: Load from config file if exists
         Ok(Self::default())
     }
-    
+
     pub fn ensure_directories(&self) -> crate::daemon::error::Result<()> {
         std::fs::create_dir_all(&self.daemon.data_dir)?;
         std::fs::create_dir_all(&self.log.dir)?;

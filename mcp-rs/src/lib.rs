@@ -1,7 +1,7 @@
 //! Model Context Protocol (MCP) implementation for Rust
-//! 
+//!
 //! This library provides a complete implementation of the Model Context Protocol.
-//! 
+//!
 //! ## Supported Transports
 //! - **stdio**: Standard input/output transport (implemented)
 //! - **sse**: Server-Sent Events transport (not yet implemented)

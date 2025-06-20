@@ -6,18 +6,19 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
     // First, get all child PIDs
     let all_pids = get_process_tree(pid);
     debug!("Process tree for PID {}: {:?}", pid, all_pids);
-    
+
     let mut all_ports = Vec::new();
-    
+
     // Check ports for each PID in the process tree
     for check_pid in all_pids {
         // Use lsof to find listening TCP ports for the process
         let output = match Command::new("lsof")
             .args([
-                "-Pan",           // No name resolution, all network files
-                "-p", &check_pid.to_string(),  // Process ID
-                "-iTCP",          // TCP connections only
-                "-sTCP:LISTEN",   // Only listening state
+                "-Pan", // No name resolution, all network files
+                "-p",
+                &check_pid.to_string(), // Process ID
+                "-iTCP",                // TCP connections only
+                "-sTCP:LISTEN",         // Only listening state
             ])
             .output()
         {
@@ -37,7 +38,8 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
 
         // Parse lsof output
         // Format: COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
-        for line in stdout.lines().skip(1) {  // Skip header
+        for line in stdout.lines().skip(1) {
+            // Skip header
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() < 9 {
                 continue;
@@ -55,14 +57,17 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
         }
     }
 
-    debug!("Detected ports for PID {} and children: {:?}", pid, all_ports);
+    debug!(
+        "Detected ports for PID {} and children: {:?}",
+        pid, all_ports
+    );
     all_ports
 }
 
 /// Get process tree - parent PID and all its children
 fn get_process_tree(pid: u32) -> Vec<u32> {
     let mut pids = vec![pid];
-    
+
     // Use pgrep to find child processes
     if let Ok(output) = Command::new("pgrep")
         .args(["-P", &pid.to_string()])
@@ -83,7 +88,7 @@ fn get_process_tree(pid: u32) -> Vec<u32> {
             }
         }
     }
-    
+
     pids
 }
 
@@ -97,7 +102,7 @@ fn extract_port(name: &str) -> Option<&str> {
     if name.contains("]:") {
         return name.split("]:").nth(1);
     }
-    
+
     // Handle IPv4 and wildcard format
     name.split(':').nth(1)
 }
@@ -107,14 +112,10 @@ fn extract_port(name: &str) -> Option<&str> {
 pub fn detect_ports_netstat(pid: u32) -> Vec<u32> {
     // Try netstat with different options based on OS
     let output = if cfg!(target_os = "macos") {
-        Command::new("netstat")
-            .args(["-anv", "-p", "tcp"])
-            .output()
+        Command::new("netstat").args(["-anv", "-p", "tcp"]).output()
     } else {
         // Linux
-        Command::new("netstat")
-            .args(["-tlnp"])
-            .output()
+        Command::new("netstat").args(["-tlnp"]).output()
     };
 
     let output = match output {

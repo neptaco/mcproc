@@ -2,7 +2,9 @@ use crate::error::Result;
 use crate::notification::NotificationSender;
 use crate::protocol::{Protocol, ToolHandler};
 use crate::transport::Transport;
-use crate::types::{JsonRpcMessage, JsonRpcNotification, MessageNotification, ProgressNotification};
+use crate::types::{
+    JsonRpcMessage, JsonRpcNotification, MessageNotification, ProgressNotification,
+};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::sync::Arc;
@@ -28,33 +30,36 @@ impl NotificationSender for RealtimeNotificationSender {
             method: "notifications/message".to_string(),
             params: Some(serde_json::to_value(notification)?),
         };
-        
-        self.tx.send(notif).await
-            .map_err(|_| crate::error::Error::Internal("Failed to send notification".to_string()))?;
+
+        self.tx.send(notif).await.map_err(|_| {
+            crate::error::Error::Internal("Failed to send notification".to_string())
+        })?;
         Ok(())
     }
-    
+
     async fn send_progress(&self, notification: ProgressNotification) -> Result<()> {
         let notif = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method: "notifications/progress".to_string(),
             params: Some(serde_json::to_value(notification)?),
         };
-        
-        self.tx.send(notif).await
-            .map_err(|_| crate::error::Error::Internal("Failed to send notification".to_string()))?;
+
+        self.tx.send(notif).await.map_err(|_| {
+            crate::error::Error::Internal("Failed to send notification".to_string())
+        })?;
         Ok(())
     }
-    
+
     async fn send_raw(&self, method: String, params: Option<Value>) -> Result<()> {
         let notif = JsonRpcNotification {
             jsonrpc: "2.0".to_string(),
             method,
             params,
         };
-        
-        self.tx.send(notif).await
-            .map_err(|_| crate::error::Error::Internal("Failed to send notification".to_string()))?;
+
+        self.tx.send(notif).await.map_err(|_| {
+            crate::error::Error::Internal("Failed to send notification".to_string())
+        })?;
         Ok(())
     }
 }
@@ -68,23 +73,26 @@ pub struct Server {
 impl Server {
     /// Create a new server with the given protocol and transport
     pub fn new(protocol: Arc<Protocol>, transport: Box<dyn Transport>) -> Self {
-        Self { protocol, transport }
+        Self {
+            protocol,
+            transport,
+        }
     }
-    
+
     /// Start the server
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting MCP server");
-        
+
         // Start transport
         self.transport.start().await?;
-        
+
         // Create notification channel
         let (notification_tx, mut notification_rx) = mpsc::channel::<JsonRpcNotification>(100);
-        
+
         // Create real-time notification sender
         let realtime_sender = Arc::new(RealtimeNotificationSender::new(notification_tx.clone()));
         self.protocol.set_notification_sender(realtime_sender).await;
-        
+
         // Main message loop
         loop {
             tokio::select! {
@@ -93,10 +101,10 @@ impl Server {
                     match message? {
                         Some(message) => {
                             debug!("Received message: {:?}", message);
-                            
+
                             // Handle message and get response
                             let response = self.protocol.handle_message_realtime(message).await;
-                            
+
                             // Send the response if any
                             if let Some(response) = response {
                                 debug!("Sending response: {:?}", response);
@@ -116,10 +124,10 @@ impl Server {
                 }
             }
         }
-        
+
         // Close transport
         self.transport.close().await?;
-        
+
         Ok(())
     }
 }
@@ -140,22 +148,22 @@ impl ServerBuilder {
             tools: Vec::new(),
         }
     }
-    
+
     /// Add a tool handler
     pub fn add_tool(mut self, tool: Arc<dyn ToolHandler>) -> Self {
         self.tools.push(tool);
         self
     }
-    
+
     /// Build the server with the given transport
     pub async fn build(self, transport: Box<dyn Transport>) -> Result<Server> {
         let protocol = Arc::new(Protocol::new(self.name, self.version));
-        
+
         // Register tools
         for tool in self.tools {
             protocol.register_tool(tool).await;
         }
-        
+
         Ok(Server::new(protocol, transport))
     }
 }

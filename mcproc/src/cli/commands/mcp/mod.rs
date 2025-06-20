@@ -31,11 +31,11 @@ impl McpCommand {
 
 async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
     use mcp_rs::{ServerBuilder, StdioTransport};
-    use tools::{StartTool, StopTool, RestartTool, PsTool, LogsTool, StatusTool, GrepTool};
+    use tools::{GrepTool, LogsTool, PsTool, RestartTool, StartTool, StatusTool, StopTool};
 
     // Create server with stdio transport
     let transport = Box::new(StdioTransport::new());
-    
+
     let mut server = ServerBuilder::new("mcproc", "0.1.0")
         .add_tool(Arc::new(StartTool::new(client.clone())))
         .add_tool(Arc::new(StopTool::new(client.clone(), None)))
@@ -46,9 +46,9 @@ async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error
         .add_tool(Arc::new(GrepTool::new(client.clone(), None)))
         .build(transport)
         .await?;
-    
+
     // Start server
     server.start().await?;
-    
+
     Ok(())
 }

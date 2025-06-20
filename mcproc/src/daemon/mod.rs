@@ -4,11 +4,7 @@ pub mod error;
 pub mod log;
 pub mod process;
 
-use self::{
-    config::Config,
-    log::LogHub,
-    process::ProcessManager,
-};
+use self::{config::Config, log::LogHub, process::ProcessManager};
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -19,13 +15,13 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .with(fmt::layer())
         .with(EnvFilter::from_default_env().add_directive("mcprocd=info".parse()?))
         .init();
-    
+
     info!("Starting mcprocd daemon");
-    
+
     // Load configuration
     let config = Arc::new(Config::load()?);
     config.ensure_directories()?;
-    
+
     // Check if daemon is already running
     if let Ok(pid) = std::fs::read_to_string(&config.daemon.pid_file) {
         if let Ok(pid) = pid.trim().parse::<i32>() {
@@ -38,30 +34,30 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         // Remove stale PID file
         let _ = std::fs::remove_file(&config.daemon.pid_file);
     }
-    
+
     // Write PID file
     let pid = std::process::id();
     std::fs::write(&config.daemon.pid_file, pid.to_string())?;
     info!("Written PID {} to {:?}", pid, config.daemon.pid_file);
-    
+
     // Initialize components
     let log_hub = Arc::new(LogHub::new(config.clone()));
     let process_manager = Arc::new(ProcessManager::new(config.clone(), log_hub.clone()));
-    
+
     // Start servers
     let grpc_config = config.clone();
     let grpc_pm = process_manager.clone();
     let grpc_log = log_hub.clone();
-    
+
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log).await {
             error!("gRPC server error: {}", e);
         }
     });
-    
+
     // Handle shutdown
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    
+
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received SIGINT (Ctrl+C)");
@@ -73,30 +69,40 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             error!("gRPC server terminated unexpectedly");
         }
     }
-    
+
     info!("Shutting down mcprocd daemon");
-    
+
     // Stop all managed processes
     info!("Stopping all managed processes...");
     let processes = process_manager.list_processes();
     for process in processes {
-        if matches!(process.get_status(), crate::daemon::process::ProcessStatus::Running | crate::daemon::process::ProcessStatus::Starting) {
+        if matches!(
+            process.get_status(),
+            crate::daemon::process::ProcessStatus::Running
+                | crate::daemon::process::ProcessStatus::Starting
+        ) {
             info!("Stopping process {}/{}", process.project, process.name);
-            if let Err(e) = process_manager.stop_process(&process.name, Some(&process.project), false).await {
-                error!("Failed to stop process {}/{}: {}", process.project, process.name, e);
+            if let Err(e) = process_manager
+                .stop_process(&process.name, Some(&process.project), false)
+                .await
+            {
+                error!(
+                    "Failed to stop process {}/{}: {}",
+                    process.project, process.name, e
+                );
             }
         }
     }
-    
+
     // Give processes time to shut down gracefully
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    
+
     // Remove PID file
     if let Err(e) = std::fs::remove_file(&config.daemon.pid_file) {
         error!("Failed to remove PID file: {}", e);
     }
-    
+
     // Port file is no longer used (using Unix sockets instead)
-    
+
     Ok(())
 }

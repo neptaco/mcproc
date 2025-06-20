@@ -4,25 +4,25 @@ use thiserror::Error;
 pub enum Error {
     #[error("Transport error: {0}")]
     Transport(String),
-    
+
     #[error("Protocol error: {0}")]
     Protocol(String),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Method not found: {0}")]
     MethodNotFound(String),
-    
+
     #[error("Invalid params: {0}")]
     InvalidParams(String),
-    
+
     #[error("Internal error: {0}")]
     Internal(String),
-    
+
     #[error("Not implemented: {0}")]
     NotImplemented(String),
 }
