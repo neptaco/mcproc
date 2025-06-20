@@ -22,7 +22,6 @@ impl McpCommand {
     pub async fn execute(self, client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         match self.command {
             McpSubcommands::Serve => {
-                println!("Starting MCP server on stdio...");
                 serve_mcp(client).await
             }
         }
@@ -32,6 +31,17 @@ impl McpCommand {
 async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
     use mcp_rs::{ServerBuilder, StdioTransport};
     use tools::{StartTool, StopTool, RestartTool, PsTool, LogsTool, StatusTool, GrepTool};
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    // Configure tracing to output to stderr to avoid interfering with JSON-RPC on stdout
+    tracing_subscriber::registry()
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(
+            EnvFilter::from_default_env()
+                .add_directive("mcproc=warn".parse()?)
+                .add_directive("mcp_rs=warn".parse()?)
+        )
+        .init();
 
     // Create server with stdio transport
     let transport = Box::new(StdioTransport::new());
