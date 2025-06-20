@@ -3,7 +3,7 @@ pub mod utils;
 
 use clap::{Parser, Subcommand};
 use crate::client::DaemonClient;
-use crate::common::paths::McprocPaths;
+use crate::common::config::Config;
 use commands::*;
 
 #[derive(Parser)]
@@ -86,8 +86,8 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Logs(cmd) => cmd.execute(client).await?,
         Commands::Grep(cmd) => cmd.execute(client).await?,
         Commands::Logfile { name } => {
-            let paths = McprocPaths::new();
-            let log_path = paths.process_log_file(&name);
+            let config = Config::for_client();
+            let log_path = config.process_log_file(&name);
             println!("{}", log_path.display());
         }
         Commands::Mcp(cmd) => cmd.execute(client).await?,

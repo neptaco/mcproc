@@ -3,7 +3,7 @@ use tonic::transport::{Channel, Endpoint, Uri};
 use std::path::PathBuf;
 use std::time::Duration;
 use tower::service_fn;
-use crate::common::paths::McprocPaths;
+use crate::common::config::Config;
 
 #[derive(Clone)]
 pub struct DaemonClient {
@@ -12,12 +12,12 @@ pub struct DaemonClient {
 
 impl DaemonClient {
     pub async fn connect(socket_path: Option<PathBuf>) -> Result<Self, Box<dyn std::error::Error>> {
-        let paths = McprocPaths::new();
+        let config = Config::for_client();
         
-        let socket_path = socket_path.unwrap_or(paths.socket_path.clone());
+        let socket_path = socket_path.unwrap_or(config.paths.socket_path.clone());
         
         // Check if daemon is running by checking PID file
-        let daemon_running = if let Ok(pid_str) = std::fs::read_to_string(&paths.pid_file) {
+        let daemon_running = if let Ok(pid_str) = std::fs::read_to_string(&config.paths.pid_file) {
             if let Ok(pid) = pid_str.trim().parse::<i32>() {
                 // Check if process is actually running
                 nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
@@ -58,7 +58,7 @@ impl DaemonClient {
                 Ok(_) => {
                     eprintln!("Started mcprocd daemon");
                     // Wait a bit for daemon to start
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    tokio::time::sleep(Duration::from_millis(config.daemon.client_startup_wait_ms)).await;
                 }
                 Err(e) => {
                     return Err(format!("Failed to start mcprocd daemon: {}. Please start it manually.", e).into());
@@ -83,7 +83,7 @@ impl DaemonClient {
             const DUMMY_URI_FOR_UNIX_SOCKET: &str = "http://[::]:50051";
             
             let channel = Endpoint::try_from(DUMMY_URI_FOR_UNIX_SOCKET)?
-                .connect_timeout(Duration::from_secs(5))
+                .connect_timeout(Duration::from_secs(config.daemon.client_connection_timeout_secs))
                 .connect_with_connector(service_fn(move |_: Uri| {
                     let socket_path = socket_path.clone();
                     async move {

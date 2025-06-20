@@ -61,7 +61,7 @@ pub struct ProxyInfo {
 }
 
 impl ProxyInfo {
-    pub fn new(name: String, project: String, cmd: String, cwd: PathBuf, log_file: PathBuf) -> Self {
+    pub fn new(name: String, project: String, cmd: String, cwd: PathBuf, log_file: PathBuf, ring_buffer_size: usize) -> Self {
         Self {
             id: Uuid::new_v4(),
             name,
@@ -70,7 +70,7 @@ impl ProxyInfo {
             cwd,
             start_time: Utc::now(),
             status: Arc::new(AtomicU8::new(ProcessStatus::Starting as u8)),
-            ring: Arc::new(Mutex::new(HeapRb::new(10000))),
+            ring: Arc::new(Mutex::new(HeapRb::new(ring_buffer_size))),
             log_file,
             pid: None,
             ports: Arc::new(Mutex::new(Vec::new())),

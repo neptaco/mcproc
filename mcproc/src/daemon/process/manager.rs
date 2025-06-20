@@ -1,5 +1,5 @@
 use crate::common::exit_code::format_exit_reason;
-use crate::daemon::config::Config;
+use crate::common::config::Config;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
 use crate::daemon::process::port_detector;
@@ -82,7 +82,7 @@ impl ProcessManager {
         }
         
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
-        let log_file = self.config.log.dir.join(format!("{}_{}.log", 
+        let log_file = self.config.paths.log_dir.join(format!("{}_{}.log", 
             project.replace("/", "_"), // Sanitize project name for filesystem
             name
         ));
@@ -96,7 +96,7 @@ impl ProcessManager {
             return Err(McprocdError::SpawnError("No command provided".to_string()));
         };
         
-        let mut proxy = ProxyInfo::new(name.clone(), project.clone(), cmd_string.clone(), cwd.clone(), log_file);
+        let mut proxy = ProxyInfo::new(name.clone(), project.clone(), cmd_string.clone(), cwd.clone(), log_file, self.config.logging.ring_buffer_size);
         
         // Create command based on whether cmd or args was provided
         let mut command = if let Some(cmd) = cmd {
@@ -206,6 +206,7 @@ impl ProcessManager {
         let wait_timeout_stdout = wait_timeout;
         let has_pattern_stdout = log_pattern_stdout.is_some();
         let timeout_occurred_stdout = timeout_occurred.clone();
+        let default_wait_timeout_secs = self.config.process.startup.default_wait_timeout_secs;
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -213,7 +214,7 @@ impl ProcessManager {
             
             // Set up timeout future if we're waiting for a pattern
             let timeout_future = if has_pattern_stdout {
-                let duration = tokio::time::Duration::from_secs(wait_timeout_stdout.unwrap_or(30) as u64);
+                let duration = tokio::time::Duration::from_secs(wait_timeout_stdout.unwrap_or(default_wait_timeout_secs) as u64);
                 tokio::time::sleep(duration)
             } else {
                 tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
@@ -299,6 +300,7 @@ impl ProcessManager {
         let wait_timeout_stderr = wait_timeout;
         let has_pattern_stderr = log_pattern_stderr.is_some();
         let timeout_occurred_stderr = timeout_occurred.clone();
+        let default_wait_timeout_secs_stderr = self.config.process.startup.default_wait_timeout_secs;
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -306,7 +308,7 @@ impl ProcessManager {
             
             // Set up timeout future if we're waiting for a pattern
             let timeout_future = if has_pattern_stderr {
-                let duration = tokio::time::Duration::from_secs(wait_timeout_stderr.unwrap_or(30) as u64);
+                let duration = tokio::time::Duration::from_secs(wait_timeout_stderr.unwrap_or(default_wait_timeout_secs_stderr) as u64);
                 tokio::time::sleep(duration)
             } else {
                 tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
@@ -447,12 +449,16 @@ impl ProcessManager {
         // Start port detection task
         if let Some(pid) = proxy_arc.pid {
             let proxy_port = proxy_arc.clone();
+            let port_detect_initial_delay_secs = self.config.process.port_detection.initial_delay_secs;
+            let port_detect_interval_secs = self.config.process.port_detection.interval_secs;
+            let port_detect_max_attempts = self.config.process.port_detection.max_attempts;
+            
             tokio::spawn(async move {
                 // Initial delay to let the process start up (Next.js needs more time)
-                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(port_detect_initial_delay_secs)).await;
                 
                 // Detect ports periodically
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(3));
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(port_detect_interval_secs));
                 let mut consecutive_checks = 0;
                 let mut total_checks = 0;
                 
@@ -487,8 +493,8 @@ impl ProcessManager {
                     
                     total_checks += 1;
                     
-                    // Stop checking after 90 seconds (30 checks * 3 seconds)
-                    if total_checks >= 30 {
+                    // Stop checking after configured max attempts
+                    if total_checks >= port_detect_max_attempts {
                         debug!("Port detection timeout for PID {} after {} checks", pid, total_checks);
                         break;
                     }
@@ -498,7 +504,7 @@ impl ProcessManager {
         
         // Wait for log pattern if specified, or perform health check after 500ms
         if let Some((_, rx)) = log_ready_tx {
-            let timeout_duration = tokio::time::Duration::from_secs(wait_timeout.unwrap_or(30) as u64);
+            let timeout_duration = tokio::time::Duration::from_secs(wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs) as u64);
             
             match tokio::time::timeout(timeout_duration, rx).await {
                 Ok(Ok(())) => {
@@ -522,9 +528,9 @@ impl ProcessManager {
                 }
             }
         } else {
-            // No wait_for_log pattern, perform health check after 500ms
-            debug!("No wait_for_log pattern, will check health after 500ms for process {}", name);
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            // No wait_for_log pattern, perform health check after configured delay
+            debug!("No wait_for_log pattern, will check health after {}ms for process {}", self.config.process.startup.health_check_delay_ms, name);
+            tokio::time::sleep(tokio::time::Duration::from_millis(self.config.process.startup.health_check_delay_ms)).await;
             
             // Check if process is still running
             let current_status = proxy_arc.get_status();
@@ -643,7 +649,7 @@ impl ProcessManager {
             self.stop_process(name_or_id, Some(&project), false).await?;
             
             // Wait a bit for process to stop
-            tokio::time::sleep(tokio::time::Duration::from_millis(self.config.process.restart_delay_ms)).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(self.config.process.restart.delay_ms)).await;
             
             // For restart, we use the original command as a shell command
             self.start_process(name, Some(project), Some(cmd), vec![], Some(cwd), None, None, None).await

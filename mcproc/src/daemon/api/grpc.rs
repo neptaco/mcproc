@@ -1,5 +1,5 @@
 use crate::common::exit_code::format_exit_reason;
-use crate::daemon::config::Config;
+use crate::common::config::Config;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
 use proto::process_manager_server::{ProcessManager as ProcessManagerService, ProcessManagerServer};
@@ -45,7 +45,7 @@ impl ProcessManagerService for GrpcService {
         let wait_timeout = req.wait_timeout;
         let cmd_for_error = req.cmd.clone();  // Clone for use in error handling
         let cwd_for_error = cwd.clone();  // Clone for use in error handling
-        let log_dir = self.config.log.dir.clone();  // Clone for use in async block
+        let log_dir = self.config.paths.log_dir.clone();  // Clone for use in async block
         
         // Create a channel for log streaming if wait_for_log is specified
         let (log_tx, log_rx) = if wait_for_log.is_some() {
@@ -337,7 +337,7 @@ impl ProcessManagerService for GrpcService {
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
         
-        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+        let log_file = self.log_hub.config.paths.log_dir.join(format!("{}_{}.log", 
             project.replace("/", "_"),
             req.name
         ));
@@ -351,6 +351,9 @@ impl ProcessManagerService for GrpcService {
         
         // Get process for follow mode status check (optional)
         let process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
+        
+        // Get config value before the stream
+        let follow_poll_interval_ms = self.config.logging.follow_poll_interval_ms;
         
         // Create stream from log file
         let stream = async_stream::try_stream! {
@@ -440,7 +443,7 @@ impl ProcessManagerService for GrpcService {
                         }
                         Ok(None) => {
                             // No more lines, wait and check process status
-                            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_millis(follow_poll_interval_ms)).await;
                             
                             // Check if process is still running (if process exists)
                             if let Some(ref proc) = process {
@@ -471,7 +474,7 @@ impl ProcessManagerService for GrpcService {
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
         
-        let log_file = self.log_hub.config.log.dir.join(format!("{}_{}.log", 
+        let log_file = self.log_hub.config.paths.log_dir.join(format!("{}_{}.log", 
             project.replace("/", "_"),
             req.name
         ));
@@ -707,12 +710,12 @@ pub async fn start_grpc_server(
     let service = GrpcService::new(process_manager, log_hub, config.clone());
     
     // Remove old socket file if it exists
-    if config.daemon.socket_path.exists() {
-        std::fs::remove_file(&config.daemon.socket_path)?;
+    if config.paths.socket_path.exists() {
+        std::fs::remove_file(&config.paths.socket_path)?;
     }
     
     // Ensure parent directory exists
-    if let Some(parent) = config.daemon.socket_path.parent() {
+    if let Some(parent) = config.paths.socket_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     
@@ -722,15 +725,15 @@ pub async fn start_grpc_server(
         use tokio_stream::wrappers::UnixListenerStream;
         
         // Create Unix socket
-        let uds = UnixListener::bind(&config.daemon.socket_path)?;
+        let uds = UnixListener::bind(&config.paths.socket_path)?;
         let uds_stream = UnixListenerStream::new(uds);
         
         // Set permissions
         use std::os::unix::fs::PermissionsExt;
         let permissions = std::fs::Permissions::from_mode(config.api.unix_socket_permissions);
-        std::fs::set_permissions(&config.daemon.socket_path, permissions)?;
+        std::fs::set_permissions(&config.paths.socket_path, permissions)?;
     
-        info!("Starting gRPC server on Unix socket: {:?}", config.daemon.socket_path);
+        info!("Starting gRPC server on Unix socket: {:?}", config.paths.socket_path);
     
         Server::builder()
             .add_service(ProcessManagerServer::new(service))

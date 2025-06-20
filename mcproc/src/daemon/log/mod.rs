@@ -1,4 +1,4 @@
-use crate::daemon::config::Config;
+use crate::common::config::Config;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::OpenOptions;
@@ -74,7 +74,7 @@ impl LogHub {
     fn get_log_file_path(&self, process_name: &str) -> PathBuf {
         // Replace "/" with "_" to create valid filesystem paths
         let sanitized_name = process_name.replace("/", "_");
-        self.config.log.dir.join(format!("{}.log", sanitized_name))
+        self.config.paths.log_dir.join(format!("{}.log", sanitized_name))
     }
     
     pub async fn close_log(&self, process_name: &str) {
