@@ -45,7 +45,7 @@ pub enum Commands {
     },
     
     /// MCP server management
-    Mcp(MpcCommand),
+    Mcp(McpCommand),
     
     /// Manage mcprocd daemon
     Daemon(DaemonCommand),

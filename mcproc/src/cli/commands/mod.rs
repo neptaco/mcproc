@@ -10,7 +10,7 @@ pub mod stop;
 pub use daemon::DaemonCommand;
 pub use grep::GrepCommand;
 pub use logs::LogsCommand;
-pub use mcp::MpcCommand;
+pub use mcp::McpCommand;
 pub use ps::PsCommand;
 pub use restart::RestartCommand;
 pub use start::StartCommand;

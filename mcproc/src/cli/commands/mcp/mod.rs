@@ -1,0 +1,54 @@
+//! MCP server command implementation
+
+pub mod tools;
+
+use crate::client::McpClient;
+use clap::{Parser, Subcommand};
+use std::sync::Arc;
+
+#[derive(Parser)]
+pub struct McpCommand {
+    #[command(subcommand)]
+    command: McpSubcommands,
+}
+
+#[derive(Subcommand)]
+enum McpSubcommands {
+    /// Start the MCP server
+    Serve,
+}
+
+impl McpCommand {
+    pub async fn execute(self, client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+        match self.command {
+            McpSubcommands::Serve => {
+                println!("Starting MCP server on stdio...");
+                serve_mcp(client).await
+            }
+        }
+    }
+}
+
+async fn serve_mcp(client: McpClient) -> Result<(), Box<dyn std::error::Error>> {
+    use mcp_rs::{ServerBuilder, StdioTransport};
+    use tools::{StartTool, StopTool, RestartTool, PsTool, LogsTool, StatusTool, GrepTool};
+
+    // Create server with stdio transport
+    let transport = Box::new(StdioTransport::new());
+    
+    let mut server = ServerBuilder::new("mcproc", "0.1.0")
+        .add_tool(Arc::new(StartTool::new(client.clone())))
+        .add_tool(Arc::new(StopTool::new(client.clone(), None)))
+        .add_tool(Arc::new(RestartTool::new(client.clone(), None)))
+        .add_tool(Arc::new(PsTool::new(client.clone())))
+        .add_tool(Arc::new(LogsTool::new(client.clone(), None)))
+        .add_tool(Arc::new(StatusTool::new(client.clone(), None)))
+        .add_tool(Arc::new(GrepTool::new(client.clone(), None)))
+        .build(transport)
+        .await?;
+    
+    // Start server
+    server.start().await?;
+    
+    Ok(())
+}
