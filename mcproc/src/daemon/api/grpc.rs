@@ -350,7 +350,7 @@ impl ProcessManagerService for GrpcService {
         let follow = req.follow.unwrap_or(false);
         
         // Get process for follow mode status check (optional)
-        let process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
+        let _process = self.process_manager.get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
         
         // Get config value before the stream
         let follow_poll_interval_ms = self.config.logging.follow_poll_interval_ms;
@@ -412,17 +412,21 @@ impl ProcessManagerService for GrpcService {
             
             // Follow mode: continue reading new lines
             if follow {
+                use tokio::io::{AsyncSeekExt, SeekFrom};
+                use std::fs;
+                
+                let mut last_size = all_lines.len();
+                let mut file_reopened = false;
+                
                 // Re-open file for continuous reading
-                let file = File::open(&log_file).await
+                let mut file = File::open(&log_file).await
                     .map_err(|e| Status::internal(format!("Failed to reopen log file: {}", e)))?;
                 
                 // Seek to end of file
-                use tokio::io::{AsyncSeekExt, SeekFrom};
-                let mut file = file;
                 file.seek(SeekFrom::End(0)).await
                     .map_err(|e| Status::internal(format!("Failed to seek to end: {}", e)))?;
                 
-                let reader = BufReader::new(file);
+                let mut reader = BufReader::new(file);
                 let mut lines = reader.lines();
                 line_num = all_lines.len() as u32;
                 
@@ -442,20 +446,45 @@ impl ProcessManagerService for GrpcService {
                             };
                         }
                         Ok(None) => {
-                            // No more lines, wait and check process status
+                            // No more lines, wait and check for new content
                             tokio::time::sleep(tokio::time::Duration::from_millis(follow_poll_interval_ms)).await;
                             
-                            // Check if process is still running (if process exists)
-                            if let Some(ref proc) = process {
-                                if !matches!(proc.get_status(), crate::daemon::process::ProcessStatus::Running) {
-                                    break;
+                            // Check if the file has been recreated (e.g., after process restart)
+                            if let Ok(metadata) = fs::metadata(&log_file) {
+                                let current_size = metadata.len() as usize;
+                                
+                                // If file is smaller or we've had read errors, it might have been recreated
+                                if current_size < last_size || file_reopened {
+                                    // Re-open the file
+                                    match File::open(&log_file).await {
+                                        Ok(new_file) => {
+                                            let mut new_file = new_file;
+                                            // For a recreated file, start from beginning
+                                            new_file.seek(SeekFrom::Start(0)).await
+                                                .map_err(|e| Status::internal(format!("Failed to seek: {}", e)))?;
+                                            
+                                            reader = BufReader::new(new_file);
+                                            lines = reader.lines();
+                                            file_reopened = false;
+                                            // Note: line_num continues incrementing
+                                        }
+                                        Err(_) => {
+                                            // File might be temporarily unavailable during rotation
+                                            file_reopened = true;
+                                        }
+                                    }
                                 }
+                                last_size = current_size;
                             }
-                            // If no process found, continue following the file
+                            
+                            // Continue following the file regardless of process status
+                            // This allows us to see logs even after restart
                         }
                         Err(e) => {
-                            eprintln!("Error reading log file: {}", e);
-                            break;
+                            // Handle read errors gracefully - file might be rotating
+                            eprintln!("Error reading log file (will retry): {}", e);
+                            tokio::time::sleep(tokio::time::Duration::from_millis(follow_poll_interval_ms)).await;
+                            file_reopened = true;
                         }
                     }
                 }
