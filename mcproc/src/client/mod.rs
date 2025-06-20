@@ -78,8 +78,11 @@ impl DaemonClient {
             }
             
             // Create a channel using Unix socket transport
-            // The URI here is ignored for Unix sockets, but required by the API
-            let channel = Endpoint::try_from("http://[::]:50051")?
+            // The URI here is a dummy value - it's required by the tonic API but ignored
+            // when using Unix sockets. The actual connection is made via the socket_path.
+            const DUMMY_URI_FOR_UNIX_SOCKET: &str = "http://[::]:50051";
+            
+            let channel = Endpoint::try_from(DUMMY_URI_FOR_UNIX_SOCKET)?
                 .connect_timeout(Duration::from_secs(5))
                 .connect_with_connector(service_fn(move |_: Uri| {
                     let socket_path = socket_path.clone();
