@@ -87,70 +87,76 @@ impl ToolHandler for GrepTool {
             Ok(response) => {
                 let grep_response = response.into_inner();
                 
+                if grep_response.matches.is_empty() {
+                    return Ok(json!({
+                        "process": params.name,
+                        "pattern": params.pattern,
+                        "total_matches": 0,
+                        "message": format!("No matches found for pattern '{}' in process '{}'", params.pattern, params.name)
+                    }));
+                }
+                
+                // Format timestamp helper
+                let format_timestamp = |timestamp: Option<&prost_types::Timestamp>| -> String {
+                    timestamp.map(|t| {
+                        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
+                            .unwrap_or_else(chrono::Utc::now);
+                        ts.format("%Y-%m-%d %H:%M:%S").to_string()
+                    }).unwrap_or_default()
+                };
+                
                 let mut matches = Vec::new();
                 
                 for grep_match in grep_response.matches {
-                    let mut match_obj = json!({});
-                    
-                    // Matched line
-                    if let Some(matched_line) = grep_match.matched_line {
-                        match_obj["matched_line"] = json!({
-                            "line_number": matched_line.line_number,
-                            "content": matched_line.content,
-                            "timestamp": matched_line.timestamp.map(|t| {
-                                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                                    .unwrap_or_else(chrono::Utc::now);
-                                ts.to_rfc3339()
-                            }),
-                            "level": if matched_line.level == 2 { "error" } else { "info" }
-                        });
-                    }
+                    let mut lines = Vec::new();
                     
                     // Context before
-                    if !grep_match.context_before.is_empty() {
-                        let context_before: Vec<Value> = grep_match.context_before.iter().map(|entry| {
-                            json!({
-                                "line_number": entry.line_number,
-                                "content": entry.content,
-                                "timestamp": entry.timestamp.as_ref().map(|t| {
-                                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                                        .unwrap_or_else(chrono::Utc::now);
-                                    ts.to_rfc3339()
-                                }),
-                                "level": if entry.level == 2 { "error" } else { "info" }
-                            })
-                        }).collect();
-                        match_obj["context_before"] = Value::Array(context_before);
+                    for entry in &grep_match.context_before {
+                        lines.push(format!("{:>6}: {} {}",
+                            entry.line_number,
+                            format_timestamp(entry.timestamp.as_ref()),
+                            entry.content
+                        ));
                     }
+                    
+                    // Matched line (highlighted)
+                    let matched_line_info = if let Some(matched_line) = &grep_match.matched_line {
+                        lines.push(format!("{:>6}: {} {} <<< MATCH",
+                            matched_line.line_number,
+                            format_timestamp(matched_line.timestamp.as_ref()),
+                            matched_line.content
+                        ));
+                        
+                        Some(json!({
+                            "line_number": matched_line.line_number,
+                            "timestamp": format_timestamp(matched_line.timestamp.as_ref()),
+                            "content": matched_line.content
+                        }))
+                    } else {
+                        None
+                    };
                     
                     // Context after
-                    if !grep_match.context_after.is_empty() {
-                        let context_after: Vec<Value> = grep_match.context_after.iter().map(|entry| {
-                            json!({
-                                "line_number": entry.line_number,
-                                "content": entry.content,
-                                "timestamp": entry.timestamp.as_ref().map(|t| {
-                                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                                        .unwrap_or_else(chrono::Utc::now);
-                                    ts.to_rfc3339()
-                                }),
-                                "level": if entry.level == 2 { "error" } else { "info" }
-                            })
-                        }).collect();
-                        match_obj["context_after"] = Value::Array(context_after);
+                    for entry in &grep_match.context_after {
+                        lines.push(format!("{:>6}: {} {}",
+                            entry.line_number,
+                            format_timestamp(entry.timestamp.as_ref()),
+                            entry.content
+                        ));
                     }
                     
-                    matches.push(match_obj);
+                    matches.push(json!({
+                        "match_info": matched_line_info,
+                        "context": lines.join("\n")
+                    }));
                 }
                 
-                let response = json!({
-                    "pattern": params.pattern,
+                Ok(json!({
                     "process": params.name,
+                    "pattern": params.pattern,
                     "total_matches": matches.len(),
                     "matches": matches
-                });
-                
-                Ok(response)
+                }))
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
