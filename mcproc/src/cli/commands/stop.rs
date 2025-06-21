@@ -1,5 +1,5 @@
-use crate::client::DaemonClient;
 use crate::cli::utils::resolve_project_name_optional;
+use crate::client::DaemonClient;
 use clap::Args;
 use colored::*;
 use proto::StopProcessRequest;
@@ -8,11 +8,11 @@ use proto::StopProcessRequest;
 pub struct StopCommand {
     /// Process name or ID
     name: String,
-    
+
     /// Project name (optional, helps disambiguate)
     #[arg(short, long)]
     project: Option<String>,
-    
+
     /// Force stop (SIGKILL)
     #[arg(short, long)]
     force: bool,
@@ -25,20 +25,27 @@ impl StopCommand {
             force: Some(self.force),
             project: resolve_project_name_optional(self.project),
         };
-        
+
         let response = client.inner().stop_process(request).await?;
         let result = response.into_inner();
-        
+
         if result.success {
-            println!("{} Process '{}' stopped successfully", "✓".green(), self.name);
+            println!(
+                "{} Process '{}' stopped successfully",
+                "✓".green(),
+                self.name
+            );
         } else {
-            println!("{} Failed to stop process '{}': {}", 
-                "✗".red(), 
+            println!(
+                "{} Failed to stop process '{}': {}",
+                "✗".red(),
                 self.name,
-                result.message.unwrap_or_else(|| "Unknown error".to_string())
+                result
+                    .message
+                    .unwrap_or_else(|| "Unknown error".to_string())
             );
         }
-        
+
         Ok(())
     }
 }

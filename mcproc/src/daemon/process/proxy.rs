@@ -61,7 +61,14 @@ pub struct ProxyInfo {
 }
 
 impl ProxyInfo {
-    pub fn new(name: String, project: String, cmd: String, cwd: PathBuf, log_file: PathBuf, ring_buffer_size: usize) -> Self {
+    pub fn new(
+        name: String,
+        project: String,
+        cmd: String,
+        cwd: PathBuf,
+        log_file: PathBuf,
+        ring_buffer_size: usize,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             name,
@@ -79,11 +86,11 @@ impl ProxyInfo {
             exit_time: Arc::new(Mutex::new(None)),
         }
     }
-    
+
     pub fn get_status(&self) -> ProcessStatus {
         ProcessStatus::from(self.status.load(Ordering::Relaxed))
     }
-    
+
     pub fn set_status(&self, status: ProcessStatus) {
         self.status.store(status as u8, Ordering::Relaxed);
     }

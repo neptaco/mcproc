@@ -3,9 +3,9 @@
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
-use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
-use serde_json::{json, Value};
+use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tokio_stream::StreamExt;
 
 pub struct StatusTool {
@@ -15,7 +15,10 @@ pub struct StatusTool {
 
 impl StatusTool {
     pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self { client, default_project }
+        Self {
+            client,
+            default_project,
+        }
     }
 }
 
@@ -41,49 +44,57 @@ impl ToolHandler for StatusTool {
             }),
         }
     }
-    
-    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
-        let params = params
-            .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
-        
-        let params: StatusParams = serde_json::from_value(params)
-            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
-        
+
+    async fn handle(
+        &self,
+        params: Option<Value>,
+        _context: mcp_rs::ToolContext,
+    ) -> McpResult<Value> {
+        let params =
+            params.ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
+
+        let params: StatusParams =
+            serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
         // Determine project name if not provided
         let project = params.project.or(self.default_project.clone()).or_else(|| {
-            std::env::current_dir().ok()
+            std::env::current_dir()
+                .ok()
                 .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                 .and_then(|n| n.into_string().ok())
         });
-        
+
         let request = proto::GetProcessRequest {
             name: params.name.clone(),
             project,
         };
-        
+
         let mut client = self.client.clone();
         match client.inner().get_process(request).await {
             Ok(response) => {
-                let process = response.into_inner().process
+                let process = response
+                    .into_inner()
+                    .process
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
-                
+
                 // Calculate uptime if process is running
                 let uptime = if process.status == proto::ProcessStatus::Running as i32 {
                     process.start_time.as_ref().map(|start_time| {
                         let start = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                            start_time.seconds, 
-                            start_time.nanos as u32
-                        ).unwrap_or_else(chrono::Utc::now);
-                        
+                            start_time.seconds,
+                            start_time.nanos as u32,
+                        )
+                        .unwrap_or_else(chrono::Utc::now);
+
                         let now = chrono::Utc::now();
                         let duration = now - start;
-                        
+
                         // Format duration as human-readable string
                         let days = duration.num_days();
                         let hours = duration.num_hours() % 24;
                         let minutes = duration.num_minutes() % 60;
                         let seconds = duration.num_seconds() % 60;
-                        
+
                         if days > 0 {
                             format!("{}d {}h {}m {}s", days, hours, minutes, seconds)
                         } else if hours > 0 {
@@ -97,7 +108,7 @@ impl ToolHandler for StatusTool {
                 } else {
                     None
                 };
-                
+
                 // Get recent logs preview
                 let logs_request = proto::GetLogsRequest {
                     name: params.name.clone(),
@@ -105,7 +116,7 @@ impl ToolHandler for StatusTool {
                     follow: Some(false),
                     project: Some(process.project.clone()),
                 };
-                
+
                 let mut logs_preview = Vec::new();
                 if let Ok(stream) = client.inner().get_logs(logs_request).await {
                     let mut stream = stream.into_inner();
@@ -121,7 +132,7 @@ impl ToolHandler for StatusTool {
                         }
                     }
                 }
-                
+
                 let response = json!({
                     "id": process.id,
                     "project": process.project,
@@ -140,12 +151,15 @@ impl ToolHandler for StatusTool {
                     "ports": process.ports,
                     "recent_logs": logs_preview,
                 });
-                
+
                 Ok(response)
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
-                    Err(McpError::InvalidParams(format!("Process '{}' not found", params.name)))
+                    Err(McpError::InvalidParams(format!(
+                        "Process '{}' not found",
+                        params.name
+                    )))
                 } else {
                     Err(McpError::Internal(e.message().to_string()))
                 }

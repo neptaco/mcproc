@@ -1,9 +1,9 @@
 pub mod commands;
 pub mod utils;
 
-use clap::{Parser, Subcommand};
 use crate::client::DaemonClient;
 use crate::common::config::Config;
+use clap::{Parser, Subcommand};
 use commands::*;
 
 #[derive(Parser)]
@@ -13,7 +13,7 @@ pub struct Cli {
     /// Run as daemon
     #[arg(long, hide = true)]
     daemon: bool,
-    
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -22,46 +22,46 @@ pub struct Cli {
 pub enum Commands {
     /// Start or attach to a process
     Start(StartCommand),
-    
+
     /// Stop a running process
     Stop(StopCommand),
-    
+
     /// Restart a process
     Restart(RestartCommand),
-    
+
     /// List running processes
     Ps(PsCommand),
-    
+
     /// View process logs
     Logs(LogsCommand),
-    
+
     /// Search process logs
     Grep(GrepCommand),
-    
+
     /// Get path to process log file
     Logfile {
         /// Process name
         name: String,
     },
-    
+
     /// MCP server management
     Mcp(McpCommand),
-    
+
     /// Manage mcprocd daemon
     Daemon(DaemonCommand),
-    
+
     /// Show version information
     Version(VersionCommand),
 }
 
 pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
-    
+
     // Check if --daemon flag is set
     if cli.daemon {
         return crate::daemon::run_daemon().await;
     }
-    
+
     // If no command, show help
     let command = match cli.command {
         Some(cmd) => cmd,
@@ -71,15 +71,15 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    
+
     // Handle daemon command separately (doesn't need client connection)
     if let Commands::Daemon(cmd) = command {
         return cmd.execute().await;
     }
-    
+
     // Connect to mcprocd
     let client = DaemonClient::connect(None).await?;
-    
+
     // Execute command
     match command {
         Commands::Start(cmd) => cmd.execute(client).await?,
@@ -97,6 +97,6 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Daemon(_) => unreachable!(), // Already handled above
         Commands::Version(cmd) => cmd.execute().await?,
     }
-    
+
     Ok(())
 }

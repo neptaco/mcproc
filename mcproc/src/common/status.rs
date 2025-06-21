@@ -16,22 +16,22 @@ pub fn format_status_enum(status: proto::ProcessStatus) -> String {
 
 /// Format process status as string (from i32)
 pub fn format_status(status: i32) -> String {
-    let status_enum = proto::ProcessStatus::try_from(status)
-        .unwrap_or(proto::ProcessStatus::Unknown);
+    let status_enum =
+        proto::ProcessStatus::try_from(status).unwrap_or(proto::ProcessStatus::Unknown);
     format_status_enum(status_enum)
 }
 
 /// Format process status as colored string for display
 pub fn format_status_colored(status: i32) -> colored::ColoredString {
-    let status_enum = proto::ProcessStatus::try_from(status)
-        .unwrap_or(proto::ProcessStatus::Unknown);
+    let status_enum =
+        proto::ProcessStatus::try_from(status).unwrap_or(proto::ProcessStatus::Unknown);
     format_status_colored_enum(status_enum)
 }
 
 /// Format process status enum as colored string for display
 pub fn format_status_colored_enum(status: proto::ProcessStatus) -> colored::ColoredString {
     let status_str = format_status_enum(status);
-    
+
     match status {
         proto::ProcessStatus::Unknown => status_str.white(),
         proto::ProcessStatus::Starting => status_str.yellow(),
@@ -41,4 +41,3 @@ pub fn format_status_colored_enum(status: proto::ProcessStatus) -> colored::Colo
         proto::ProcessStatus::Failed => status_str.red().bold(),
     }
 }
-

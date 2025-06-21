@@ -2,9 +2,9 @@
 
 use crate::client::DaemonClient;
 use async_trait::async_trait;
-use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
-use serde_json::{json, Value};
+use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 pub struct StopTool {
     client: DaemonClient,
@@ -13,7 +13,10 @@ pub struct StopTool {
 
 impl StopTool {
     pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self { client, default_project }
+        Self {
+            client,
+            default_project,
+        }
     }
 }
 
@@ -39,27 +42,32 @@ impl ToolHandler for StopTool {
             }),
         }
     }
-    
-    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
-        let params = params
-            .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
-        
-        let params: StopParams = serde_json::from_value(params)
-            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
-        
+
+    async fn handle(
+        &self,
+        params: Option<Value>,
+        _context: mcp_rs::ToolContext,
+    ) -> McpResult<Value> {
+        let params =
+            params.ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
+
+        let params: StopParams =
+            serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
         let request = proto::StopProcessRequest {
             name: params.name,
             force: None,
             project: params.project.or(self.default_project.clone()),
         };
-        
+
         let mut client = self.client.clone();
-        let response = client.inner()
+        let response = client
+            .inner()
             .stop_process(request)
             .await
             .map_err(|e| McpError::Internal(e.to_string()))?
             .into_inner();
-        
+
         Ok(json!({
             "success": response.success,
             "message": response.message,

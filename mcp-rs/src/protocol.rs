@@ -11,9 +11,13 @@ use tokio::sync::RwLock;
 pub trait ToolHandler: Send + Sync {
     /// Get tool information
     fn tool_info(&self) -> ToolInfo;
-    
+
     /// Handle tool call with context
-    async fn handle(&self, params: Option<Value>, context: crate::notification::ToolContext) -> Result<Value>;
+    async fn handle(
+        &self,
+        params: Option<Value>,
+        context: crate::notification::ToolContext,
+    ) -> Result<Value>;
 }
 
 /// MCP Protocol implementation
@@ -39,37 +43,43 @@ impl Protocol {
             notification_sender: Arc::new(RwLock::new(None)),
         }
     }
-    
+
     /// Set the notification sender
-    pub async fn set_notification_sender(&self, sender: Arc<dyn crate::notification::NotificationSender>) {
+    pub async fn set_notification_sender(
+        &self,
+        sender: Arc<dyn crate::notification::NotificationSender>,
+    ) {
         let mut ns = self.notification_sender.write().await;
         *ns = Some(sender);
     }
-    
+
     /// Register a tool handler
     pub async fn register_tool(&self, handler: Arc<dyn ToolHandler>) {
         let tool_info = handler.tool_info();
         let mut tools = self.tools.write().await;
         tools.insert(tool_info.name.clone(), handler);
     }
-    
+
     /// Register a custom method handler
     pub async fn register_custom_handler(&self, method: String, handler: Box<dyn McpHandler>) {
         let mut handlers = self.custom_handlers.write().await;
         handlers.insert(method, handler);
     }
-    
+
     /// Handle incoming message and return response and any notifications
-    pub async fn handle_message(&self, message: JsonRpcMessage) -> (Option<JsonRpcMessage>, Vec<JsonRpcNotification>) {
+    pub async fn handle_message(
+        &self,
+        message: JsonRpcMessage,
+    ) -> (Option<JsonRpcMessage>, Vec<JsonRpcNotification>) {
         // Create a queued notification sender for this request
         let queued_sender = Arc::new(crate::notification::QueuedNotificationSender::new());
-        
+
         // Temporarily set it as the active sender
         {
             let mut ns = self.notification_sender.write().await;
             *ns = Some(queued_sender.clone());
         }
-        
+
         let response = match message {
             JsonRpcMessage::Request(req) => {
                 let response = self.handle_request(req, queued_sender.clone()).await;
@@ -95,13 +105,13 @@ impl Protocol {
             }
             JsonRpcMessage::Response(_) => None, // Server doesn't handle responses
         };
-        
+
         // Collect any notifications that were queued
         let notifications = queued_sender.take_all().await;
-        
+
         (response, notifications)
     }
-    
+
     pub async fn handle_message_realtime(&self, message: JsonRpcMessage) -> Option<JsonRpcMessage> {
         match message {
             JsonRpcMessage::Request(req) => {
@@ -114,8 +124,10 @@ impl Protocol {
                     Arc::new(crate::notification::QueuedNotificationSender::new())
                 };
                 drop(ns);
-                
-                Some(JsonRpcMessage::Response(self.handle_request_with_sender(req, sender).await))
+
+                Some(JsonRpcMessage::Response(
+                    self.handle_request_with_sender(req, sender).await,
+                ))
             }
             JsonRpcMessage::Notification(notif) => {
                 self.handle_notification(notif).await;
@@ -137,20 +149,38 @@ impl Protocol {
             JsonRpcMessage::Response(_) => None, // Server doesn't handle responses
         }
     }
-    
-    async fn handle_request(&self, req: JsonRpcRequest, notification_sender: Arc<crate::notification::QueuedNotificationSender>) -> JsonRpcResponse {
-        self.handle_request_with_sender(req, notification_sender as Arc<dyn crate::notification::NotificationSender>).await
+
+    async fn handle_request(
+        &self,
+        req: JsonRpcRequest,
+        notification_sender: Arc<crate::notification::QueuedNotificationSender>,
+    ) -> JsonRpcResponse {
+        self.handle_request_with_sender(
+            req,
+            notification_sender as Arc<dyn crate::notification::NotificationSender>,
+        )
+        .await
     }
-    
-    async fn handle_request_with_sender(&self, req: JsonRpcRequest, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> JsonRpcResponse {
+
+    async fn handle_request_with_sender(
+        &self,
+        req: JsonRpcRequest,
+        notification_sender: Arc<dyn crate::notification::NotificationSender>,
+    ) -> JsonRpcResponse {
         let result = match req.method.parse::<McpMethod>().unwrap() {
             McpMethod::Initialize => self.handle_initialize(req.params).await,
             McpMethod::ToolsList => self.handle_tools_list(req.params).await,
-            McpMethod::ToolsCall => self.handle_tools_call(req.params, req.id.clone(), notification_sender).await,
+            McpMethod::ToolsCall => {
+                self.handle_tools_call(req.params, req.id.clone(), notification_sender)
+                    .await
+            }
             McpMethod::Shutdown => self.handle_shutdown(req.params).await,
-            McpMethod::Custom(method) => self.handle_custom(&method, req.params, req.id.clone(), notification_sender).await,
+            McpMethod::Custom(method) => {
+                self.handle_custom(&method, req.params, req.id.clone(), notification_sender)
+                    .await
+            }
         };
-        
+
         match result {
             Ok(result) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -166,12 +196,12 @@ impl Protocol {
             },
         }
     }
-    
+
     async fn handle_notification(&self, _notif: JsonRpcNotification) {
         // Notifications don't require a response
         // Log or handle as needed
     }
-    
+
     async fn handle_initialize(&self, _params: Option<Value>) -> Result<Value> {
         Ok(json!({
             "protocolVersion": "2025-03-26",
@@ -186,36 +216,42 @@ impl Protocol {
             }
         }))
     }
-    
+
     async fn handle_shutdown(&self, _params: Option<Value>) -> Result<Value> {
         Ok(json!({}))
     }
-    
+
     async fn handle_tools_list(&self, _params: Option<Value>) -> Result<Value> {
         let tools = self.tools.read().await;
-        let tools_list: Vec<ToolInfo> = tools.values()
-            .map(|handler| handler.tool_info())
-            .collect();
+        let tools_list: Vec<ToolInfo> = tools.values().map(|handler| handler.tool_info()).collect();
         Ok(json!({
             "tools": tools_list
         }))
     }
-    
-    async fn handle_tools_call(&self, params: Option<Value>, request_id: JsonRpcId, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> Result<Value> {
-        let params = params.ok_or_else(|| Error::InvalidParams("Missing parameters".to_string()))?;
-        
-        let tool_name = params.get("name")
+
+    async fn handle_tools_call(
+        &self,
+        params: Option<Value>,
+        request_id: JsonRpcId,
+        notification_sender: Arc<dyn crate::notification::NotificationSender>,
+    ) -> Result<Value> {
+        let params =
+            params.ok_or_else(|| Error::InvalidParams("Missing parameters".to_string()))?;
+
+        let tool_name = params
+            .get("name")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::InvalidParams("Missing tool name".to_string()))?;
-        
+
         let tool_params = params.get("arguments");
-        
+
         // Extract progress token from metadata if present
-        let progress_token = params.get("_meta")
+        let progress_token = params
+            .get("_meta")
             .and_then(|meta| meta.get("progressToken"))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        
+
         let tools = self.tools.read().await;
         if let Some(handler) = tools.get(tool_name) {
             // Create tool context with notification sender
@@ -224,7 +260,7 @@ impl Protocol {
                 progress_token,
                 Some(request_id),
             );
-            
+
             match handler.handle(tool_params.cloned(), context).await {
                 Ok(result) => {
                     // Wrap the result in MCP tool response format
@@ -248,39 +284,52 @@ impl Protocol {
                 }
             }
         } else {
-            Err(Error::MethodNotFound(format!("Tool not found: {}", tool_name)))
+            Err(Error::MethodNotFound(format!(
+                "Tool not found: {}",
+                tool_name
+            )))
         }
     }
-    
-    async fn handle_custom(&self, method: &str, params: Option<Value>, request_id: JsonRpcId, notification_sender: Arc<dyn crate::notification::NotificationSender>) -> Result<Value> {
+
+    async fn handle_custom(
+        &self,
+        method: &str,
+        params: Option<Value>,
+        request_id: JsonRpcId,
+        notification_sender: Arc<dyn crate::notification::NotificationSender>,
+    ) -> Result<Value> {
         // First check if it's a tool method (e.g., "tool_name" format)
         let tools = self.tools.read().await;
         if let Some(handler) = tools.get(method) {
             // Extract progress token from params if present
-            let progress_token = params.as_ref()
+            let progress_token = params
+                .as_ref()
                 .and_then(|p| p.get("_meta"))
                 .and_then(|meta| meta.get("progressToken"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            
+
             let context = crate::notification::ToolContext::new(
                 notification_sender,
                 progress_token,
                 Some(request_id),
             );
-            
+
             return handler.handle(params, context).await;
         }
-        
+
         // Then check custom handlers
         let handlers = self.custom_handlers.read().await;
         if let Some(handler) = handlers.get(method) {
             handler.handle(params).await
         } else {
-            Err(Error::MethodNotFound(format!("Method not found: {}", method)))
+            Err(Error::MethodNotFound(format!(
+                "Method not found: {}",
+                method
+            )))
         }
     }
-    
+
     fn error_to_json_rpc(&self, error: Error) -> JsonRpcError {
         match error {
             Error::MethodNotFound(msg) => JsonRpcError {

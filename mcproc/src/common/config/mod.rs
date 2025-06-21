@@ -1,6 +1,6 @@
+use crate::common::xdg;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use crate::common::xdg;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -102,7 +102,6 @@ pub struct PortDetectionConfig {
     pub max_attempts: u32,
 }
 
-
 impl Default for Config {
     fn default() -> Self {
         // Get XDG directories
@@ -110,7 +109,7 @@ impl Default for Config {
         let state_dir = xdg::get_state_dir();
         let runtime_dir = xdg::get_runtime_dir();
         let log_dir = state_dir.join("log");
-        
+
         Self {
             paths: PathConfig {
                 data_dir: data_dir.clone(),
@@ -161,10 +160,10 @@ impl Config {
     pub fn get_config_file_path() -> PathBuf {
         xdg::get_config_dir().join("config.toml")
     }
-    
+
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let config_path = Self::get_config_file_path();
-        
+
         if config_path.exists() {
             // Load from config file
             let contents = std::fs::read_to_string(&config_path)?;
@@ -175,33 +174,33 @@ impl Config {
             Ok(Self::default())
         }
     }
-    
+
     pub fn ensure_directories(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
-        
+
         // Ensure runtime directory exists
         if let Some(parent) = self.paths.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         // Ensure config directory exists
         let config_dir = xdg::get_config_dir();
         std::fs::create_dir_all(&config_dir)?;
-        
+
         Ok(())
     }
-    
+
     // Convenience methods for accessing paths
     pub fn process_log_file(&self, process_name: &str) -> PathBuf {
         let safe_name = process_name.replace('/', "_");
         self.paths.log_dir.join(format!("{}.log", safe_name))
     }
-    
+
     pub fn daemon_log_file(&self) -> PathBuf {
         self.paths.daemon_log_file.clone()
     }
-    
+
     // Create a minimal config for CLI/client use (no daemon dependencies)
     pub fn for_client() -> Self {
         Self::default()

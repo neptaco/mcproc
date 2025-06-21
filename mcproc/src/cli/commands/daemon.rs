@@ -1,8 +1,8 @@
 //! Daemon management commands
 
+use crate::common::config::Config;
 use clap::{Parser, Subcommand};
 use std::time::Duration;
-use crate::common::config::Config;
 
 #[derive(Parser)]
 pub struct DaemonCommand {
@@ -14,13 +14,13 @@ pub struct DaemonCommand {
 enum DaemonSubcommands {
     /// Start the mcprocd daemon
     Start,
-    
+
     /// Stop the mcprocd daemon
     Stop,
-    
+
     /// Restart the mcprocd daemon
     Restart,
-    
+
     /// Show daemon status
     Status,
 }
@@ -29,7 +29,7 @@ impl DaemonCommand {
     pub async fn execute(self) -> Result<(), Box<dyn std::error::Error>> {
         let config = Config::for_client();
         config.ensure_directories()?;
-        
+
         match self.command {
             DaemonSubcommands::Start => {
                 // Check if already running
@@ -37,94 +37,100 @@ impl DaemonCommand {
                     println!("mcprocd daemon is already running");
                     return Ok(());
                 }
-                
+
                 start_daemon()?;
                 println!("Started mcprocd daemon");
                 Ok(())
             }
-            
+
             DaemonSubcommands::Stop => {
                 if !is_daemon_running(&config.paths.pid_file) {
                     println!("mcprocd daemon is not running");
                     return Ok(());
                 }
-                
+
                 let pid = std::fs::read_to_string(&config.paths.pid_file)?
                     .trim()
                     .parse::<i32>()?;
-                
+
                 // Send SIGTERM
                 nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGTERM
+                    nix::sys::signal::Signal::SIGTERM,
                 )?;
-                
+
                 // Wait for daemon to stop
-                let max_wait_iterations = config.daemon.shutdown_grace_period_ms / config.daemon.stop_check_interval_ms;
+                let max_wait_iterations =
+                    config.daemon.shutdown_grace_period_ms / config.daemon.stop_check_interval_ms;
                 for _ in 0..max_wait_iterations {
-                    tokio::time::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms)).await;
+                    tokio::time::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms))
+                        .await;
                     if !is_daemon_running(&config.paths.pid_file) {
                         println!("Stopped mcprocd daemon");
                         return Ok(());
                     }
                 }
-                
+
                 println!("Warning: daemon did not stop gracefully, sending SIGKILL");
                 nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid),
-                    nix::sys::signal::Signal::SIGKILL
+                    nix::sys::signal::Signal::SIGKILL,
                 )?;
-                
+
                 // Clean up files
                 let _ = std::fs::remove_file(&config.paths.pid_file);
-                
+
                 println!("Forcefully stopped mcprocd daemon");
                 Ok(())
             }
-            
+
             DaemonSubcommands::Restart => {
                 // Stop if running
                 if is_daemon_running(&config.paths.pid_file) {
                     println!("Stopping mcprocd daemon...");
-                    
+
                     let pid = std::fs::read_to_string(&config.paths.pid_file)?
                         .trim()
                         .parse::<i32>()?;
-                    
+
                     nix::sys::signal::kill(
                         nix::unistd::Pid::from_raw(pid),
-                        nix::sys::signal::Signal::SIGTERM
+                        nix::sys::signal::Signal::SIGTERM,
                     )?;
-                    
+
                     // Wait for stop
-                    let max_wait_iterations = config.daemon.shutdown_grace_period_ms / config.daemon.stop_check_interval_ms;
+                    let max_wait_iterations = config.daemon.shutdown_grace_period_ms
+                        / config.daemon.stop_check_interval_ms;
                     for _ in 0..max_wait_iterations {
-                        tokio::time::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms)).await;
+                        tokio::time::sleep(Duration::from_millis(
+                            config.daemon.stop_check_interval_ms,
+                        ))
+                        .await;
                         if !is_daemon_running(&config.paths.pid_file) {
                             break;
                         }
                     }
                 }
-                
+
                 // Start new daemon
                 start_daemon()?;
                 println!("Restarted mcprocd daemon");
                 Ok(())
             }
-            
+
             DaemonSubcommands::Status => {
                 if !config.paths.pid_file.exists() {
                     println!("mcprocd daemon is not running (no PID file)");
                     return Ok(());
                 }
-                
+
                 if !is_daemon_running(&config.paths.pid_file) {
                     println!("mcprocd daemon is not running (stale PID file)");
                     // Clean up stale PID file
                     let _ = std::fs::remove_file(&config.paths.pid_file);
                     return Ok(());
                 }
-                
+
                 // Try to connect to daemon to get detailed status
                 match crate::client::DaemonClient::connect(None).await {
                     Ok(mut client) => {
@@ -162,7 +168,7 @@ impl DaemonCommand {
                         println!("  (Could not connect to daemon for detailed status)");
                     }
                 }
-                
+
                 Ok(())
             }
         }
@@ -174,7 +180,7 @@ fn format_uptime(seconds: u64) -> String {
     let hours = (seconds % 86400) / 3600;
     let minutes = (seconds % 3600) / 60;
     let secs = seconds % 60;
-    
+
     if days > 0 {
         format!("{}d {}h {}m {}s", days, hours, minutes, secs)
     } else if hours > 0 {
@@ -200,26 +206,26 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
 }
 
 fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
-    let mcproc_path = std::env::current_exe()
-        .unwrap_or_else(|_| std::path::PathBuf::from("mcproc"));
-    
+    let mcproc_path =
+        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("mcproc"));
+
     println!("Starting mcprocd daemon...");
-    
+
     // Get config and create directories
     let config = Config::for_client();
     config.ensure_directories()?;
-    
+
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(config.daemon_log_file())?;
-    
+
     let mut cmd = std::process::Command::new(&mcproc_path);
     cmd.arg("--daemon")
         .stdin(std::process::Stdio::null())
         .stdout(log_file.try_clone()?)
         .stderr(log_file);
-    
+
     // Detach from parent process
     #[cfg(unix)]
     {
@@ -232,13 +238,14 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     }
-    
+
     match cmd.spawn() {
         Ok(child) => {
             println!("Spawned mcprocd with PID: {}", child.id());
-            
+
             // Wait for daemon to start and create PID file
-            let max_wait_iterations = config.daemon.startup_timeout_ms / config.daemon.stop_check_interval_ms;
+            let max_wait_iterations =
+                config.daemon.startup_timeout_ms / config.daemon.stop_check_interval_ms;
             for i in 0..max_wait_iterations {
                 std::thread::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms));
                 if config.paths.pid_file.exists() {
@@ -249,11 +256,9 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     println!("Waiting for daemon to start...");
                 }
             }
-            
+
             Err("Daemon failed to start (PID file not created)".into())
         }
-        Err(e) => {
-            Err(format!("Failed to spawn mcprocd: {}", e).into())
-        }
+        Err(e) => Err(format!("Failed to spawn mcprocd: {}", e).into()),
     }
 }

@@ -3,9 +3,9 @@
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
-use mcp_rs::{ToolHandler, ToolInfo, Result as McpResult, Error as McpError};
-use serde_json::{json, Value};
+use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
+use serde_json::{json, Value};
 
 pub struct RestartTool {
     client: DaemonClient,
@@ -14,7 +14,10 @@ pub struct RestartTool {
 
 impl RestartTool {
     pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self { client, default_project }
+        Self {
+            client,
+            default_project,
+        }
     }
 }
 
@@ -40,23 +43,29 @@ impl ToolHandler for RestartTool {
             }),
         }
     }
-    
-    async fn handle(&self, params: Option<Value>, _context: mcp_rs::ToolContext) -> McpResult<Value> {
-        let params = params
-            .ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
-        
-        let params: RestartParams = serde_json::from_value(params)
-            .map_err(|e| McpError::InvalidParams(e.to_string()))?;
-        
+
+    async fn handle(
+        &self,
+        params: Option<Value>,
+        _context: mcp_rs::ToolContext,
+    ) -> McpResult<Value> {
+        let params =
+            params.ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
+
+        let params: RestartParams =
+            serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
         let request = proto::RestartProcessRequest {
             name: params.name.clone(),
             project: params.project.or(self.default_project.clone()),
         };
-        
+
         let mut client = self.client.clone();
         match client.inner().restart_process(request).await {
             Ok(response) => {
-                let process = response.into_inner().process
+                let process = response
+                    .into_inner()
+                    .process
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
                 Ok(json!({
                     "id": process.id,
@@ -72,9 +81,7 @@ impl ToolHandler for RestartTool {
                     }),
                 }))
             }
-            Err(e) => {
-                Err(McpError::Internal(e.message().to_string()))
-            }
+            Err(e) => Err(McpError::Internal(e.message().to_string())),
         }
     }
 }

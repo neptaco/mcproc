@@ -17,16 +17,21 @@ impl LogHub {
             file_handles: RwLock::new(std::collections::HashMap::new()),
         }
     }
-    
-    pub async fn append_log(&self, process_name: &str, content: &[u8], is_stderr: bool) -> Result<(), std::io::Error> {
+
+    pub async fn append_log(
+        &self,
+        process_name: &str,
+        content: &[u8],
+        is_stderr: bool,
+    ) -> Result<(), std::io::Error> {
         let content_str = String::from_utf8_lossy(content);
         let level = if is_stderr { "ERROR" } else { "INFO" };
-        
+
         // Get or create file handle for this process
         let mut handles = self.file_handles.write().await;
-        
+
         let log_file_path = self.get_log_file_path(process_name);
-        
+
         if !handles.contains_key(process_name) {
             match OpenOptions::new()
                 .create(true)
@@ -43,11 +48,11 @@ impl LogHub {
                 }
             }
         }
-        
+
         // Format log line
         let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let log_line = format!("{} [{}] {}\n", timestamp, level, content_str.trim());
-        
+
         // Write to file
         if let Some(file) = handles.get_mut(process_name) {
             file.write_all(log_line.as_bytes()).await.map_err(|e| {
@@ -59,24 +64,27 @@ impl LogHub {
         }
         Ok(())
     }
-    
+
     #[allow(dead_code)]
     pub async fn get_log_file(&self, process_name: &str) -> Option<PathBuf> {
         let log_file = self.get_log_file_path(process_name);
-        
+
         if log_file.exists() {
             Some(log_file)
         } else {
             None
         }
     }
-    
+
     fn get_log_file_path(&self, process_name: &str) -> PathBuf {
         // Replace "/" with "_" to create valid filesystem paths
         let sanitized_name = process_name.replace("/", "_");
-        self.config.paths.log_dir.join(format!("{}.log", sanitized_name))
+        self.config
+            .paths
+            .log_dir
+            .join(format!("{}.log", sanitized_name))
     }
-    
+
     pub async fn close_log(&self, process_name: &str) {
         let mut handles = self.file_handles.write().await;
         handles.remove(process_name);

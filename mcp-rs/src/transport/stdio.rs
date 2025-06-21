@@ -16,8 +16,12 @@ impl StdioTransport {
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel(100);
         let (shutdown_tx, _) = mpsc::channel(1);
-        
-        Self { tx, rx, shutdown_tx }
+
+        Self {
+            tx,
+            rx,
+            shutdown_tx,
+        }
     }
 }
 
@@ -33,13 +37,13 @@ impl Transport for StdioTransport {
         let tx = self.tx.clone();
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = shutdown_tx;
-        
+
         // Spawn stdin reader
         tokio::spawn(async move {
             let stdin = tokio::io::stdin();
             let reader = BufReader::new(stdin);
             let mut lines = reader.lines();
-            
+
             loop {
                 tokio::select! {
                     _ = shutdown_rx.recv() => break,
@@ -59,10 +63,10 @@ impl Transport for StdioTransport {
                 }
             }
         });
-        
+
         Ok(())
     }
-    
+
     async fn send(&mut self, message: JsonRpcMessage) -> Result<()> {
         let json = serde_json::to_string(&message)?;
         let mut stdout = tokio::io::stdout();
@@ -71,11 +75,11 @@ impl Transport for StdioTransport {
         stdout.flush().await?;
         Ok(())
     }
-    
+
     async fn receive(&mut self) -> Result<Option<JsonRpcMessage>> {
         Ok(self.rx.recv().await)
     }
-    
+
     async fn close(&mut self) -> Result<()> {
         let _ = self.shutdown_tx.send(()).await;
         Ok(())

@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::env;
+use std::path::PathBuf;
 
 /// Get XDG config directory for mcproc
 /// Falls back to ~/.config/mcproc if XDG_CONFIG_HOME is not set
@@ -91,6 +91,9 @@ mod tests {
     fn test_runtime_dir_fallback() {
         env::remove_var("XDG_RUNTIME_DIR");
         let uid = unsafe { libc::getuid() };
-        assert_eq!(get_runtime_dir(), PathBuf::from(format!("/tmp/mcproc-{}", uid)));
+        assert_eq!(
+            get_runtime_dir(),
+            PathBuf::from(format!("/tmp/mcproc-{}", uid))
+        );
     }
 }

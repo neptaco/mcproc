@@ -16,13 +16,13 @@ pub mod streamable_http;
 pub trait Transport: Send + Sync {
     /// Start the transport
     async fn start(&mut self) -> Result<()>;
-    
+
     /// Send a message
     async fn send(&mut self, message: JsonRpcMessage) -> Result<()>;
-    
+
     /// Receive a message
     async fn receive(&mut self) -> Result<Option<JsonRpcMessage>>;
-    
+
     /// Close the transport
     async fn close(&mut self) -> Result<()>;
 }
