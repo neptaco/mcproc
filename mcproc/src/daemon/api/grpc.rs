@@ -1,5 +1,6 @@
 use crate::common::exit_code::format_exit_reason;
 use crate::common::config::Config;
+use crate::common::version::VERSION;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
 use proto::process_manager_server::{ProcessManager as ProcessManagerService, ProcessManagerServer};
@@ -11,11 +12,13 @@ use tonic::{transport::Server, Request, Response, Status};
 use tokio_stream::Stream;
 use tracing::{info, error};
 use uuid::Uuid;
+use chrono::Utc;
 
 pub struct GrpcService {
     process_manager: Arc<ProcessManager>,
     log_hub: Arc<LogHub>,
     config: Arc<Config>,
+    start_time: chrono::DateTime<Utc>,
 }
 
 impl GrpcService {
@@ -24,6 +27,7 @@ impl GrpcService {
             process_manager,
             log_hub,
             config,
+            start_time: Utc::now(),
         }
     }
 }
@@ -534,6 +538,31 @@ impl ProcessManagerService for GrpcService {
             .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?;
         
         Ok(Response::new(GrepLogsResponse { matches }))
+    }
+    
+    async fn get_daemon_status(
+        &self,
+        _request: Request<GetDaemonStatusRequest>,
+    ) -> Result<Response<GetDaemonStatusResponse>, Status> {
+        let pid = std::process::id();
+        let now = Utc::now();
+        let uptime_seconds = (now - self.start_time).num_seconds() as u64;
+        
+        let active_processes = self.process_manager.get_all_processes().len() as u32;
+        
+        let response = GetDaemonStatusResponse {
+            version: VERSION.to_string(),
+            pid,
+            start_time: Some(prost_types::Timestamp {
+                seconds: self.start_time.timestamp(),
+                nanos: self.start_time.timestamp_subsec_nanos() as i32,
+            }),
+            uptime_seconds,
+            data_dir: self.config.paths.data_dir.to_string_lossy().to_string(),
+            active_processes,
+        };
+        
+        Ok(Response::new(response))
     }
 }
 

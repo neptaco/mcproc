@@ -749,6 +749,12 @@ impl ProcessManager {
         None
     }
     
+    pub fn get_all_processes(&self) -> Vec<Arc<ProxyInfo>> {
+        self.processes.iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+    
     pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
         self.processes.iter().map(|entry| entry.value().clone()).collect()
     }

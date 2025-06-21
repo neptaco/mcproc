@@ -6,6 +6,7 @@ pub mod ps;
 pub mod restart;
 pub mod start;
 pub mod stop;
+pub mod version;
 
 pub use daemon::DaemonCommand;
 pub use grep::GrepCommand;
@@ -15,3 +16,4 @@ pub use ps::PsCommand;
 pub use restart::RestartCommand;
 pub use start::StartCommand;
 pub use stop::StopCommand;
+pub use version::VersionCommand;

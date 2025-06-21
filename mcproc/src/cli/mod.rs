@@ -49,6 +49,9 @@ pub enum Commands {
     
     /// Manage mcprocd daemon
     Daemon(DaemonCommand),
+    
+    /// Show version information
+    Version(VersionCommand),
 }
 
 pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -92,6 +95,7 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Mcp(cmd) => cmd.execute(client).await?,
         Commands::Daemon(_) => unreachable!(), // Already handled above
+        Commands::Version(cmd) => cmd.execute().await?,
     }
     
     Ok(())
