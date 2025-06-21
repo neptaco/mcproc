@@ -56,6 +56,26 @@ cargo run --bin mcprocd  # Run daemon
 cargo run --bin mcproc -- <command>  # Run CLI
 ```
 
+### Pre-commit Checklist
+
+Before committing changes, always run these checks to ensure CI passes:
+
+```bash
+# 1. Format check
+cargo fmt -- --check
+
+# 2. Clippy (linting)
+cargo clippy -- -D warnings
+
+# 3. Tests
+cargo test
+
+# 4. Security audit
+cargo audit
+```
+
+If any of these fail, fix the issues before committing. This helps maintain code quality and prevents CI failures.
+
 ## Project Structure
 
 The intended structure follows a workspace layout:

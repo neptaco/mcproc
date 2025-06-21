@@ -59,8 +59,6 @@ uuid = { version = "1.11", features = ["v4", "serde"] }
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
-# Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "uuid"] }
 
 # Path handling
 dirs = "6.0"

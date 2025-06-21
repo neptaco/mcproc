@@ -105,7 +105,7 @@ impl DaemonClient {
                 warn!("Version check failed: {}", e);
             }
             
-            return Ok(daemon_client);
+            Ok(daemon_client)
         }
         
         #[cfg(not(unix))]

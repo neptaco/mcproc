@@ -109,7 +109,7 @@ impl LogsCommand {
                     // Take only the last N entries
                     let start = all_entries.len().saturating_sub(self.tail as usize);
                     for entry in &all_entries[start..] {
-                        print_log_entry_with_process(&entry);
+                        print_log_entry_with_process(entry);
                     }
                 } else {
                     // For follow mode, stream from all processes concurrently
@@ -331,7 +331,7 @@ async fn stream_multiple_logs(
     }
     
     // Wait for all tasks to complete
-    while let Some(_) = tasks.join_next().await {}
+    while (tasks.join_next().await).is_some() {}
     
     Ok(())
 }

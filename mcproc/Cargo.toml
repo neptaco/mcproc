@@ -60,8 +60,6 @@ uuid.workspace = true
 # Date/time
 chrono.workspace = true
 
-# Database
-sqlx.workspace = true
 
 # Path handling
 dirs.workspace = true

@@ -56,6 +56,7 @@ impl ProcessManager {
         Ok(proxy)
     }
     
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_process_with_log_stream(
         &self,
         name: String,

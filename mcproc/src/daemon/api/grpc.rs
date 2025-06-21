@@ -100,7 +100,7 @@ impl ProcessManagerService for GrpcService {
                     let current_status = process.get_status();
                     let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
                         // Get exit details if process failed
-                        let code = process.exit_code.lock().unwrap().clone();
+                        let code = *process.exit_code.lock().unwrap();
                         let reason = code.map(format_exit_reason);
                         let stderr = process.ring.lock().ok().map(|ring| {
                             ring.iter()
