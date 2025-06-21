@@ -1,7 +1,7 @@
 use crate::common::config::Config;
 use crate::common::version::VERSION;
 use proto::process_manager_client::ProcessManagerClient;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
@@ -128,7 +128,7 @@ impl DaemonClient {
 
     async fn check_and_restart_if_needed(
         client: &mut Self,
-        _socket_path: &PathBuf,
+        _socket_path: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let request = proto::GetDaemonStatusRequest {};
         match client.inner().get_daemon_status(request).await {
