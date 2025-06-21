@@ -207,6 +207,7 @@ impl ProcessManager {
         let has_pattern_stdout = log_pattern_stdout.is_some();
         let timeout_occurred_stdout = timeout_occurred.clone();
         let default_wait_timeout_secs = self.config.process.startup.default_wait_timeout_secs;
+        let proxy_status_check = proxy_arc.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -221,8 +222,24 @@ impl ProcessManager {
             };
             tokio::pin!(timeout_future);
             
+            // Set up process status check interval
+            let mut status_check_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            
             loop {
                 tokio::select! {
+                    // Check if process has exited
+                    _ = status_check_interval.tick() => {
+                        if !matches!(proxy_status_check.get_status(), ProcessStatus::Running) {
+                            debug!("Process exited, stopping stdout log reader");
+                            // Close the channel if process exited
+                            if let Some(ref tx_shared) = log_stream_tx_stdout {
+                                if let Ok(mut guard) = tx_shared.lock() {
+                                    guard.take();
+                                }
+                            }
+                            break;
+                        }
+                    }
                     // Check for timeout
                     _ = &mut timeout_future, if has_pattern_stdout => {
                         warn!("Log streaming timeout reached for stdout");
@@ -301,6 +318,7 @@ impl ProcessManager {
         let has_pattern_stderr = log_pattern_stderr.is_some();
         let timeout_occurred_stderr = timeout_occurred.clone();
         let default_wait_timeout_secs_stderr = self.config.process.startup.default_wait_timeout_secs;
+        let proxy_status_check_stderr = proxy_arc.clone();
         
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -315,8 +333,24 @@ impl ProcessManager {
             };
             tokio::pin!(timeout_future);
             
+            // Set up process status check interval
+            let mut status_check_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            
             loop {
                 tokio::select! {
+                    // Check if process has exited
+                    _ = status_check_interval.tick() => {
+                        if !matches!(proxy_status_check_stderr.get_status(), ProcessStatus::Running) {
+                            debug!("Process exited, stopping stderr log reader");
+                            // Close the channel if process exited
+                            if let Some(ref tx_shared) = log_stream_tx_stderr {
+                                if let Ok(mut guard) = tx_shared.lock() {
+                                    guard.take();
+                                }
+                            }
+                            break;
+                        }
+                    }
                     // Check for timeout
                     _ = &mut timeout_future, if has_pattern_stderr => {
                         warn!("Log streaming timeout reached for stderr");
