@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use crate::common::xdg;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -104,16 +105,18 @@ pub struct PortDetectionConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        // Get base directory
-        let data_dir = Self::get_data_dir();
-        let log_dir = data_dir.join("log");
+        // Get XDG directories
+        let data_dir = xdg::get_data_dir();
+        let state_dir = xdg::get_state_dir();
+        let runtime_dir = xdg::get_runtime_dir();
+        let log_dir = state_dir.join("log");
         
         Self {
             paths: PathConfig {
                 data_dir: data_dir.clone(),
                 log_dir: log_dir.clone(),
-                pid_file: data_dir.join("mcprocd.pid"),
-                socket_path: data_dir.join("mcprocd.sock"),
+                pid_file: runtime_dir.join("mcprocd.pid"),
+                socket_path: runtime_dir.join("mcprocd.sock"),
                 daemon_log_file: log_dir.join("mcprocd.log"),
             },
             daemon: DaemonConfig {
@@ -154,26 +157,38 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Get the base data directory for mcproc
-    fn get_data_dir() -> PathBuf {
-        if let Ok(dir) = std::env::var("MCPROC_DATA_DIR") {
-            PathBuf::from(dir)
-        } else if let Some(home) = dirs::home_dir() {
-            home.join(".mcproc")
-        } else {
-            PathBuf::from(".mcproc")
-        }
+    /// Get the config file path
+    pub fn get_config_file_path() -> PathBuf {
+        xdg::get_config_dir().join("config.toml")
     }
     
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        // For now, just use defaults
-        // TODO: Load from config file if exists
-        Ok(Self::default())
+        let config_path = Self::get_config_file_path();
+        
+        if config_path.exists() {
+            // Load from config file
+            let contents = std::fs::read_to_string(&config_path)?;
+            let config: Config = toml::from_str(&contents)?;
+            Ok(config)
+        } else {
+            // Use defaults
+            Ok(Self::default())
+        }
     }
     
     pub fn ensure_directories(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
+        
+        // Ensure runtime directory exists
+        if let Some(parent) = self.paths.socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        
+        // Ensure config directory exists
+        let config_dir = xdg::get_config_dir();
+        std::fs::create_dir_all(&config_dir)?;
+        
         Ok(())
     }
     

@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "mcproc"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mcproc"
 path = "src/main.rs"
@@ -41,6 +45,7 @@ clap.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
+toml = "0.8"
 
 # Error handling
 thiserror.workspace = true
@@ -80,6 +85,8 @@ prost-types.workspace = true
 # Platform specific
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
+libc = "0.2"
 
 [dev-dependencies]
 mockall.workspace = true
+serial_test = "3.2"
