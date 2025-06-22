@@ -118,6 +118,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          token: ${{ secrets.RELEASE_PAT }}
           files: artifacts/**/*
           tag_name: "v${{ needs.setup.outputs.version }}"
           draft: ${{ github.event_name == 'workflow_dispatch' }}
