@@ -61,17 +61,18 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.binary_name }}
+          VERSION=${GITHUB_REF_NAME#v}
+          tar czf ../../../${{ matrix.binary_name }}-${VERSION}-${{ matrix.target }}.tar.gz ${{ matrix.binary_name }}
           cd ../../..
-          shasum -a 256 ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 ${{ matrix.binary_name }}-${VERSION}-${{ matrix.target }}.tar.gz > ${{ matrix.binary_name }}-${VERSION}-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}-${{ matrix.target }}
           path: |
-            ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-            ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+            ${{ matrix.binary_name }}-${VERSION}-${{ matrix.target }}.tar.gz
+            ${{ matrix.binary_name }}-${VERSION}-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release
@@ -106,4 +107,4 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           repository: neptaco/homebrew-tap
           event-type: update-formula
-          client-payload: '{"formula": "mcproc", "version": "${{ github.ref_name }}"}'
+          client-payload: '{"formula": "mcproc", "version": "${VERSION}"}'
