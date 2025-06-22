@@ -57,7 +57,18 @@ cd mcproc
 cargo build --release
 ```
 
-### Claude Desktop統合
+
+## 使い方
+
+### MCP Server として登録する
+
+#### Claude Code
+
+```
+claude mcp add mcproc mcproc mcp serve
+```
+
+#### Claude Desktop
 
 Claude Desktopの設定に追加:
 
@@ -73,7 +84,7 @@ Claude Desktopの設定に追加:
 }
 ```
 
-## 使い方
+### CLI から使用する
 
 mcprocはAIエージェントと開発者の両方に強力なインターフェースを提供します。
 
