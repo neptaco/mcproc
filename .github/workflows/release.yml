@@ -104,7 +104,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, setup]
     runs-on: ubuntu-latest
     
     steps:
@@ -119,13 +119,15 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: artifacts/**/*
-          draft: false
-          prerelease: false
+          tag_name: "v${{ needs.setup.outputs.version }}"
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
 
   update-homebrew:
     name: Update Homebrew Formula
     needs: [release, setup]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     
     steps:
