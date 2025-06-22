@@ -1,0 +1,27 @@
+name: Publish Homebrew Formula
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update-homebrew:
+    name: Update Homebrew Formula
+    # プレリリースは除外する
+    if: github.event.release.prerelease == false
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Get version from tag
+        id: get_version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: echo "version=${RELEASE_TAG#v}" >> $GITHUB_OUTPUT
+
+      - name: Trigger Homebrew tap update
+        uses: peter-evans/repository-dispatch@v2
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: neptaco/homebrew-tap
+          event-type: update-formula
+          client-payload: '{"formula": "mcproc", "version": "${{ steps.get_version.outputs.version }}"}' 

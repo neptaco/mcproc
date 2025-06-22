@@ -123,18 +123,3 @@ jobs:
           draft: ${{ github.event_name == 'workflow_dispatch' }}
           prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
-
-  update-homebrew:
-    name: Update Homebrew Formula
-    needs: [release, setup]
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Trigger Homebrew tap update
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: neptaco/homebrew-tap
-          event-type: update-formula
-          client-payload: '{"formula": "mcproc", "version": "${{ needs.setup.outputs.version }}"}'
