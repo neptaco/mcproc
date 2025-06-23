@@ -99,12 +99,9 @@ impl ProxyInfo {
     pub fn set_status(&self, status: ProcessStatus) {
         self.status.store(status as u8, Ordering::Relaxed);
     }
-<<<<<<< HEAD
 
     #[allow(dead_code)]
     pub fn get_key(&self) -> &ProcessKey {
         &self.key
     }
-=======
->>>>>>> main
 }
