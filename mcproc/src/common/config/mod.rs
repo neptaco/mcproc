@@ -101,13 +101,12 @@ pub struct PortDetectionConfig {
     pub max_attempts: u32,
 }
 
-
 impl Default for Config {
     fn default() -> Self {
         // Get base directory
         let data_dir = Self::get_data_dir();
         let log_dir = data_dir.join("log");
-        
+
         Self {
             paths: PathConfig {
                 data_dir: data_dir.clone(),
@@ -164,29 +163,29 @@ impl Config {
             PathBuf::from(".mcproc")
         }
     }
-    
+
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         // For now, just use defaults
         // TODO: Load from config file if exists
         Ok(Self::default())
     }
-    
+
     pub fn ensure_directories(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
         Ok(())
     }
-    
+
     // Convenience methods for accessing paths
     pub fn process_log_file(&self, process_name: &str) -> PathBuf {
         let safe_name = process_name.replace('/', "_");
         self.paths.log_dir.join(format!("{}.log", safe_name))
     }
-    
+
     pub fn daemon_log_file(&self) -> PathBuf {
         self.paths.daemon_log_file.clone()
     }
-    
+
     // Create a minimal config for CLI/client use (no daemon dependencies)
     pub fn for_client() -> Self {
         Self::default()

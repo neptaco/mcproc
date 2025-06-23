@@ -2,7 +2,8 @@
 /// Get the project name from the current working directory
 /// Returns None if unable to determine the project name
 pub fn get_project_from_cwd() -> Option<String> {
-    std::env::current_dir().ok()
+    std::env::current_dir()
+        .ok()
         .and_then(|p| p.file_name().map(|n| n.to_os_string()))
         .and_then(|n| n.into_string().ok())
 }
@@ -10,7 +11,8 @@ pub fn get_project_from_cwd() -> Option<String> {
 /// Get the project name, using the provided value or inferring from the current directory
 /// If no project is provided and cannot be inferred, returns "default"
 pub fn resolve_project_name(project: Option<String>) -> String {
-    project.or_else(get_project_from_cwd)
+    project
+        .or_else(get_project_from_cwd)
         .unwrap_or_else(|| "default".to_string())
 }
 
