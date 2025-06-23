@@ -1,3 +1,4 @@
+pub mod clean;
 pub mod daemon;
 pub mod grep;
 pub mod logs;
@@ -8,6 +9,7 @@ pub mod start;
 pub mod stop;
 pub mod version;
 
+pub use clean::CleanCommand;
 pub use daemon::DaemonCommand;
 pub use grep::GrepCommand;
 pub use logs::LogsCommand;

@@ -573,6 +573,63 @@ impl ProcessManagerService for GrpcService {
         Ok(Response::new(GrepLogsResponse { matches }))
     }
 
+    async fn clean_project(
+        &self,
+        request: Request<CleanProjectRequest>,
+    ) -> Result<Response<CleanProjectResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.all_projects {
+            // Clean all projects
+            let results = self
+                .process_manager
+                .clean_all_projects()
+                .await
+                .map_err(|e| Status::internal(format!("Failed to clean all projects: {}", e)))?;
+
+            let project_results: Vec<_> = results
+                .into_iter()
+                .map(
+                    |(project, (processes_stopped, logs_deleted, stopped_names, deleted_files))| {
+                        proto::clean_project_response::ProjectCleanResult {
+                            project,
+                            processes_stopped: processes_stopped as u32,
+                            logs_deleted: logs_deleted as u32,
+                            stopped_process_names: stopped_names,
+                            deleted_log_files: deleted_files,
+                        }
+                    },
+                )
+                .collect();
+
+            Ok(Response::new(CleanProjectResponse {
+                processes_stopped: 0,
+                logs_deleted: 0,
+                stopped_process_names: vec![],
+                deleted_log_files: vec![],
+                project_results,
+            }))
+        } else {
+            // Clean single project
+            let project = req.project.as_deref().unwrap_or("default");
+            let (processes_stopped, logs_deleted, stopped_names, deleted_files) = self
+                .process_manager
+                .clean_project(project)
+                .await
+                .map_err(|e| {
+                    Status::internal(format!("Failed to clean project {}: {}", project, e))
+                })?;
+
+            Ok(Response::new(CleanProjectResponse {
+                processes_stopped: processes_stopped as u32,
+                logs_deleted: logs_deleted as u32,
+                stopped_process_names: stopped_names,
+                deleted_log_files: deleted_files,
+                project_results: vec![],
+            }))
+        }
+    }
+
     async fn get_daemon_status(
         &self,
         _request: Request<GetDaemonStatusRequest>,

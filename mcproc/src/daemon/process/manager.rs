@@ -1,5 +1,6 @@
 use crate::common::config::Config;
 use crate::common::exit_code::format_exit_reason;
+use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
 use crate::daemon::process::port_detector;
@@ -90,12 +91,26 @@ impl ProcessManager {
             }
         }
 
-        let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
-        let log_file = self.config.paths.log_dir.join(format!(
-            "{}_{}.log",
-            project.replace("/", "_"), // Sanitize project name for filesystem
-            name
-        ));
+        let cwd = match cwd {
+            Some(dir) => dir,
+            None => std::env::current_dir().map_err(|e| {
+                McprocdError::ConfigError(format!("Failed to get current directory: {}", e))
+            })?,
+        };
+
+        // Create project-specific log directory if it doesn't exist
+        let project_log_dir = self.config.paths.log_dir.join(&project);
+        if !project_log_dir.exists() {
+            tokio::fs::create_dir_all(&project_log_dir)
+                .await
+                .map_err(McprocdError::IoError)?;
+        }
+
+        let log_file =
+            self.log_hub
+                .get_log_file_path_for_key(&ProcessKey::new(
+                    &project, &name,
+                ));
 
         // Determine command string for ProxyInfo
         let cmd_string = if let Some(cmd) = cmd.clone() {
@@ -873,5 +888,142 @@ impl ProcessManager {
             .iter()
             .map(|entry| entry.value().clone())
             .collect()
+    }
+
+    /// Clean a project by stopping all processes and deleting logs
+    ///
+    /// Returns: (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
+    pub async fn clean_project(
+        &self,
+        project: &str,
+    ) -> Result<(usize, usize, Vec<String>, Vec<String>)> {
+        // Find all processes in this project
+        let processes_to_stop: Vec<_> = self
+            .processes
+            .iter()
+            .filter(|entry| entry.value().project == project)
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect();
+
+        let mut stopped_process_names = Vec::new();
+        let mut processes_stopped = 0;
+
+        // Stop all processes in the project
+        for (key, process) in processes_to_stop {
+            if matches!(
+                process.get_status(),
+                ProcessStatus::Running | ProcessStatus::Starting
+            ) {
+                match self
+                    .stop_process(&process.name, Some(&process.project), true)
+                    .await
+                {
+                    Ok(_) => {
+                        info!("Stopped process {} in project {}", process.name, project);
+                        stopped_process_names.push(process.name.clone());
+                        processes_stopped += 1;
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to stop process {} in project {}: {}",
+                            process.name, project, e
+                        );
+                    }
+                }
+            }
+            // Remove from processes map
+            self.processes.remove(&key);
+        }
+
+        // Delete log directory for the project
+        let project_log_dir = self.config.paths.log_dir.join(project);
+        let mut deleted_log_files = Vec::new();
+        let mut logs_deleted = 0;
+
+        if project_log_dir.exists() {
+            match std::fs::read_dir(&project_log_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if entry.path().is_file() {
+                            let file_path = entry.path();
+                            match std::fs::remove_file(&file_path) {
+                                Ok(_) => {
+                                    info!("Deleted log file: {:?}", file_path);
+                                    deleted_log_files
+                                        .push(file_path.to_string_lossy().to_string());
+                                    logs_deleted += 1;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to delete log file {:?}: {}", file_path, e);
+                                }
+                            }
+                        }
+                    }
+
+                    // Try to remove the project directory itself
+                    if let Err(e) = std::fs::remove_dir(&project_log_dir) {
+                        debug!(
+                            "Could not remove project log directory {:?}: {}",
+                            project_log_dir, e
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to read project log directory {:?}: {}",
+                        project_log_dir, e
+                    );
+                }
+            }
+        }
+
+        Ok((
+            processes_stopped,
+            logs_deleted,
+            stopped_process_names,
+            deleted_log_files,
+        ))
+    }
+
+    /// Clean all projects
+    ///
+    /// Returns a map of project -> (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
+    pub async fn clean_all_projects(
+        &self,
+    ) -> Result<
+        std::collections::HashMap<String, (usize, usize, Vec<String>, Vec<String>)>,
+    > {
+        // Get all unique projects
+        let mut projects: std::collections::HashSet<String> = self
+            .processes
+            .iter()
+            .map(|entry| entry.value().project.clone())
+            .collect();
+
+        // Also check for projects that only have log directories
+        if let Ok(entries) = std::fs::read_dir(&self.config.paths.log_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        projects.insert(name.to_string());
+                    }
+                }
+            }
+        }
+
+        let mut results = std::collections::HashMap::new();
+
+        for project in projects {
+            match self.clean_project(&project).await {
+                Ok(result) => {
+                    results.insert(project, result);
+                }
+                Err(e) => {
+                    warn!("Failed to clean project {}: {}", project, e);
+                }
+            }
+        }
+
+        Ok(results)
     }
 }

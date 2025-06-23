@@ -1,3 +1,4 @@
+use crate::common::process_key::ProcessKey;
 use chrono::{DateTime, Utc};
 use ringbuf::HeapRb;
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,8 @@ impl From<ProcessStatus> for proto::ProcessStatus {
 
 pub struct ProxyInfo {
     pub id: Uuid,
+    #[allow(dead_code)]
+    pub key: ProcessKey,
     pub name: String,
     pub project: String,
     pub cmd: String,
@@ -69,8 +72,10 @@ impl ProxyInfo {
         log_file: PathBuf,
         ring_buffer_size: usize,
     ) -> Self {
+        let key = ProcessKey::new(&project, &name);
         Self {
             id: Uuid::new_v4(),
+            key,
             name,
             project,
             cmd,
@@ -93,5 +98,10 @@ impl ProxyInfo {
 
     pub fn set_status(&self, status: ProcessStatus) {
         self.status.store(status as u8, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub fn get_key(&self) -> &ProcessKey {
+        &self.key
     }
 }

@@ -14,6 +14,10 @@ pub struct Cli {
     #[arg(long, hide = true)]
     daemon: bool,
 
+    /// Enable verbose output
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -43,6 +47,9 @@ pub enum Commands {
         /// Process name
         name: String,
     },
+
+    /// Clean project (stop processes and delete logs)
+    Clean(CleanCommand),
 
     /// MCP server management
     Mcp(McpCommand),
@@ -92,6 +99,10 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
             let config = Config::for_client();
             let log_path = config.process_log_file(&name);
             println!("{}", log_path.display());
+        }
+        Commands::Clean(mut cmd) => {
+            cmd.verbose = cli.verbose;
+            cmd.execute(client).await?
         }
         Commands::Mcp(cmd) => cmd.execute(client).await?,
         Commands::Daemon(_) => unreachable!(), // Already handled above

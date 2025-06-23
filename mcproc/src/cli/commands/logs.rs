@@ -360,7 +360,7 @@ async fn stream_multiple_logs(
     }
 
     // Wait for all tasks to complete
-    while (tasks.join_next().await).is_some() {}
+    while tasks.join_next().await.is_some() {}
 
     Ok(())
 }
