@@ -120,9 +120,15 @@ impl ToolHandler for StatusTool {
                 let mut logs_preview = Vec::new();
                 if let Ok(stream) = client.inner().get_logs(logs_request).await {
                     let mut stream = stream.into_inner();
-                    while let Some(Ok(logs_response)) = stream.next().await {
+                    // Take at most 100 log entries to avoid blocking
+                    let mut count = 0;
+                    while let Ok(Some(logs_response)) = stream.try_next().await {
                         for entry in logs_response.entries {
                             logs_preview.push(entry.content);
+                        }
+                        count += 1;
+                        if count >= 100 {
+                            break;
                         }
                     }
                 }

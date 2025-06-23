@@ -160,6 +160,18 @@ message CleanProjectResponse {
   repeated ProjectCleanResult project_results = 3;
 }
 
+// Daemon status
+message GetDaemonStatusRequest {}
+
+message GetDaemonStatusResponse {
+  string version = 1;
+  uint32 pid = 2;
+  google.protobuf.Timestamp start_time = 3;
+  uint64 uptime_seconds = 4;
+  string data_dir = 5;
+  uint32 active_processes = 6;
+}
+
 // Service definition
 service ProcessManager {
   rpc StartProcess(StartProcessRequest) returns (stream StartProcessResponse);
@@ -170,4 +182,5 @@ service ProcessManager {
   rpc GetLogs(GetLogsRequest) returns (stream GetLogsResponse);
   rpc GrepLogs(GrepLogsRequest) returns (GrepLogsResponse);
   rpc CleanProject(CleanProjectRequest) returns (CleanProjectResponse);
+  rpc GetDaemonStatus(GetDaemonStatusRequest) returns (GetDaemonStatusResponse);
 }

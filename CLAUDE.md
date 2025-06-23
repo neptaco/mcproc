@@ -56,6 +56,26 @@ cargo run --bin mcprocd  # Run daemon
 cargo run --bin mcproc -- <command>  # Run CLI
 ```
 
+### Pre-commit Checklist
+
+Before committing changes, always run these checks to ensure CI passes:
+
+```bash
+# 1. Format check
+cargo fmt -- --check
+
+# 2. Clippy (linting)
+cargo clippy -- -D warnings
+
+# 3. Tests
+cargo test
+
+# 4. Security audit
+cargo audit
+```
+
+If any of these fail, fix the issues before committing. This helps maintain code quality and prevents CI failures.
+
 ## Project Structure
 
 The intended structure follows a workspace layout:
@@ -69,7 +89,7 @@ The intended structure follows a workspace layout:
 - **Log retention**: 1 day
 - **Max file size**: 10MB per log file
 - **Ring buffer**: 10,000 lines in memory per process
-- **Log directory**: `~/.mcp/log/`
+- **Log directory**: `$XDG_STATE_HOME/mcproc/log/` (defaults to `~/.local/state/mcproc/log/`)
 - **Format**: `{process_name}-{date}.log`
 
 ### Process Management
@@ -81,6 +101,19 @@ The intended structure follows a workspace layout:
 - **Local only**: No remote access support
 - **Unix permissions**: 0600 for all mcproc files
 - **No authentication**: Local user only
+
+### XDG Base Directory Specification
+mcproc follows the XDG Base Directory specification:
+- **Config files**: `$XDG_CONFIG_HOME/mcproc/` (defaults to `~/.config/mcproc/`)
+- **Data files**: `$XDG_DATA_HOME/mcproc/` (defaults to `~/.local/share/mcproc/`)
+- **State files**: `$XDG_STATE_HOME/mcproc/` (defaults to `~/.local/state/mcproc/`)
+- **Runtime files**: `$XDG_RUNTIME_DIR/mcproc/` (defaults to `/tmp/mcproc-$UID/`)
+
+File locations:
+- Config file: `$XDG_CONFIG_HOME/mcproc/config.toml`
+- Log files: `$XDG_STATE_HOME/mcproc/log/`
+- Socket file: `$XDG_RUNTIME_DIR/mcproc/mcprocd.sock`
+- PID file: `$XDG_RUNTIME_DIR/mcproc/mcprocd.pid`
 
 ### MCP Integration
 mcproc acts as an MCP server that receives JSON-RPC 2.0 requests from LLMs:

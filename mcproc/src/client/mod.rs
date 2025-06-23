@@ -1,9 +1,11 @@
 use crate::common::config::Config;
+use crate::common::version::VERSION;
 use proto::process_manager_client::ProcessManagerClient;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tonic::transport::{Channel, Endpoint, Uri};
 use tower::service_fn;
+use tracing::warn;
 
 #[derive(Clone)]
 pub struct DaemonClient {
@@ -90,12 +92,13 @@ impl DaemonClient {
             // when using Unix sockets. The actual connection is made via the socket_path.
             const DUMMY_URI_FOR_UNIX_SOCKET: &str = "http://[::]:50051";
 
+            let socket_path_for_connector = socket_path.clone();
             let channel = Endpoint::try_from(DUMMY_URI_FOR_UNIX_SOCKET)?
                 .connect_timeout(Duration::from_secs(
                     config.daemon.client_connection_timeout_secs,
                 ))
                 .connect_with_connector(service_fn(move |_: Uri| {
-                    let socket_path = socket_path.clone();
+                    let socket_path = socket_path_for_connector.clone();
                     async move {
                         let stream = UnixStream::connect(&socket_path).await?;
                         Ok::<_, std::io::Error>(TokioIo::new(stream))
@@ -105,13 +108,63 @@ impl DaemonClient {
 
             let client = ProcessManagerClient::new(channel);
 
-            Ok(Self { client })
+            let mut daemon_client = Self { client };
+
+            // Check daemon version and restart if needed
+            if let Err(e) =
+                Self::check_and_restart_if_needed(&mut daemon_client, &socket_path).await
+            {
+                warn!("Version check failed: {}", e);
+            }
+
+            Ok(daemon_client)
         }
 
         #[cfg(not(unix))]
         {
             return Err("Unix sockets are not supported on this platform".into());
         }
+    }
+
+    async fn check_and_restart_if_needed(
+        client: &mut Self,
+        _socket_path: &Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let request = proto::GetDaemonStatusRequest {};
+        match client.inner().get_daemon_status(request).await {
+            Ok(response) => {
+                let status = response.into_inner();
+                if status.version != VERSION {
+                    eprintln!(
+                        "Daemon version mismatch: daemon={}, client={}",
+                        status.version, VERSION
+                    );
+                    eprintln!("Restarting daemon to update version...");
+
+                    // Use daemon restart command
+                    let mcproc_path =
+                        std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mcproc"));
+
+                    let output = std::process::Command::new(&mcproc_path)
+                        .arg("daemon")
+                        .arg("restart")
+                        .output()?;
+
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(format!("Failed to restart daemon: {}", stderr).into());
+                    }
+
+                    eprintln!("Daemon restarted successfully. Please run your command again.");
+                    std::process::exit(0);
+                }
+            }
+            Err(e) => {
+                // If we can't get status, log warning but continue
+                warn!("Could not verify daemon version: {}", e);
+            }
+        }
+        Ok(())
     }
 
     pub fn inner(&mut self) -> &mut ProcessManagerClient<Channel> {

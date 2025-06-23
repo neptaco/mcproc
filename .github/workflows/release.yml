@@ -4,13 +4,35 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (without v prefix)'
+        required: true
+        default: '0.1.0'
 
 permissions:
   contents: write
 
 jobs:
+  setup:
+    name: Setup version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+          fi
+
   build:
     name: Build release binaries
+    needs: setup
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -58,24 +80,31 @@ jobs:
           fi
           cargo build --release --target ${{ matrix.target }}
 
+      - name: Set up file names
+        id: file_names
+        run: |
+          BASE_NAME="${{ matrix.binary_name }}-${{ needs.setup.outputs.version }}-${{ matrix.target }}"
+          echo "archive_name=${BASE_NAME}.tar.gz" >> $GITHUB_OUTPUT
+          echo "sha_name=${BASE_NAME}.tar.gz.sha256" >> $GITHUB_OUTPUT
+
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.binary_name }}
+          tar czf ../../../${{ steps.file_names.outputs.archive_name }} ${{ matrix.binary_name }}
           cd ../../..
-          shasum -a 256 ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz > ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+          shasum -a 256 ${{ steps.file_names.outputs.archive_name }} > ${{ steps.file_names.outputs.sha_name }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}-${{ matrix.target }}
           path: |
-            ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-            ${{ matrix.binary_name }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz.sha256
+            ${{ steps.file_names.outputs.archive_name }}
+            ${{ steps.file_names.outputs.sha_name }}
 
   release:
     name: Create Release
-    needs: build
+    needs: [build, setup]
     runs-on: ubuntu-latest
     
     steps:
@@ -89,21 +118,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          token: ${{ secrets.RELEASE_PAT }}
           files: artifacts/**/*
-          draft: false
-          prerelease: false
+          tag_name: "v${{ needs.setup.outputs.version }}"
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+          prerelease: ${{ github.event_name == 'workflow_dispatch' }}
           generate_release_notes: true
-
-  update-homebrew:
-    name: Update Homebrew Formula
-    needs: release
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Trigger Homebrew tap update
-        uses: peter-evans/repository-dispatch@v2
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: neptaco/homebrew-tap
-          event-type: update-formula
-          client-payload: '{"formula": "mcproc", "version": "${{ github.ref_name }}"}'

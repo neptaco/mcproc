@@ -37,3 +37,6 @@ proto/src/generated/
 
 # Test directory
 test-project/
+
+# Worktree
+.worktree/

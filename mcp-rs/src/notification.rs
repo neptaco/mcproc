@@ -83,15 +83,15 @@ pub struct QueuedNotificationSender {
 
 impl Default for QueuedNotificationSender {
     fn default() -> Self {
-        Self::new()
+        Self {
+            queue: Arc::new(RwLock::new(Vec::new())),
+        }
     }
 }
 
 impl QueuedNotificationSender {
     pub fn new() -> Self {
-        Self {
-            queue: Arc::new(RwLock::new(Vec::new())),
-        }
+        Self::default()
     }
 
     pub async fn take_all(&self) -> Vec<JsonRpcNotification> {

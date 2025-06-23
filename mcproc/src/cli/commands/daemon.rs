@@ -131,17 +131,64 @@ impl DaemonCommand {
                     return Ok(());
                 }
 
-                let pid = std::fs::read_to_string(&config.paths.pid_file)?
-                    .trim()
-                    .parse::<i32>()?;
-
-                println!("mcprocd daemon is running");
-                println!("  PID:  {}", pid);
-                println!("  Data: {}", config.paths.data_dir.display());
+                // Try to connect to daemon to get detailed status
+                match crate::client::DaemonClient::connect(None).await {
+                    Ok(mut client) => {
+                        let request = proto::GetDaemonStatusRequest {};
+                        match client.inner().get_daemon_status(request).await {
+                            Ok(response) => {
+                                let status = response.into_inner();
+                                println!("mcprocd daemon is running");
+                                println!("  Version:   {}", status.version);
+                                println!("  PID:       {}", status.pid);
+                                println!("  Data:      {}", status.data_dir);
+                                println!("  Uptime:    {}", format_uptime(status.uptime_seconds));
+                                println!("  Processes: {}", status.active_processes);
+                            }
+                            Err(e) => {
+                                // Fallback to basic info if gRPC fails
+                                let pid = std::fs::read_to_string(&config.paths.pid_file)?
+                                    .trim()
+                                    .parse::<i32>()?;
+                                println!("mcprocd daemon is running");
+                                println!("  PID:  {}", pid);
+                                println!("  Data: {}", config.paths.data_dir.display());
+                                println!("  (Could not get detailed status: {})", e);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Fallback to basic info if connection fails
+                        let pid = std::fs::read_to_string(&config.paths.pid_file)?
+                            .trim()
+                            .parse::<i32>()?;
+                        println!("mcprocd daemon is running");
+                        println!("  PID:  {}", pid);
+                        println!("  Data: {}", config.paths.data_dir.display());
+                        println!("  (Could not connect to daemon for detailed status)");
+                    }
+                }
 
                 Ok(())
             }
         }
+    }
+}
+
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+
+    if days > 0 {
+        format!("{}d {}h {}m {}s", days, hours, minutes, secs)
+    } else if hours > 0 {
+        format!("{}h {}m {}s", hours, minutes, secs)
+    } else if minutes > 0 {
+        format!("{}m {}s", minutes, secs)
+    } else {
+        format!("{}s", secs)
     }
 }
 

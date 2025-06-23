@@ -18,9 +18,6 @@ pub enum McprocdError {
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("Database error: {0}")]
-    DatabaseError(#[from] sqlx::Error),
-
     #[error("Configuration error: {0}")]
     ConfigError(String),
 

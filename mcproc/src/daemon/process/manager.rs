@@ -1,5 +1,6 @@
 use crate::common::config::Config;
 use crate::common::exit_code::format_exit_reason;
+use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
 use crate::daemon::process::port_detector;
@@ -15,11 +16,6 @@ use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-/// Manages the lifecycle of child processes
-///
-/// The ProcessManager is responsible for spawning, monitoring, and terminating
-/// child processes. It maintains a registry of all active processes indexed by
-/// their project/name key and handles log collection for each process.
 pub struct ProcessManager {
     processes: Arc<DashMap<String, Arc<ProxyInfo>>>,
     config: Arc<Config>,
@@ -112,7 +108,7 @@ impl ProcessManager {
 
         let log_file =
             self.log_hub
-                .get_log_file_path_for_key(&crate::common::process_key::ProcessKey::new(
+                .get_log_file_path_for_key(&ProcessKey::new(
                     &project, &name,
                 ));
 
@@ -249,6 +245,7 @@ impl ProcessManager {
         let has_pattern_stdout = log_pattern_stdout.is_some();
         let timeout_occurred_stdout = timeout_occurred.clone();
         let default_wait_timeout_secs = self.config.process.startup.default_wait_timeout_secs;
+        let proxy_status_check = proxy_arc.clone();
 
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
@@ -265,8 +262,25 @@ impl ProcessManager {
             };
             tokio::pin!(timeout_future);
 
+            // Set up process status check interval
+            let mut status_check_interval =
+                tokio::time::interval(tokio::time::Duration::from_millis(100));
+
             loop {
                 tokio::select! {
+                // Check if process has exited
+                _ = status_check_interval.tick() => {
+                    if !matches!(proxy_status_check.get_status(), ProcessStatus::Running) {
+                        debug!("Process exited, stopping stdout log reader");
+                        // Close the channel if process exited
+                        if let Some(ref tx_shared) = log_stream_tx_stdout {
+                            if let Ok(mut guard) = tx_shared.lock() {
+                                guard.take();
+                            }
+                        }
+                        break;
+                    }
+                }
                 // Check for timeout
                 _ = &mut timeout_future, if has_pattern_stdout => {
                     warn!("Log streaming timeout reached for stdout");
@@ -346,6 +360,7 @@ impl ProcessManager {
         let timeout_occurred_stderr = timeout_occurred.clone();
         let default_wait_timeout_secs_stderr =
             self.config.process.startup.default_wait_timeout_secs;
+        let proxy_status_check_stderr = proxy_arc.clone();
 
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
@@ -362,8 +377,25 @@ impl ProcessManager {
             };
             tokio::pin!(timeout_future);
 
+            // Set up process status check interval
+            let mut status_check_interval =
+                tokio::time::interval(tokio::time::Duration::from_millis(100));
+
             loop {
                 tokio::select! {
+                    // Check if process has exited
+                    _ = status_check_interval.tick() => {
+                        if !matches!(proxy_status_check_stderr.get_status(), ProcessStatus::Running) {
+                            debug!("Process exited, stopping stderr log reader");
+                            // Close the channel if process exited
+                            if let Some(ref tx_shared) = log_stream_tx_stderr {
+                                if let Ok(mut guard) = tx_shared.lock() {
+                                    guard.take();
+                                }
+                            }
+                            break;
+                        }
+                    }
                     // Check for timeout
                     _ = &mut timeout_future, if has_pattern_stderr => {
                         warn!("Log streaming timeout reached for stderr");
@@ -844,6 +876,13 @@ impl ProcessManager {
         None
     }
 
+    pub fn get_all_processes(&self) -> Vec<Arc<ProxyInfo>> {
+        self.processes
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
     pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
         self.processes
             .iter()
@@ -851,25 +890,14 @@ impl ProcessManager {
             .collect()
     }
 
-    /// Clean up all processes and logs for a specific project
-    ///
-    /// This function will:
-    /// 1. Stop all running processes in the project
-    /// 2. Remove stopped/failed processes from the registry
-    /// 3. Delete all log files in the project's log directory
-    /// 4. Attempt to remove the project log directory if empty
+    /// Clean a project by stopping all processes and deleting logs
     ///
     /// Returns: (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
     pub async fn clean_project(
         &self,
         project: &str,
     ) -> Result<(usize, usize, Vec<String>, Vec<String>)> {
-        let mut processes_stopped = 0;
-        let mut logs_deleted = 0;
-        let mut stopped_process_names = Vec::new();
-        let mut deleted_log_files = Vec::new();
-
-        // Stop all processes in the project
+        // Find all processes in this project
         let processes_to_stop: Vec<_> = self
             .processes
             .iter()
@@ -877,64 +905,74 @@ impl ProcessManager {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
 
-        for (key, proxy) in processes_to_stop {
-            match proxy.get_status() {
-                ProcessStatus::Running | ProcessStatus::Starting => {
-                    info!("Stopping process {} for project cleanup", key);
-                    if let Err(e) = self
-                        .stop_process(&proxy.name, Some(&proxy.project), false)
-                        .await
-                    {
-                        warn!("Failed to stop process {}: {}", key, e);
-                    } else {
+        let mut stopped_process_names = Vec::new();
+        let mut processes_stopped = 0;
+
+        // Stop all processes in the project
+        for (key, process) in processes_to_stop {
+            if matches!(
+                process.get_status(),
+                ProcessStatus::Running | ProcessStatus::Starting
+            ) {
+                match self
+                    .stop_process(&process.name, Some(&process.project), true)
+                    .await
+                {
+                    Ok(_) => {
+                        info!("Stopped process {} in project {}", process.name, project);
+                        stopped_process_names.push(process.name.clone());
                         processes_stopped += 1;
-                        stopped_process_names.push(proxy.name.clone());
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to stop process {} in project {}: {}",
+                            process.name, project, e
+                        );
                     }
                 }
-                _ => {
-                    // Remove stopped/failed processes from map
-                    self.processes.remove(&key);
-                }
             }
+            // Remove from processes map
+            self.processes.remove(&key);
         }
 
-        // Clean up log directory for the project
+        // Delete log directory for the project
         let project_log_dir = self.config.paths.log_dir.join(project);
+        let mut deleted_log_files = Vec::new();
+        let mut logs_deleted = 0;
+
         if project_log_dir.exists() {
-            match tokio::fs::read_dir(&project_log_dir).await {
-                Ok(mut entries) => {
-                    while let Some(entry) = entries.next_entry().await? {
-                        if let Some(path) = entry.path().to_str() {
-                            if path.ends_with(".log") {
-                                match tokio::fs::remove_file(&entry.path()).await {
-                                    Ok(_) => {
-                                        logs_deleted += 1;
-                                        // Store the absolute path of the deleted file
-                                        deleted_log_files.push(entry.path().to_string_lossy().to_string());
-                                        debug!("Deleted log file: {:?}", entry.path());
-                                    }
-                                    Err(e) => {
-                                        warn!(
-                                            "Failed to delete log file {:?}: {}",
-                                            entry.path(),
-                                            e
-                                        );
-                                    }
+            match std::fs::read_dir(&project_log_dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if entry.path().is_file() {
+                            let file_path = entry.path();
+                            match std::fs::remove_file(&file_path) {
+                                Ok(_) => {
+                                    info!("Deleted log file: {:?}", file_path);
+                                    deleted_log_files
+                                        .push(file_path.to_string_lossy().to_string());
+                                    logs_deleted += 1;
+                                }
+                                Err(e) => {
+                                    warn!("Failed to delete log file {:?}: {}", file_path, e);
                                 }
                             }
                         }
                     }
 
-                    // Try to remove the project directory if it's empty
-                    if let Err(e) = tokio::fs::remove_dir(&project_log_dir).await {
+                    // Try to remove the project directory itself
+                    if let Err(e) = std::fs::remove_dir(&project_log_dir) {
                         debug!(
-                            "Could not remove project log directory (may not be empty): {}",
-                            e
+                            "Could not remove project log directory {:?}: {}",
+                            project_log_dir, e
                         );
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to read project log directory: {}", e);
+                    warn!(
+                        "Failed to read project log directory {:?}: {}",
+                        project_log_dir, e
+                    );
                 }
             }
         }
@@ -947,44 +985,41 @@ impl ProcessManager {
         ))
     }
 
+    /// Clean all projects
+    ///
+    /// Returns a map of project -> (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
     pub async fn clean_all_projects(
         &self,
-    ) -> Result<std::collections::HashMap<String, (usize, usize, Vec<String>, Vec<String>)>> {
-        let mut results = std::collections::HashMap::new();
-
+    ) -> Result<
+        std::collections::HashMap<String, (usize, usize, Vec<String>, Vec<String>)>,
+    > {
         // Get all unique projects
-        let projects: std::collections::HashSet<String> = self
+        let mut projects: std::collections::HashSet<String> = self
             .processes
             .iter()
             .map(|entry| entry.value().project.clone())
             .collect();
 
-        // Also check for project directories in the log folder
-        let log_dir = &self.config.paths.log_dir;
-        if log_dir.exists() {
-            if let Ok(mut entries) = tokio::fs::read_dir(log_dir).await {
-                while let Some(entry) = entries.next_entry().await? {
-                    if entry.file_type().await?.is_dir() {
-                        if let Some(name) = entry.file_name().to_str() {
-                            if name != "default" {
-                                // Skip default directory
-                                results.insert(name.to_string(), (0, 0, vec![], vec![]));
-                            }
-                        }
+        // Also check for projects that only have log directories
+        if let Ok(entries) = std::fs::read_dir(&self.config.paths.log_dir) {
+            for entry in entries.flatten() {
+                if entry.path().is_dir() {
+                    if let Some(name) = entry.file_name().to_str() {
+                        projects.insert(name.to_string());
                     }
                 }
             }
         }
 
-        // Clean each project
+        let mut results = std::collections::HashMap::new();
+
         for project in projects {
             match self.clean_project(&project).await {
-                Ok(stats) => {
-                    results.insert(project, stats);
+                Ok(result) => {
+                    results.insert(project, result);
                 }
                 Err(e) => {
                     warn!("Failed to clean project {}: {}", project, e);
-                    results.insert(project, (0, 0, vec![], vec![]));
                 }
             }
         }
