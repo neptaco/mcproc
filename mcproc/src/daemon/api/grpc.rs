@@ -168,10 +168,10 @@ impl ProcessManagerService for GrpcService {
                                     nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
                                 }),
                                 pid: None,
-                                log_file: log_dir.join(format!("{}_{}.log",
-                                    project.as_ref().unwrap_or(&"default".to_string()).replace("/", "_"),
-                                    name
-                                )).to_string_lossy().to_string(),
+                                log_file: log_dir
+                                    .join(project.as_ref().unwrap_or(&"default".to_string()))
+                                    .join(format!("{}.log", name.replace("/", "_")))
+                                    .to_string_lossy().to_string(),
                                 project: project.clone().unwrap_or_default(),
                                 ports: vec![],
                                 wait_timeout_occurred: None,
@@ -365,11 +365,10 @@ impl ProcessManagerService for GrpcService {
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
 
-        let log_file = self.log_hub.config.paths.log_dir.join(format!(
-            "{}_{}.log",
-            project.replace("/", "_"),
-            req.name
-        ));
+        // Use project-based directory structure
+        let log_file = self.log_hub.config.paths.log_dir
+            .join(&project)
+            .join(format!("{}.log", req.name));
 
         if !log_file.exists() {
             return Err(Status::not_found(format!(
@@ -539,11 +538,10 @@ impl ProcessManagerService for GrpcService {
         // Construct the log file path
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
 
-        let log_file = self.log_hub.config.paths.log_dir.join(format!(
-            "{}_{}.log",
-            project.replace("/", "_"),
-            req.name
-        ));
+        // Use project-based directory structure
+        let log_file = self.log_hub.config.paths.log_dir
+            .join(&project)
+            .join(format!("{}.log", req.name));
 
         if !log_file.exists() {
             return Err(Status::not_found(format!(

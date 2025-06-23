@@ -57,7 +57,7 @@ impl StartCommand {
         }
 
         // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = resolve_project_name(self.project);
+        let project = resolve_project_name(self.project)?;
 
         let grpc_request = StartProcessRequest {
             name: self.name.clone(),

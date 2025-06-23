@@ -9,11 +9,11 @@ pub fn get_project_from_cwd() -> Option<String> {
 }
 
 /// Get the project name, using the provided value or inferring from the current directory
-/// If no project is provided and cannot be inferred, returns "default"
-pub fn resolve_project_name(project: Option<String>) -> String {
+/// If no project is provided and cannot be inferred, returns an error
+pub fn resolve_project_name(project: Option<String>) -> Result<String, String> {
     project
         .or_else(get_project_from_cwd)
-        .unwrap_or_else(|| "default".to_string())
+        .ok_or_else(|| "Unable to determine project name from current directory".to_string())
 }
 
 /// Get the project name as Option, using the provided value or inferring from the current directory

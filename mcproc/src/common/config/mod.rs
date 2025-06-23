@@ -191,11 +191,6 @@ impl Config {
         Ok(())
     }
 
-    // Convenience methods for accessing paths
-    pub fn process_log_file(&self, process_name: &str) -> PathBuf {
-        let safe_name = process_name.replace('/', "_");
-        self.paths.log_dir.join(format!("{}.log", safe_name))
-    }
 
     pub fn daemon_log_file(&self) -> PathBuf {
         self.paths.daemon_log_file.clone()

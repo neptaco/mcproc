@@ -72,7 +72,14 @@ impl ProcessManager {
         wait_timeout: Option<u32>,
         log_stream_tx: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<(Arc<ProxyInfo>, bool)> {
-        let project = project.expect("Project name must be provided");
+        let project = match project {
+            Some(p) => p,
+            None => {
+                return Err(McprocdError::InvalidRequest(
+                    "Project name must be provided".to_string(),
+                ));
+            }
+        };
 
         // Create unique key for process: project/name
         let process_key = format!("{}/{}", &project, &name);
@@ -922,6 +929,9 @@ impl ProcessManager {
                         info!("Stopped process {} in project {}", process.name, project);
                         stopped_process_names.push(process.name.clone());
                         processes_stopped += 1;
+                        
+                        // Close log file handle immediately
+                        self.log_hub.close_log(&key).await;
                     }
                     Err(e) => {
                         warn!(
@@ -934,6 +944,9 @@ impl ProcessManager {
             // Remove from processes map
             self.processes.remove(&key);
         }
+
+        // Wait a bit for log handlers to close and cleanup tasks to complete
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Delete log directory for the project
         let project_log_dir = self.config.paths.log_dir.join(project);

@@ -35,7 +35,7 @@ impl CleanCommand {
         let resolved_project = if self.all_projects {
             None
         } else {
-            Some(resolve_project_name(self.project.clone()))
+            Some(resolve_project_name(self.project.clone())?)
         };
 
         let request = Request::new(CleanProjectRequest {
@@ -92,7 +92,7 @@ impl CleanCommand {
             }
         } else {
             // Display results for single project (use the resolved project name)
-            let project_name = resolve_project_name(self.project.clone());
+            let project_name = resolve_project_name(self.project.clone())?;
 
             if response.processes_stopped == 0 && response.logs_deleted == 0 {
                 println!(

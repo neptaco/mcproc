@@ -124,7 +124,11 @@ impl ToolHandler for StartTool {
                     .and_then(|p| p.file_name().map(|n| n.to_os_string()))
                     .and_then(|n| n.into_string().ok())
             })
-            .unwrap_or_else(|| "default".to_string());
+            .ok_or_else(|| {
+                McpError::InvalidParams(
+                    "Unable to determine project name from current directory".to_string(),
+                )
+            })?;
 
         // Use gRPC client to start process
         let name = params.name.clone();

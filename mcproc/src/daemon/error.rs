@@ -34,6 +34,9 @@ pub enum McprocdError {
         exit_reason: String,
         stderr: String,
     },
+
+    #[error("Invalid request: {0}")]
+    InvalidRequest(String),
 }
 
 pub type Result<T> = std::result::Result<T, McprocdError>;
