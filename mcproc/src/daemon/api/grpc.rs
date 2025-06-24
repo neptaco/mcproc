@@ -83,24 +83,30 @@ impl ProcessManagerService for GrpcService {
                 wait_timeout,
                 log_tx,
             ).await {
-                Ok((process, timeout_occurred)) => {
-                    // If we have a log receiver, stream logs until pattern matches or timeout
+                Ok((process, timeout_occurred, _pattern_matched)) => {
+                    // If we have a log receiver and wait_for_log is specified, stream logs
                     if let Some(mut rx) = log_rx {
-                        // Stream logs until channel closes (pattern matched or process ends)
-                        while let Some(line) = rx.recv().await {
-                            // Create log entry
-                            let (timestamp, level, content) = parse_log_line(&line);
+                        if wait_for_log.is_some() {
+                            // For wait_for_log, only stream logs until pattern is found or timeout
+                            // The channel will be closed when pattern matches or timeout occurs
+                            while let Some(line) = rx.recv().await {
+                                // Create log entry
+                                let (timestamp, level, content) = parse_log_line(&line);
 
-                            yield StartProcessResponse {
-                                response: Some(start_process_response::Response::LogEntry(LogEntry {
-                                    line_number: 0,
-                                    content,
-                                    timestamp,
-                                    level: level as i32,
-                                    process_name: None,
-                                })),
-                            };
+                                yield StartProcessResponse {
+                                    response: Some(start_process_response::Response::LogEntry(LogEntry {
+                                        line_number: 0,
+                                        content,
+                                        timestamp,
+                                        level: level as i32,
+                                        process_name: None,
+                                    })),
+                                };
+                            }
+                            // After streaming ends, close the channel to stop log readers
+                            drop(rx);
                         }
+                        // If no wait_for_log, we don't stream logs during startup
                     }
 
                     // Send final process info

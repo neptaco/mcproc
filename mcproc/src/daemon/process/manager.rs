@@ -43,7 +43,7 @@ impl ProcessManager {
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
-        let (proxy, _timeout) = self
+        let (proxy, _timeout, _pattern_matched) = self
             .start_process_with_log_stream(
                 name,
                 project,
@@ -71,7 +71,7 @@ impl ProcessManager {
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
         log_stream_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    ) -> Result<(Arc<ProxyInfo>, bool)> {
+    ) -> Result<(Arc<ProxyInfo>, bool, bool)> {
         let project = match project {
             Some(p) => p,
             None => {
@@ -332,14 +332,13 @@ impl ProcessManager {
                                         if let Ok(mut matched) = pattern_matched_stdout.lock() {
                                             *matched = true;
                                         }
-                                        // Close the channel to signal completion
+                                        // Close the log stream channel when pattern matches
+                                        // This signals the gRPC stream to stop waiting for logs
                                         if let Some(ref tx_shared) = log_stream_tx_stdout {
                                             if let Ok(mut guard) = tx_shared.lock() {
-                                                guard.take(); // Drop the sender by taking it out
+                                                guard.take(); // Drop the sender to close the channel
                                             }
                                         }
-                                        // Stop streaming logs
-                                        break;
                                     }
                                 }
 
@@ -447,14 +446,13 @@ impl ProcessManager {
                         if let Ok(mut matched) = pattern_matched_stderr.lock() {
                             *matched = true;
                         }
-                        // Close the channel to signal completion
+                        // Close the log stream channel when pattern matches
+                        // This signals the gRPC stream to stop waiting for logs
                         if let Some(ref tx_shared) = log_stream_tx_stderr {
                             if let Ok(mut guard) = tx_shared.lock() {
-                                guard.take(); // Drop the sender by taking it out
+                                guard.take(); // Drop the sender to close the channel
                             }
                         }
-                        // Stop streaming logs
-                        break;
                     }
                 }
 
@@ -698,6 +696,7 @@ impl ProcessManager {
         Ok((
             proxy_arc,
             timeout_occurred.lock().map(|g| *g).unwrap_or(false),
+            pattern_matched.lock().map(|g| *g).unwrap_or(false),
         ))
     }
 
