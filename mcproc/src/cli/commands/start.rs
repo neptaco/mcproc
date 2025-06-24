@@ -68,6 +68,7 @@ impl StartCommand {
             env: env_map,
             wait_for_log: self.wait_for_log.clone(),
             wait_timeout: Some(self.wait_timeout),
+            force_restart: None,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup

@@ -87,7 +87,7 @@ impl ProcessManager {
         }
 
         // Parse wait pattern if provided
-        let log_pattern = self.launcher.parse_wait_pattern(wait_for_log)?;
+        let log_pattern = self.launcher.parse_wait_pattern(wait_for_log.clone())?;
 
         // Setup log ready channel
         let (log_ready_tx, log_ready_rx) = if log_pattern.is_some() {
@@ -132,6 +132,8 @@ impl ProcessManager {
             args,
             cwd,
             env,
+            wait_for_log.clone(),
+            wait_timeout,
             pid,
         );
 
@@ -349,7 +351,26 @@ impl ProcessManager {
         &self,
         name_or_id: &str,
         project: Option<String>,
+        override_wait_for_log: Option<String>,
+        override_wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
+        self.restart_process_with_log_stream(
+            name_or_id,
+            project,
+            override_wait_for_log,
+            override_wait_timeout,
+        )
+        .await
+        .map(|(proxy, _, _, _, _)| proxy)
+    }
+
+    pub async fn restart_process_with_log_stream(
+        &self,
+        name_or_id: &str,
+        project: Option<String>,
+        override_wait_for_log: Option<String>,
+        override_wait_timeout: Option<u32>,
+    ) -> Result<(Arc<ProxyInfo>, bool, bool, Vec<String>, Option<String>)> {
         if let Some(process) = self
             .registry
             .get_process_by_name_or_id_with_project(name_or_id, project.as_deref())
@@ -360,6 +381,10 @@ impl ProcessManager {
             let args = process.args.clone();
             let cwd = process.cwd.clone();
             let env = process.env.clone();
+            
+            // Use override values if provided, otherwise use saved values
+            let wait_for_log = override_wait_for_log.or(process.wait_for_log.clone());
+            let wait_timeout = override_wait_timeout.or(process.wait_timeout);
             drop(process);
 
             self.stop_process(name_or_id, Some(&project), false).await?;
@@ -370,8 +395,17 @@ impl ProcessManager {
             ))
             .await;
 
-            self.start_process(name, Some(project), cmd, args, cwd, env, None, None)
-                .await
+            self.start_process_with_log_stream(
+                name,
+                Some(project),
+                cmd,
+                args,
+                cwd,
+                env,
+                wait_for_log,
+                wait_timeout,
+            )
+            .await
         } else {
             Err(McprocdError::ProcessNotFound {
                 name: name_or_id.to_string(),

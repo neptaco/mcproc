@@ -45,6 +45,7 @@ message StartProcessRequest {
   optional string project = 6; // Project name (defaults to directory name)
   optional string wait_for_log = 7;  // Wait for this log pattern before considering the process ready (regex)
   optional uint32 wait_timeout = 8;  // Timeout for log wait in seconds (default: 30)
+  optional bool force_restart = 9;  // If true, restart existing process with same name
 }
 
 message StopProcessRequest {
@@ -56,6 +57,8 @@ message StopProcessRequest {
 message RestartProcessRequest {
   string name = 1;
   optional string project = 2;
+  optional string wait_for_log = 3;  // Override wait pattern from original start
+  optional uint32 wait_timeout = 4;  // Override wait timeout from original start
 }
 
 message GetProcessRequest {

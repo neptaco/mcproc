@@ -91,6 +91,8 @@ impl ProcessLauncher {
         args: Vec<String>,
         cwd: Option<PathBuf>,
         env: Option<HashMap<String, String>>,
+        wait_for_log: Option<String>,
+        wait_timeout: Option<u32>,
         pid: u32,
     ) -> Arc<ProxyInfo> {
         // Extract port from environment if available
@@ -107,6 +109,8 @@ impl ProcessLauncher {
             args,
             cwd,
             env,
+            wait_for_log,
+            wait_timeout,
             pid,
             self.config.process.log_buffer_size,
         );

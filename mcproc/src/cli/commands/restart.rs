@@ -19,6 +19,8 @@ impl RestartCommand {
         let request = RestartProcessRequest {
             name: self.name.clone(),
             project: resolve_project_name_optional(self.project),
+            wait_for_log: None,
+            wait_timeout: None,
         };
 
         println!("Restarting process '{}'...", self.name);

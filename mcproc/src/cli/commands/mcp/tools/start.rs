@@ -43,6 +43,8 @@ struct StartParams {
     env: Option<std::collections::HashMap<String, String>>,
     wait_for_log: Option<String>,
     wait_timeout: Option<u32>,
+    #[serde(default)]
+    force_restart: Option<bool>,
 }
 
 #[async_trait]
@@ -50,7 +52,7 @@ impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "start_process".to_string(),
-            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification.".to_string(),
+            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -75,6 +77,10 @@ impl ToolHandler for StartTool {
                     "wait_timeout": { 
                         "type": "integer", 
                         "description": "Timeout for log wait in seconds (default: 30)" 
+                    },
+                    "force_restart": { 
+                        "type": "boolean", 
+                        "description": "If true, automatically stop any existing process with the same name before starting. This prevents 'already running' errors and ensures a fresh start. Useful when the LLM agent isn't sure if a process is running or when you want to guarantee a clean restart. (default: false)" 
                     }
                 },
                 "required": ["name"]
@@ -144,6 +150,7 @@ impl ToolHandler for StartTool {
             env: params.env.unwrap_or_default(),
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
+            force_restart: params.force_restart,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup

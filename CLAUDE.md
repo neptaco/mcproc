@@ -36,20 +36,24 @@ The daemon exposes these tools to LLMs:
 ## Development Commands
 
 ```bash
-# Build
-cargo build
-cargo build --release
+# Build - IMPORTANT: Always use --all-targets to check binaries
+cargo build --all-targets  # Check all targets including binaries
+cargo build --release --all-targets
 
 # Test
 cargo test
 cargo test -- --nocapture  # Show println! output
 
-# Lint
-cargo clippy -- -D warnings
+# Lint - Include all targets
+cargo clippy --all-targets -- -D warnings
 
 # Format
 cargo fmt
 cargo fmt -- --check  # Check without modifying
+
+# Check before install (detect binary compilation errors early)
+cargo check --bin mcproc  # Check binary compilation
+cargo install --path mcproc --dry-run  # Dry run to detect install errors
 
 # Run
 cargo run --bin mcprocd  # Run daemon
@@ -64,13 +68,19 @@ Before committing changes, always run these checks to ensure CI passes:
 # 1. Format check
 cargo fmt -- --check
 
-# 2. Clippy (linting)
-cargo clippy -- -D warnings
+# 2. Clippy (linting) - Include all targets
+cargo clippy --all-targets -- -D warnings
 
-# 3. Tests
+# 3. Build check - Include binaries
+cargo build --all-targets
+
+# 4. Tests
 cargo test
 
-# 4. Security audit
+# 5. Binary check (ensure mcproc can be installed)
+cargo check --bin mcproc
+
+# 6. Security audit
 cargo audit
 ```
 
@@ -212,3 +222,9 @@ Basic implementation complete. Remaining tasks:
 - Remove unused code instead of marking it with `#[allow(dead_code)]`
 - Don't worry about "public API compatibility" - only keep code that is actually used
 - Prefer deletion over deprecation for internal functions
+
+### Preventing Binary Build Errors
+- **Problem**: Regular `cargo build` only builds libraries, missing compilation errors in binaries (CLI)
+- **Solution**: Always use `--all-targets` option when building
+- **Reason**: Code under `mcproc/src/cli/` is only compiled during binary builds
+- **Recommendation**: Always run `cargo build --all-targets` after changes to catch errors early

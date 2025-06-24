@@ -57,11 +57,23 @@ impl ProcessManagerService for GrpcService {
         let cmd_for_error = req.cmd.clone(); // Clone for use in error handling
         let cwd_for_error = cwd.clone(); // Clone for use in error handling
         let log_dir = self.config.paths.log_dir.clone(); // Clone for use in async block
+        let force_restart = req.force_restart.unwrap_or(false);
 
         // We no longer need log streaming channel since log_context is included in ProcessInfo
 
         let process_manager = self.process_manager.clone();
         let _log_hub = self.log_hub.clone();
+
+        // Handle force_restart
+        if force_restart {
+            if let Some(existing) = process_manager.get_process_by_name_or_id_with_project(&name, project.as_deref()) {
+                // Stop existing process
+                let _ = process_manager.stop_process(&existing.id, project.as_deref(), false).await;
+                
+                // Wait a bit for process to stop
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
 
         // Create the response stream
         let stream = async_stream::try_stream! {
@@ -221,10 +233,10 @@ impl ProcessManagerService for GrpcService {
 
         match self
             .process_manager
-            .restart_process(&req.name, req.project)
+            .restart_process_with_log_stream(&req.name, req.project, req.wait_for_log, req.wait_timeout)
             .await
         {
-            Ok(process) => {
+            Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
                 // Get detected ports
                 let ports = if let Some(port) = process.port {
                     vec![port as u32]
@@ -232,6 +244,23 @@ impl ProcessManagerService for GrpcService {
                     detected.map(|p| vec![p as u32]).unwrap_or_default()
                 } else {
                     Vec::new()
+                };
+
+                // Check if process failed during restart
+                let current_status = process.get_status();
+                let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
+                    let code = *process.exit_code.lock().unwrap();
+                    let reason = code.map(format_exit_reason);
+                    let stderr = process.ring.lock().ok().map(|ring| {
+                        ring.iter()
+                            .take(5)
+                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }).unwrap_or_default();
+                    (code, reason, Some(stderr))
+                } else {
+                    (None, None, None)
                 };
 
                 let info = ProcessInfo {
@@ -243,7 +272,7 @@ impl ProcessManagerService for GrpcService {
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string())
                         .unwrap_or_default(),
-                    status: proto::ProcessStatus::Running as i32,
+                    status: proto::ProcessStatus::from(current_status).into(),
                     start_time: Some(prost_types::Timestamp {
                         seconds: process.start_time.timestamp(),
                         nanos: process.start_time.timestamp_subsec_nanos() as i32,
@@ -258,12 +287,12 @@ impl ProcessManagerService for GrpcService {
                         .to_string(),
                     project: process.project.clone(),
                     ports,
-                    wait_timeout_occurred: None,
-                    exit_code: None,
-                    exit_reason: None,
-                    stderr_tail: None,
-                    log_context: vec![],
-                    matched_line: None,
+                    wait_timeout_occurred: if process.wait_for_log.is_some() { Some(timeout_occurred) } else { None },
+                    exit_code,
+                    exit_reason,
+                    stderr_tail,
+                    log_context,
+                    matched_line,
                 };
 
                 Ok(Response::new(RestartProcessResponse {
