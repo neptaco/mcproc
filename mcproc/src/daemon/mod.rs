@@ -151,7 +151,7 @@ fn check_if_zombie(pid: i32) -> bool {
             // The state is the third field after the command name in parentheses
             if let Some(end) = status.rfind(')') {
                 let after_cmd = &status[end + 1..];
-                let fields: Vec<&str> = after_cmd.trim().split_whitespace().collect();
+                let fields: Vec<&str> = after_cmd.split_whitespace().collect();
                 if !fields.is_empty() {
                     // State is the first field after the command
                     // 'Z' indicates zombie process
