@@ -4,26 +4,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-mcproc is a Rust-based daemon that fulfills Model Context Protocol (MCP) tool calls from LLMs and manages multiple development processes. The project is currently in the architecture design phase.
+mcproc is a Rust-based daemon that fulfills Model Context Protocol (MCP) tool calls from LLMs and manages multiple development processes. The project provides a robust process management system with comprehensive logging, validation, and monitoring capabilities.
 
 ## Key Architecture Components
 
 ### Core Components
 - **mcprocd**: The main daemon process
-  - Tool Registry for MCP tools
-  - ProxyProc Manager for spawning/managing child processes
+  - Process Manager for spawning/managing child processes
   - Log Hub with ring buffer and file persistence
-  - API Layer using tonic (gRPC) and warp (HTTP/WebSocket)
+  - API Layer using tonic (gRPC via Unix Domain Socket)
+  - Port detection and monitoring
+  - Process state tracking
 
 - **mcproc**: CLI tool for interacting with the daemon
-  - Communicates via gRPC-unix socket
-  - Supports commands: start, stop, restart, ps, logs
+  - Communicates via gRPC Unix socket
+  - Supports commands: start, stop, restart, ps, logs, grep, clean, mcp serve
+  - Project-based process organization
+
+- **mcp-rs**: Reusable MCP library
+  - ServerBuilder for creating MCP servers
+  - Transport implementations (stdio implemented, SSE/HTTP planned)
+  - Tool registry and handler interfaces
 
 ### MCP Tools
-The daemon exposes these tools to LLMs:
-- `dev_proxy.start`: Spawn or attach to development processes
-- `dev_proxy.stop`: Terminate proxy processes
-- `dev_proxy.logs`: Fetch or stream process logs
+The daemon exposes these tools to LLMs via `mcproc mcp serve`:
+- `start_process`: Start and manage development processes
+- `stop_process`: Terminate processes
+- `restart_process`: Restart running processes
+- `list_processes`: List all managed processes
+- `get_logs`: Fetch or stream process logs
+- `get_process_status`: Get detailed process information
+- `search_process_logs`: Search through logs with regex patterns
 
 ## Prerequisites
 
@@ -104,24 +115,42 @@ cargo test
 
 ## Project Structure
 
-The intended structure follows a workspace layout:
-- `mcprocd/` - Daemon crate with API servers and process management
-- `mcproc/` - CLI crate for user interaction
-- `proto/` - Protocol definitions for gRPC services
+The project uses a Cargo workspace with the following crates:
+- `mcp-rs/` - Reusable MCP library for creating MCP servers
+- `mcproc/` - Main crate containing both daemon and CLI
+  - `src/daemon/` - Daemon implementation (process management, gRPC server)
+  - `src/cli/` - CLI commands and MCP tools
+  - `src/common/` - Shared utilities (config, validation, status)
+  - `src/client/` - gRPC client for daemon communication
+- `proto/` - Protocol buffer definitions for gRPC services
 
 ## Implementation Specifications
 
 ### Logging
-- **Log retention**: 1 day
-- **Max file size**: 10MB per log file
+- **Log retention**: 7 days (configurable)
+- **Max file size**: 50MB per log file (configurable)
 - **Ring buffer**: 10,000 lines in memory per process
-- **Log directory**: `$XDG_STATE_HOME/mcproc/log/` (defaults to `~/.local/state/mcproc/log/`)
-- **Format**: `{process_name}-{date}.log`
+- **Log directory**: `$XDG_STATE_HOME/mcproc/log/{project}/` (defaults to `~/.local/state/mcproc/log/{project}/`)
+- **Format**: `{process_name}.log` (organized by project directory)
+- **Features**: 
+  - Real-time log streaming with follow mode
+  - Regex-based log searching with context
+  - Time-based filtering (since/until/last)
+  - Process restart detection and seamless log continuation
 
 ### Process Management
 - **Error recovery**: No automatic restart on crash, but maintain crash state for monitoring
-- **Process isolation**: Each process runs independently
+- **Process isolation**: Each process runs independently with separate log files
 - **Resource limits**: Inherit from parent process
+- **Organization**: Processes are grouped by project for better organization
+- **Validation**: Process and project names are validated to ensure filesystem compatibility
+- **Features**:
+  - Port detection and monitoring
+  - Process status tracking (Starting, Running, Stopping, Stopped, Failed)
+  - Exit code and stderr capture on failure
+  - Wait for log pattern on startup (with timeout)
+  - Force restart option to replace running processes
+  - Clean command to stop all processes in a project
 
 ### Security
 - **Local only**: No remote access support
@@ -142,9 +171,12 @@ File locations:
 - PID file: `$XDG_RUNTIME_DIR/mcproc/mcprocd.pid`
 
 ### MCP Integration
-mcproc acts as an MCP server that receives JSON-RPC 2.0 requests from LLMs:
+mcproc acts as an MCP server that receives JSON-RPC 2.0 requests from LLMs via stdio transport:
 
-The mcprocd daemon communicates with MCP clients using its own HTTP API on port 3434.
+```bash
+# Start MCP server
+mcproc mcp serve [--project <default-project>]
+```
 
 #### MCP Transport Support in mcp-rs Library
 The mcp-rs library provides transport implementations for creating MCP servers:
@@ -154,49 +186,28 @@ The mcp-rs library provides transport implementations for creating MCP servers:
 
 All transports follow the same JSON-RPC 2.0 message format and tool definitions.
 
-Example MCP interactions:
+Example MCP tool call:
 
 ```json
-// Initialize session - POST /mcp
+// Start a process via MCP
 {
   "jsonrpc": "2.0",
-  "method": "initialize",
-  "id": 1
-}
-
-// List available tools - POST /mcp
-{
-  "jsonrpc": "2.0",
-  "method": "tools/list",
-  "id": 2
-}
-
-// Start a process - POST /mcp
-{
-  "jsonrpc": "2.0",
-  "method": "dev_proxy.start",
+  "method": "tools/call",
   "id": 1,
   "params": {
-    "name": "frontend",
-    "cmd": "npm run dev",
-    "cwd": "./webapp",
-    "port": 5173
-  }
-}
-
-// mcprocd responds:
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "id": "uuid-here",
-    "name": "frontend",
-    "pid": 12345,
-    "status": "Running",
-    "port": 5173
+    "name": "start_process",
+    "arguments": {
+      "name": "frontend",
+      "cmd": "npm run dev",
+      "project": "myapp",
+      "wait_for_log": "Server running on",
+      "wait_timeout": 30
+    }
   }
 }
 ```
+
+See tool documentation for available tools and their parameters.
 
 ### MCP Library (mcp-rs)
 
@@ -217,11 +228,58 @@ let mut server = ServerBuilder::new("my-server", "1.0.0")
 
 ## Current Status
 
-Basic implementation complete. Remaining tasks:
-- Unix Domain Socket support (currently TCP only)
-- Log streaming functionality
-- Process state persistence with SQLite
+Core functionality is implemented and working:
+- ✅ Unix Domain Socket support for gRPC communication
+- ✅ Real-time log streaming with follow mode
+- ✅ Process management with status tracking
+- ✅ Project-based organization
+- ✅ MCP server implementation with stdio transport
+- ✅ Comprehensive validation for process and project names
+- ✅ Port detection and monitoring
+- ✅ Log searching with regex and time filters
+
+Remaining enhancements:
+- Process state persistence (currently in-memory only)
+- Additional MCP transports (SSE, HTTP)
 - Integration tests
+- Web UI for process monitoring
+
+## CLI Commands
+
+### Process Management
+- `mcproc start <name> --cmd <command>` - Start a new process
+- `mcproc stop <name>` - Stop a running process
+- `mcproc restart <name>` - Restart a process
+- `mcproc ps` - List all processes
+- `mcproc clean [--project <name>]` - Stop all processes in a project
+
+### Log Management
+- `mcproc logs <name> [--tail N] [--follow]` - View process logs
+- `mcproc grep <name> <pattern>` - Search logs with regex
+  - `--since`, `--until`, `--last` for time filtering
+  - `--context`, `--before`, `--after` for context lines
+
+### MCP Server
+- `mcproc mcp serve [--project <default>]` - Start MCP server for LLM integration
+
+### Options
+- `--project` - Specify project (defaults to current directory name)
+- Environment variable `MCPROC_DEFAULT_PROJECT` can set default project
+
+## Validation Rules
+
+### Process Name Validation
+- Cannot be empty or consist of dots (`.`, `..`)
+- No path separators (`/`, `\`)
+- No special characters (`:`, `*`, `?`, `"`, `<`, `>`, `|`)
+- No leading/trailing whitespace
+- No control characters
+- Maximum 100 characters
+
+### Project Name Validation
+- Same rules as process names plus:
+- No Windows reserved names (CON, PRN, AUX, etc.)
+- Maximum 255 characters (filesystem limit)
 
 ## Critical Development Rules
 
