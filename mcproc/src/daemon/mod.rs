@@ -27,12 +27,26 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(pid) = pid.trim().parse::<i32>() {
             // Check if process is actually running
             if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
-                error!("mcprocd is already running with PID {}", pid);
-                return Err("Daemon already running".into());
+                // Process exists, check if it's a zombie
+                let is_zombie = check_if_zombie(pid);
+                
+                if is_zombie {
+                    info!("Found zombie process with PID {}, cleaning up", pid);
+                    // Remove stale PID file
+                    let _ = std::fs::remove_file(&config.paths.pid_file);
+                } else {
+                    error!("mcprocd is already running with PID {}", pid);
+                    return Err("Daemon already running".into());
+                }
+            } else {
+                // Process doesn't exist, remove stale PID file
+                info!("Removing stale PID file for non-existent process {}", pid);
+                let _ = std::fs::remove_file(&config.paths.pid_file);
             }
+        } else {
+            // Invalid PID in file, remove it
+            let _ = std::fs::remove_file(&config.paths.pid_file);
         }
-        // Remove stale PID file
-        let _ = std::fs::remove_file(&config.paths.pid_file);
     }
 
     // Write PID file
@@ -108,4 +122,41 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Port file is no longer used (using Unix sockets instead)
 
     Ok(())
+}
+
+fn check_if_zombie(pid: i32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // Use ps command to check process state on macOS
+        if let Ok(output) = std::process::Command::new("ps")
+            .args(&["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+        {
+            if let Ok(stat) = std::str::from_utf8(&output.stdout) {
+                // On macOS, zombie processes have 'Z' in their state
+                return stat.trim().contains('Z');
+            }
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        // Check /proc/{pid}/stat on Linux
+        if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+            // Parse the stat file to check process state
+            // The state is the third field after the command name in parentheses
+            if let Some(end) = status.rfind(')') {
+                let after_cmd = &status[end + 1..];
+                let fields: Vec<&str> = after_cmd.trim().split_whitespace().collect();
+                if !fields.is_empty() {
+                    // State is the first field after the command
+                    // 'Z' indicates zombie process
+                    return fields[0] == "Z";
+                }
+            }
+        }
+    }
+    
+    // Default to false on other platforms
+    false
 }

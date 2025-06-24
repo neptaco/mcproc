@@ -101,14 +101,29 @@ impl DaemonCommand {
                     // Wait for stop
                     let max_wait_iterations = config.daemon.shutdown_grace_period_ms
                         / config.daemon.stop_check_interval_ms;
+                    let mut stopped = false;
                     for _ in 0..max_wait_iterations {
                         tokio::time::sleep(Duration::from_millis(
                             config.daemon.stop_check_interval_ms,
                         ))
                         .await;
                         if !is_daemon_running(&config.paths.pid_file) {
+                            stopped = true;
                             break;
                         }
+                    }
+
+                    // If daemon didn't stop gracefully, force kill it
+                    if !stopped {
+                        println!("Daemon did not stop gracefully, sending SIGKILL...");
+                        nix::sys::signal::kill(
+                            nix::unistd::Pid::from_raw(pid),
+                            nix::sys::signal::Signal::SIGKILL,
+                        )?;
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        
+                        // Clean up PID file
+                        let _ = std::fs::remove_file(&config.paths.pid_file);
                     }
                 }
 
@@ -196,7 +211,49 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
     if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             // Check if process is actually running
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok()
+            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
+                // Process exists, check if it's a zombie on macOS
+                #[cfg(target_os = "macos")]
+                {
+                    // Use ps command to check process state on macOS
+                    if let Ok(output) = std::process::Command::new("ps")
+                        .args(&["-p", &pid.to_string(), "-o", "stat="])
+                        .output()
+                    {
+                        if let Ok(stat) = std::str::from_utf8(&output.stdout) {
+                            // On macOS, zombie processes have 'Z' in their state
+                            if stat.trim().contains('Z') {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                
+                #[cfg(target_os = "linux")]
+                {
+                    // Check /proc/{pid}/stat on Linux
+                    if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+                        // Parse the stat file to check process state
+                        // The state is the third field after the command name in parentheses
+                        if let Some(end) = status.rfind(')') {
+                            let after_cmd = &status[end + 1..];
+                            let fields: Vec<&str> = after_cmd.trim().split_whitespace().collect();
+                            if !fields.is_empty() {
+                                // State is the first field after the command
+                                // 'Z' indicates zombie process
+                                if fields[0] == "Z" {
+                                    return false;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Process exists and is not a zombie
+                true
+            } else {
+                false
+            }
         } else {
             false
         }
@@ -257,6 +314,25 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
+            // Check if daemon process is still running
+            match nix::sys::signal::kill(nix::unistd::Pid::from_raw(child.id() as i32), None) {
+                Ok(_) => {
+                    // Process is running but didn't create PID file
+                    eprintln!("Error: Daemon process started but failed to create PID file.");
+                    eprintln!("Check the daemon log for errors: {}", config.daemon_log_file().display());
+                    
+                    // Kill the orphaned process
+                    let _ = nix::sys::signal::kill(
+                        nix::unistd::Pid::from_raw(child.id() as i32),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                },
+                Err(_) => {
+                    // Process exited
+                    eprintln!("Error: Daemon process exited unexpectedly.");
+                    eprintln!("Check the daemon log for errors: {}", config.daemon_log_file().display());
+                }
+            }
             Err("Daemon failed to start (PID file not created)".into())
         }
         Err(e) => Err(format!("Failed to spawn mcprocd: {}", e).into()),
