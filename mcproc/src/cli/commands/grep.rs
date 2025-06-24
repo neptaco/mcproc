@@ -124,7 +124,7 @@ fn print_log_entry(entry: &proto::LogEntry, is_match: bool) {
 
     let level_indicator = match entry.level {
         2 => "E".red().bold(),
-        _ => "I".green(),
+        _ => "I".dimmed(),
     };
 
     let line_number = format!("{:>6}", entry.line_number);

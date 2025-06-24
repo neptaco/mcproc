@@ -1,6 +1,7 @@
 use crate::common::process_key::ProcessKey;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
+use colored::Colorize;
 use regex::Regex;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
@@ -110,6 +111,16 @@ impl LogStreamConfig {
                                 if let (Some(ref pattern), Some(ref tx)) = (&self.log_pattern, &self.log_ready_tx) {
                                     if pattern.is_match(&line) {
                                         debug!("Found log pattern match: {}", line);
+                                        
+                                        // Log the pattern match with color (green for ready)
+                                        let ready_msg = format!(
+                                            "{} Process ready - pattern matched\n",
+                                            "[mcproc]".green().bold()
+                                        );
+                                        if let Err(e) = self.log_hub.append_log_for_key(&self.process_key, ready_msg.as_bytes(), true).await {
+                                            error!("Failed to write ready log: {}", e);
+                                        }
+                                        
                                         if let Ok(mut tx_guard) = tx.lock() {
                                             if let Some(sender) = tx_guard.take() {
                                                 let _ = sender.send(());

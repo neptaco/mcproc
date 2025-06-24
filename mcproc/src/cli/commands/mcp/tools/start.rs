@@ -9,6 +9,7 @@ use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::time::Duration;
+use strip_ansi_escapes::strip;
 use tonic::Request;
 
 pub struct StartTool {
@@ -42,7 +43,7 @@ impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "start_process".to_string(),
-            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.".to_string(),
+            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.\n\nNOTE: Processes are NOT connected to a TTY, so many tools disable colored output by default. To enable colors:\n- For npm/yarn/pnpm: Add --color or --color=always flag (e.g., 'npm run dev --color')\n- For cargo: Set CARGO_TERM_COLOR=always in env parameter\n- For other tools: Check their documentation for color flags or use env parameter to set FORCE_COLOR=1".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -250,14 +251,19 @@ impl ToolHandler for StartTool {
                     }
                 }
 
-                // Always include log context from ProcessInfo
+                // Always include log context from ProcessInfo (strip ANSI codes)
                 if !process.log_context.is_empty() {
-                    response["log_context"] = json!(process.log_context);
+                    let cleaned_context: Vec<String> = process.log_context
+                        .iter()
+                        .map(|line| String::from_utf8_lossy(&strip(line.as_bytes())).to_string())
+                        .collect();
+                    response["log_context"] = json!(cleaned_context);
                 }
 
-                // Add matched line if available
+                // Add matched line if available (strip ANSI codes)
                 if let Some(matched_line) = process.matched_line {
-                    response["matched_line"] = json!(matched_line);
+                    let cleaned_line = String::from_utf8_lossy(&strip(matched_line.as_bytes())).to_string();
+                    response["matched_line"] = json!(cleaned_line);
                 }
 
                 // Add pattern match information if wait_for_log was used

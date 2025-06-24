@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use strip_ansi_escapes::strip;
 use tokio_stream::StreamExt;
 
 pub struct LogsTool {
@@ -99,10 +100,13 @@ impl ToolHandler for LogsTool {
                             _ => "I",
                         };
 
+                        // Strip ANSI escape codes from content for MCP output
+                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
+                        
                         let formatted = if timestamp.is_empty() {
-                            format!("{} {}", level, entry.content)
+                            format!("{} {}", level, content)
                         } else {
-                            format!("{} {} {}", timestamp, level, entry.content)
+                            format!("{} {} {}", timestamp, level, content)
                         };
 
                         all_logs.push(formatted);

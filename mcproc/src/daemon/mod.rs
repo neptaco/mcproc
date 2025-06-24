@@ -16,6 +16,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         .with(EnvFilter::from_default_env().add_directive("mcprocd=info".parse()?))
         .init();
 
+    // Force colored output for mcproc messages in logs
+    // This ensures [mcproc] messages have colors even when writing to files
+    colored::control::set_override(true);
+
     info!("Starting mcprocd daemon");
 
     // Load configuration

@@ -169,6 +169,14 @@ The project uses a Cargo workspace with the following crates:
   - Time-based filtering (since/until/last)
   - Process restart detection and seamless log continuation
 
+#### ANSI Color Code Handling
+- **Log Storage**: ANSI escape codes are preserved in log files and daemon memory
+- **CLI Display**: Colors are shown by default, can be disabled with `--no-color` flag
+- **MCP Tools**: ANSI codes are automatically stripped from all log output to ensure clean text for LLMs (for context saving and preventing misinterpretation)
+  - Affected tools: `start_process`, `restart_process`, `get_process_logs`, `search_process_logs`
+  - Stripped fields: log entries, `log_context`, `matched_line`
+- **Rationale**: Processes are not connected to a TTY, so many tools disable colors by default. The `start_process` tool description includes guidance for enabling colors via tool-specific flags or environment variables
+
 ### Process Management
 - **Error recovery**: No automatic restart on crash, but maintain crash state for monitoring
 - **Process isolation**: Each process runs independently with separate log files

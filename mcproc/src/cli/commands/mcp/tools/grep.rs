@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use strip_ansi_escapes::strip;
 
 pub struct GrepTool {
     client: DaemonClient,
@@ -115,27 +116,29 @@ impl ToolHandler for GrepTool {
 
                     // Context before
                     for entry in &grep_match.context_before {
+                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,
                             format_timestamp(entry.timestamp.as_ref()),
-                            entry.content
+                            content
                         ));
                     }
 
                     // Matched line (highlighted)
                     let matched_line_info = if let Some(matched_line) = &grep_match.matched_line {
+                        let content = String::from_utf8_lossy(&strip(matched_line.content.as_bytes())).to_string();
                         lines.push(format!(
                             "{:>6}: {} {} <<< MATCH",
                             matched_line.line_number,
                             format_timestamp(matched_line.timestamp.as_ref()),
-                            matched_line.content
+                            content
                         ));
 
                         Some(json!({
                             "line_number": matched_line.line_number,
                             "timestamp": format_timestamp(matched_line.timestamp.as_ref()),
-                            "content": matched_line.content
+                            "content": content
                         }))
                     } else {
                         None
@@ -143,11 +146,12 @@ impl ToolHandler for GrepTool {
 
                     // Context after
                     for entry in &grep_match.context_after {
+                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,
                             format_timestamp(entry.timestamp.as_ref()),
-                            entry.content
+                            content
                         ));
                     }
 

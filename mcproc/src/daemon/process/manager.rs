@@ -8,6 +8,7 @@ use crate::daemon::process::log_stream::LogStreamConfig;
 use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use crate::daemon::process::registry::ProcessRegistry;
+use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -115,6 +116,21 @@ impl ProcessManager {
         // Add to registry
         self.registry.add_process(proxy_arc.clone());
 
+        // Log the start event with color (green for starting)
+        let start_msg = format!(
+            "{} Starting process '{}' (PID: {})\n",
+            "[mcproc]".green().bold(),
+            name.green(),
+            pid.to_string().green()
+        );
+        if let Err(e) = self
+            .log_hub
+            .append_log_for_key(&process_key, start_msg.as_bytes(), true)
+            .await
+        {
+            error!("Failed to write start log: {}", e);
+        }
+
         // Setup stdout/stderr capture
         let stdout = child.stdout.take().expect("stdout should be captured");
         let stderr = child.stderr.take().expect("stderr should be captured");
@@ -174,8 +190,8 @@ impl ProcessManager {
                     let exit_msg = ExitHandler::format_exit_message(&monitor_name, exit_code);
                     info!("{}", exit_msg);
 
-                    // Log the exit
-                    let log_msg = format!("[mcproc] {}\n", exit_msg);
+                    // Log the exit with color (red for exit)
+                    let log_msg = format!("{} {}\n", "[mcproc]".red().bold(), exit_msg.red());
                     if let Err(e) = monitor_log_hub
                         .append_log_for_key(&monitor_key, log_msg.as_bytes(), true)
                         .await
@@ -294,8 +310,12 @@ impl ProcessManager {
 
         info!("Stopping process {} in project {}", name, project);
 
-        // Log the stop event
-        let log_msg = format!("[mcproc] Stopping process {}\n", name);
+        // Log the stop event with color (yellow for stopping)
+        let log_msg = format!(
+            "{} Stopping process {}\n",
+            "[mcproc]".yellow().bold(),
+            name.yellow()
+        );
         if let Err(e) = self
             .log_hub
             .append_log_for_key(&process_key, log_msg.as_bytes(), true)

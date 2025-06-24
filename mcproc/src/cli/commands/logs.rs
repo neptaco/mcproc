@@ -210,7 +210,7 @@ fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
         // Default mode: full mcproc colors
         let level_indicator = match entry.level {
             2 => "E".red().bold(),
-            _ => "I".green(),
+            _ => "I".dimmed(),
         };
         println!(
             "{} {} {}",
@@ -283,7 +283,7 @@ fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: us
         // Default mode: full mcproc colors
         let level_indicator = match entry.level {
             2 => "E".red().bold(),
-            _ => "I".green(),
+            _ => "I".dimmed(),
         };
 
         let colored_padded_name = match process_name

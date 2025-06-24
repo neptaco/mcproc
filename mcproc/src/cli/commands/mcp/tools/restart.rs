@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use strip_ansi_escapes::strip;
 
 pub struct RestartTool {
     client: DaemonClient,
@@ -93,13 +94,18 @@ impl ToolHandler for RestartTool {
                     "ports": process.ports,
                 });
 
-                // Add wait pattern match info if process has wait_for_log configured
+                // Add wait pattern match info if process has wait_for_log configured (strip ANSI codes)
                 if !process.log_context.is_empty() {
-                    response["log_context"] = json!(process.log_context);
+                    let cleaned_context: Vec<String> = process.log_context
+                        .iter()
+                        .map(|line| String::from_utf8_lossy(&strip(line.as_bytes())).to_string())
+                        .collect();
+                    response["log_context"] = json!(cleaned_context);
                 }
 
                 if let Some(matched_line) = process.matched_line {
-                    response["matched_line"] = json!(matched_line);
+                    let cleaned_line = String::from_utf8_lossy(&strip(matched_line.as_bytes())).to_string();
+                    response["matched_line"] = json!(cleaned_line);
                 }
 
                 // Add timeout information if available
