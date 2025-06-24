@@ -8,6 +8,9 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tracing::{debug, error, warn};
 
+// Type alias for complex type
+type LogStreamSender = Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>;
+
 pub struct LogStreamConfig {
     pub stream_name: &'static str, // "stdout" or "stderr"
     pub process_key: ProcessKey,
@@ -15,7 +18,7 @@ pub struct LogStreamConfig {
     pub proxy: Arc<ProxyInfo>,
     pub log_pattern: Option<Arc<Regex>>,
     pub log_ready_tx: Option<Arc<Mutex<Option<oneshot::Sender<()>>>>>,
-    pub log_stream_tx: Option<Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>>,
+    pub log_stream_tx: Option<LogStreamSender>,
     pub pattern_matched: Arc<Mutex<bool>>,
     pub timeout_occurred: Arc<Mutex<bool>>,
     pub wait_timeout: Option<u32>,

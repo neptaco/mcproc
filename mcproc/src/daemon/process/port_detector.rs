@@ -160,20 +160,6 @@ pub fn detect_ports_netstat(pid: u32) -> Vec<u32> {
     ports
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_extract_port() {
-        assert_eq!(extract_port("*:3000"), Some("3000"));
-        assert_eq!(extract_port("127.0.0.1:8080"), Some("8080"));
-        assert_eq!(extract_port("[::]:3000"), Some("3000"));
-        assert_eq!(extract_port("[::1]:8080"), Some("8080"));
-        assert_eq!(extract_port("localhost"), None);
-    }
-}
-
 /// Wait for a port to become available
 pub async fn wait_for_port(port: u16, timeout_secs: u64) -> Result<(), String> {
     let start = tokio::time::Instant::now();
@@ -207,5 +193,19 @@ pub async fn detect_port_for_pid(pid: u32) -> Result<Option<u16>, String> {
         Ok(None)
     } else {
         Ok(Some(ports[0] as u16))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_port() {
+        assert_eq!(extract_port("*:3000"), Some("3000"));
+        assert_eq!(extract_port("127.0.0.1:8080"), Some("8080"));
+        assert_eq!(extract_port("[::]:3000"), Some("3000"));
+        assert_eq!(extract_port("[::1]:8080"), Some("8080"));
+        assert_eq!(extract_port("localhost"), None);
     }
 }

@@ -66,10 +66,14 @@ impl ProcessManagerService for GrpcService {
 
         // Handle force_restart
         if force_restart {
-            if let Some(existing) = process_manager.get_process_by_name_or_id_with_project(&name, project.as_deref()) {
+            if let Some(existing) =
+                process_manager.get_process_by_name_or_id_with_project(&name, project.as_deref())
+            {
                 // Stop existing process
-                let _ = process_manager.stop_process(&existing.id, project.as_deref(), false).await;
-                
+                let _ = process_manager
+                    .stop_process(&existing.id, project.as_deref(), false)
+                    .await;
+
                 // Wait a bit for process to stop
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
@@ -233,7 +237,12 @@ impl ProcessManagerService for GrpcService {
 
         match self
             .process_manager
-            .restart_process_with_log_stream(&req.name, req.project, req.wait_for_log, req.wait_timeout)
+            .restart_process_with_log_stream(
+                &req.name,
+                req.project,
+                req.wait_for_log,
+                req.wait_timeout,
+            )
             .await
         {
             Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
@@ -248,20 +257,26 @@ impl ProcessManagerService for GrpcService {
 
                 // Check if process failed during restart
                 let current_status = process.get_status();
-                let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
-                    let code = *process.exit_code.lock().unwrap();
-                    let reason = code.map(format_exit_reason);
-                    let stderr = process.ring.lock().ok().map(|ring| {
-                        ring.iter()
-                            .take(5)
-                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    }).unwrap_or_default();
-                    (code, reason, Some(stderr))
-                } else {
-                    (None, None, None)
-                };
+                let (exit_code, exit_reason, stderr_tail) =
+                    if matches!(current_status, ProcessStatus::Failed) {
+                        let code = *process.exit_code.lock().unwrap();
+                        let reason = code.map(format_exit_reason);
+                        let stderr = process
+                            .ring
+                            .lock()
+                            .ok()
+                            .map(|ring| {
+                                ring.iter()
+                                    .take(5)
+                                    .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_default();
+                        (code, reason, Some(stderr))
+                    } else {
+                        (None, None, None)
+                    };
 
                 let info = ProcessInfo {
                     id: process.id.clone(),
@@ -287,7 +302,11 @@ impl ProcessManagerService for GrpcService {
                         .to_string(),
                     project: process.project.clone(),
                     ports,
-                    wait_timeout_occurred: if process.wait_for_log.is_some() { Some(timeout_occurred) } else { None },
+                    wait_timeout_occurred: if process.wait_for_log.is_some() {
+                        Some(timeout_occurred)
+                    } else {
+                        None
+                    },
                     exit_code,
                     exit_reason,
                     stderr_tail,

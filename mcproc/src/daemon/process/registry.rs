@@ -101,3 +101,9 @@ impl ProcessRegistry {
         projects
     }
 }
+
+impl Default for ProcessRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

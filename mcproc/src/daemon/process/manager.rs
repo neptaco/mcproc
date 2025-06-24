@@ -33,33 +33,6 @@ impl ProcessManager {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn start_process(
-        &self,
-        name: String,
-        project: Option<String>,
-        cmd: Option<String>,
-        args: Vec<String>,
-        cwd: Option<PathBuf>,
-        env: Option<HashMap<String, String>>,
-        wait_for_log: Option<String>,
-        wait_timeout: Option<u32>,
-    ) -> Result<Arc<ProxyInfo>> {
-        let (proxy, _timeout, _pattern_matched, _log_context, _matched_line) = self
-            .start_process_with_log_stream(
-                name,
-                project,
-                cmd,
-                args,
-                cwd,
-                env,
-                wait_for_log,
-                wait_timeout,
-            )
-            .await?;
-        Ok(proxy)
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub async fn start_process_with_log_stream(
         &self,
         name: String,
@@ -126,15 +99,17 @@ impl ProcessManager {
 
         // Create proxy info
         let proxy_arc = self.launcher.create_proxy_info(
-            name.clone(),
-            project.clone(),
-            cmd,
-            args,
-            cwd,
-            env,
-            wait_for_log.clone(),
-            wait_timeout,
-            pid,
+            crate::daemon::process::launcher::CreateProxyInfoParams {
+                name: name.clone(),
+                project: project.clone(),
+                cmd,
+                args,
+                cwd,
+                env,
+                wait_for_log: wait_for_log.clone(),
+                wait_timeout,
+                pid,
+            },
         );
 
         // Add to registry
@@ -288,11 +263,8 @@ impl ProcessManager {
             .ok()
             .map(|g| g.clone())
             .unwrap_or_default();
-        
-        let collected_matched_line = matched_line
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
+
+        let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
 
         Ok((
             proxy_arc,
@@ -332,10 +304,7 @@ impl ProcessManager {
             error!("Failed to write stop log: {}", e);
         }
 
-        process
-            .stop(force)
-            .await
-            .map_err(|e| McprocdError::StopError(e))?;
+        process.stop(force).await.map_err(McprocdError::StopError)?;
 
         // Remove from registry
         self.registry.remove_process(&process.id);
@@ -345,23 +314,6 @@ impl ProcessManager {
 
         info!("Stopped process {} in project {}", name, project);
         Ok(())
-    }
-
-    pub async fn restart_process(
-        &self,
-        name_or_id: &str,
-        project: Option<String>,
-        override_wait_for_log: Option<String>,
-        override_wait_timeout: Option<u32>,
-    ) -> Result<Arc<ProxyInfo>> {
-        self.restart_process_with_log_stream(
-            name_or_id,
-            project,
-            override_wait_for_log,
-            override_wait_timeout,
-        )
-        .await
-        .map(|(proxy, _, _, _, _)| proxy)
     }
 
     pub async fn restart_process_with_log_stream(
@@ -381,7 +333,7 @@ impl ProcessManager {
             let args = process.args.clone();
             let cwd = process.cwd.clone();
             let env = process.env.clone();
-            
+
             // Use override values if provided, otherwise use saved values
             let wait_for_log = override_wait_for_log.or(process.wait_for_log.clone());
             let wait_timeout = override_wait_timeout.or(process.wait_timeout);

@@ -121,7 +121,7 @@ impl DaemonCommand {
                             nix::sys::signal::Signal::SIGKILL,
                         )?;
                         tokio::time::sleep(Duration::from_millis(200)).await;
-                        
+
                         // Clean up PID file
                         let _ = std::fs::remove_file(&config.paths.pid_file);
                     }
@@ -217,7 +217,7 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
                 {
                     // Use ps command to check process state on macOS
                     if let Ok(output) = std::process::Command::new("ps")
-                        .args(&["-p", &pid.to_string(), "-o", "stat="])
+                        .args(["-p", &pid.to_string(), "-o", "stat="])
                         .output()
                     {
                         if let Ok(stat) = std::str::from_utf8(&output.stdout) {
@@ -228,7 +228,7 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
                         }
                     }
                 }
-                
+
                 #[cfg(target_os = "linux")]
                 {
                     // Check /proc/{pid}/stat on Linux
@@ -248,7 +248,7 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
                         }
                     }
                 }
-                
+
                 // Process exists and is not a zombie
                 true
             } else {
@@ -319,18 +319,24 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(_) => {
                     // Process is running but didn't create PID file
                     eprintln!("Error: Daemon process started but failed to create PID file.");
-                    eprintln!("Check the daemon log for errors: {}", config.daemon_log_file().display());
-                    
+                    eprintln!(
+                        "Check the daemon log for errors: {}",
+                        config.daemon_log_file().display()
+                    );
+
                     // Kill the orphaned process
                     let _ = nix::sys::signal::kill(
                         nix::unistd::Pid::from_raw(child.id() as i32),
                         nix::sys::signal::Signal::SIGKILL,
                     );
-                },
+                }
                 Err(_) => {
                     // Process exited
                     eprintln!("Error: Daemon process exited unexpectedly.");
-                    eprintln!("Check the daemon log for errors: {}", config.daemon_log_file().display());
+                    eprintln!(
+                        "Check the daemon log for errors: {}",
+                        config.daemon_log_file().display()
+                    );
                 }
             }
             Err("Daemon failed to start (PID file not created)".into())

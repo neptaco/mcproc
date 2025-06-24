@@ -66,35 +66,23 @@ pub struct ProxyInfo {
 }
 
 impl ProxyInfo {
-    pub fn new(
-        id: String,
-        name: String,
-        project: String,
-        cmd: Option<String>,
-        args: Vec<String>,
-        cwd: Option<PathBuf>,
-        env: Option<std::collections::HashMap<String, String>>,
-        wait_for_log: Option<String>,
-        wait_timeout: Option<u32>,
-        pid: u32,
-        ring_buffer_size: usize,
-    ) -> Self {
-        let key = ProcessKey::new(project.clone(), name.clone());
+    pub fn new(params: crate::daemon::process::types::ProxyInfoParams) -> Self {
+        let key = ProcessKey::new(params.project.clone(), params.name.clone());
         Self {
-            id,
+            id: params.id,
             key,
-            name,
-            project,
-            cmd,
-            args,
-            cwd,
-            env,
-            wait_for_log,
-            wait_timeout,
+            name: params.name,
+            project: params.project,
+            cmd: params.cmd,
+            args: params.args,
+            cwd: params.cwd,
+            env: params.env,
+            wait_for_log: params.wait_for_log,
+            wait_timeout: params.wait_timeout,
             start_time: Utc::now(),
             status: Arc::new(AtomicU8::new(ProcessStatus::Running as u8)),
-            ring: Arc::new(Mutex::new(HeapRb::new(ring_buffer_size))),
-            pid,
+            ring: Arc::new(Mutex::new(HeapRb::new(params.ring_buffer_size))),
+            pid: params.pid,
             port: None,
             detected_port: Arc::new(Mutex::new(None)),
             port_ready: Arc::new(Mutex::new(false)),

@@ -2,6 +2,7 @@ use crate::common::config::Config;
 use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::process::proxy::ProxyInfo;
+use crate::daemon::process::types::ProxyInfoParams;
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -10,6 +11,19 @@ use std::sync::Arc;
 use tokio::process::Command;
 use tracing::{debug, info};
 use uuid::Uuid;
+
+/// Parameters for creating a ProxyInfo via launcher
+pub struct CreateProxyInfoParams {
+    pub name: String,
+    pub project: String,
+    pub cmd: Option<String>,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub env: Option<HashMap<String, String>>,
+    pub wait_for_log: Option<String>,
+    pub wait_timeout: Option<u32>,
+    pub pid: u32,
+}
 
 pub struct ProcessLauncher {
     config: Arc<Config>,
@@ -83,37 +97,27 @@ impl ProcessLauncher {
     }
 
     /// Create a ProxyInfo instance for the launched process
-    pub fn create_proxy_info(
-        &self,
-        name: String,
-        project: String,
-        cmd: Option<String>,
-        args: Vec<String>,
-        cwd: Option<PathBuf>,
-        env: Option<HashMap<String, String>>,
-        wait_for_log: Option<String>,
-        wait_timeout: Option<u32>,
-        pid: u32,
-    ) -> Arc<ProxyInfo> {
+    pub fn create_proxy_info(&self, params: CreateProxyInfoParams) -> Arc<ProxyInfo> {
         // Extract port from environment if available
-        let port = env
+        let port = params
+            .env
             .as_ref()
             .and_then(|e| e.get("PORT"))
             .and_then(|p| p.parse::<u16>().ok());
         let id = Uuid::new_v4().to_string();
-        let mut proxy = ProxyInfo::new(
+        let mut proxy = ProxyInfo::new(ProxyInfoParams {
             id,
-            name,
-            project,
-            cmd,
-            args,
-            cwd,
-            env,
-            wait_for_log,
-            wait_timeout,
-            pid,
-            self.config.process.log_buffer_size,
-        );
+            name: params.name,
+            project: params.project,
+            cmd: params.cmd,
+            args: params.args,
+            cwd: params.cwd,
+            env: params.env,
+            wait_for_log: params.wait_for_log,
+            wait_timeout: params.wait_timeout,
+            pid: params.pid,
+            ring_buffer_size: self.config.process.log_buffer_size,
+        });
         proxy.port = port;
         Arc::new(proxy)
     }

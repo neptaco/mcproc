@@ -29,7 +29,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
                 // Process exists, check if it's a zombie
                 let is_zombie = check_if_zombie(pid);
-                
+
                 if is_zombie {
                     info!("Found zombie process with PID {}, cleaning up", pid);
                     // Remove stale PID file
@@ -129,7 +129,7 @@ fn check_if_zombie(pid: i32) -> bool {
     {
         // Use ps command to check process state on macOS
         if let Ok(output) = std::process::Command::new("ps")
-            .args(&["-p", &pid.to_string(), "-o", "stat="])
+            .args(["-p", &pid.to_string(), "-o", "stat="])
             .output()
         {
             if let Ok(stat) = std::str::from_utf8(&output.stdout) {
@@ -138,7 +138,7 @@ fn check_if_zombie(pid: i32) -> bool {
             }
         }
     }
-    
+
     #[cfg(target_os = "linux")]
     {
         // Check /proc/{pid}/stat on Linux
@@ -156,7 +156,7 @@ fn check_if_zombie(pid: i32) -> bool {
             }
         }
     }
-    
+
     // Default to false on other platforms
     false
 }

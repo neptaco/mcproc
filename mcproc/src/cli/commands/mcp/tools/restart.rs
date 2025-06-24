@@ -112,7 +112,8 @@ impl ToolHandler for RestartTool {
                         );
                     } else {
                         response["pattern_matched"] = json!(true);
-                        response["message"] = json!("Process restarted successfully. Pattern matched in logs.");
+                        response["message"] =
+                            json!("Process restarted successfully. Pattern matched in logs.");
                     }
                 }
 
