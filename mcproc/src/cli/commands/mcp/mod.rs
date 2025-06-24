@@ -15,21 +15,35 @@ pub struct McpCommand {
 #[derive(Subcommand)]
 enum McpSubcommands {
     /// Start the MCP server
-    Serve,
+    Serve {
+        /// Default project name for all MCP operations
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 impl McpCommand {
     pub async fn execute(self, client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         match self.command {
-            McpSubcommands::Serve => serve_mcp(client).await,
+            McpSubcommands::Serve { project } => serve_mcp(client, project).await,
         }
     }
 }
 
-async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
+async fn serve_mcp(
+    client: DaemonClient,
+    default_project: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::common::validation::validate_project_name;
     use mcp_rs::{ServerBuilder, StdioTransport};
     use tools::{GrepTool, LogsTool, PsTool, RestartTool, StartTool, StatusTool, StopTool};
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    // Validate and set default project as environment variable if provided
+    if let Some(project) = default_project {
+        validate_project_name(&project)?;
+        std::env::set_var("MCPROC_DEFAULT_PROJECT", project);
+    }
 
     // Configure tracing to output to stderr to avoid interfering with JSON-RPC on stdout
     tracing_subscriber::registry()
@@ -46,12 +60,12 @@ async fn serve_mcp(client: DaemonClient) -> Result<(), Box<dyn std::error::Error
 
     let mut server = ServerBuilder::new("mcproc", "0.1.0")
         .add_tool(Arc::new(StartTool::new(client.clone())))
-        .add_tool(Arc::new(StopTool::new(client.clone(), None)))
-        .add_tool(Arc::new(RestartTool::new(client.clone(), None)))
+        .add_tool(Arc::new(StopTool::new(client.clone())))
+        .add_tool(Arc::new(RestartTool::new(client.clone())))
         .add_tool(Arc::new(PsTool::new(client.clone())))
-        .add_tool(Arc::new(LogsTool::new(client.clone(), None)))
-        .add_tool(Arc::new(StatusTool::new(client.clone(), None)))
-        .add_tool(Arc::new(GrepTool::new(client.clone(), None)))
+        .add_tool(Arc::new(LogsTool::new(client.clone())))
+        .add_tool(Arc::new(StatusTool::new(client.clone())))
+        .add_tool(Arc::new(GrepTool::new(client.clone())))
         .build(transport)
         .await?;
 

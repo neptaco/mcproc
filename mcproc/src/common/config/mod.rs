@@ -72,6 +72,8 @@ pub struct ProcessConfig {
     pub restart: ProcessRestartConfig,
     /// Port detection configuration
     pub port_detection: PortDetectionConfig,
+    /// Log buffer size (number of lines)
+    pub log_buffer_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +142,7 @@ impl Default for Config {
                     interval_secs: 3,
                     max_attempts: 30,
                 },
+                log_buffer_size: 10000,
             },
             logging: LoggingConfig {
                 max_size_mb: 100,
@@ -190,7 +193,6 @@ impl Config {
 
         Ok(())
     }
-
 
     pub fn daemon_log_file(&self) -> PathBuf {
         self.paths.daemon_log_file.clone()

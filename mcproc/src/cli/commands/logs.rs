@@ -1,4 +1,4 @@
-use crate::cli::utils::resolve_project_name_optional;
+use crate::cli::utils::resolve_project_name;
 use crate::client::DaemonClient;
 use chrono;
 use clap::Args;
@@ -60,7 +60,7 @@ impl LogsCommand {
         };
         
         // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = resolve_project_name_optional(self.project);
+        let project = resolve_project_name(self.project)?;
 
         match self.name {
             Some(name) => {
@@ -69,7 +69,7 @@ impl LogsCommand {
                     name: name.clone(),
                     tail: Some(self.tail),
                     follow: Some(self.follow),
-                    project,
+                    project: project.clone(),
                 };
 
                 let mut stream = client.inner().get_logs(request).await?.into_inner();
@@ -93,7 +93,7 @@ impl LogsCommand {
                 // All processes in project
                 // Get list of processes in the current project
                 let list_request = ListProcessesRequest {
-                    project_filter: project.clone(),
+                    project_filter: Some(project.clone()),
                     status_filter: None,
                 };
 
@@ -160,7 +160,7 @@ impl LogsCommand {
                         .unwrap_or(10)
                         .max(10); // Minimum 10 characters
 
-                    stream_multiple_logs(client, processes, project, self.tail, max_name_len, &color_opts)
+                    stream_multiple_logs(client, processes, Some(project), self.tail, max_name_len, &color_opts)
                         .await?;
                 }
             }
@@ -407,7 +407,7 @@ async fn stream_multiple_logs(
                                     name: process_name.clone(),
                                     tail: Some(tail),
                                     follow: Some(true),
-                                    project: project_clone,
+                                    project: project_clone.unwrap_or_else(|| "default".to_string()),
                                 };
 
                                 match client_clone.inner().get_logs(request).await {
@@ -481,7 +481,7 @@ fn spawn_log_stream_task(
             name: process_name.clone(),
             tail: Some(tail),
             follow: Some(true),
-            project: project_clone,
+            project: project_clone.unwrap_or_else(|| "default".to_string()),
         };
 
         match client_clone.inner().get_logs(request).await {

@@ -1,6 +1,7 @@
 use crate::cli::utils::resolve_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status_colored;
+use crate::common::validation::validate_process_name;
 use clap::Args;
 use colored::*;
 use proto::StartProcessRequest;
@@ -43,6 +44,9 @@ pub struct StartCommand {
 
 impl StartCommand {
     pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
+        // Validate process name
+        validate_process_name(&self.name)?;
+
         let mut env_map = std::collections::HashMap::new();
 
         for env_str in self.env {
@@ -64,10 +68,11 @@ impl StartCommand {
             cmd: self.cmd,
             args: self.args.unwrap_or_default(),
             cwd: self.cwd,
-            project: Some(project.clone()),
+            project: project.clone(),
             env: env_map,
             wait_for_log: self.wait_for_log.clone(),
             wait_timeout: Some(self.wait_timeout),
+            force_restart: None,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup

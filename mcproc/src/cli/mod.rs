@@ -99,7 +99,11 @@ pub async fn run_cli() -> Result<(), Box<dyn std::error::Error>> {
             let config = Config::for_client();
             // Use current directory as project name
             let project = utils::resolve_project_name(None)?;
-            let log_path = config.paths.log_dir.join(&project).join(format!("{}.log", name));
+            let log_path = config
+                .paths
+                .log_dir
+                .join(&project)
+                .join(format!("{}.log", name));
             println!("{}", log_path.display());
         }
         Commands::Clean(mut cmd) => {

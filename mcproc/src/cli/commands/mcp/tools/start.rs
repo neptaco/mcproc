@@ -1,7 +1,9 @@
 //! Start process tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
+use crate::common::validation::validate_process_name;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
@@ -11,23 +13,11 @@ use tonic::Request;
 
 pub struct StartTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl StartTool {
     pub fn new(client: DaemonClient) -> Self {
-        Self {
-            client,
-            default_project: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_project(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+        Self { client }
     }
 }
 
@@ -43,6 +33,8 @@ struct StartParams {
     env: Option<std::collections::HashMap<String, String>>,
     wait_for_log: Option<String>,
     wait_timeout: Option<u32>,
+    #[serde(default)]
+    force_restart: Option<bool>,
 }
 
 #[async_trait]
@@ -50,7 +42,7 @@ impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "start_process".to_string(),
-            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification.".to_string(),
+            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -75,6 +67,10 @@ impl ToolHandler for StartTool {
                     "wait_timeout": { 
                         "type": "integer", 
                         "description": "Timeout for log wait in seconds (default: 30)" 
+                    },
+                    "force_restart": { 
+                        "type": "boolean", 
+                        "description": "If true, automatically stop any existing process with the same name before starting. This prevents 'already running' errors and ensures a fresh start. Useful when the LLM agent isn't sure if a process is running or when you want to guarantee a clean restart. (default: false)" 
                     }
                 },
                 "required": ["name"]
@@ -92,6 +88,10 @@ impl ToolHandler for StartTool {
 
         let params: StartParams =
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+        // Validate process name
+        validate_process_name(&params.name)
+            .map_err(|e| McpError::InvalidParams(format!("Invalid process name: {}", e)))?;
 
         // Validate that either cmd or args is provided, but not both
         // Note: Empty args array is treated as None
@@ -115,20 +115,7 @@ impl ToolHandler for StartTool {
         }
 
         // Determine project name if not provided
-        let project = params
-            .project
-            .or(self.default_project.clone())
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                    .and_then(|n| n.into_string().ok())
-            })
-            .ok_or_else(|| {
-                McpError::InvalidParams(
-                    "Unable to determine project name from current directory".to_string(),
-                )
-            })?;
+        let project = resolve_mcp_project_name(params.project)?;
 
         // Use gRPC client to start process
         let name = params.name.clone();
@@ -140,10 +127,11 @@ impl ToolHandler for StartTool {
             cmd: params.cmd,
             args: params.args.unwrap_or_default(),
             cwd: params.cwd,
-            project: Some(project),
+            project,
             env: params.env.unwrap_or_default(),
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
+            force_restart: params.force_restart,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup
@@ -172,7 +160,6 @@ impl ToolHandler for StartTool {
             Ok(response) => {
                 let mut stream = response.into_inner();
                 let mut process_info = None;
-                let mut log_entries = Vec::new();
 
                 // Collect all streaming responses
                 let mut log_count = 0;
@@ -203,8 +190,6 @@ impl ToolHandler for StartTool {
                                     )
                                     .await?;
                             }
-
-                            log_entries.push(entry);
                         }
                         Some(proto::start_process_response::Response::Process(info)) => {
                             process_info = Some(info);
@@ -262,6 +247,27 @@ impl ToolHandler for StartTool {
                         response["message"] = json!(
                             "Process started but wait_for_log pattern was not found within timeout"
                         );
+                    }
+                }
+
+                // Always include log context from ProcessInfo
+                if !process.log_context.is_empty() {
+                    response["log_context"] = json!(process.log_context);
+                }
+
+                // Add matched line if available
+                if let Some(matched_line) = process.matched_line {
+                    response["matched_line"] = json!(matched_line);
+                }
+
+                // Add pattern match information if wait_for_log was used
+                if wait_for_log_flag {
+                    // If pattern was found (not timeout), mark it in the response
+                    if !process.wait_timeout_occurred.unwrap_or(false) {
+                        response["pattern_matched"] = json!(true);
+                        response["message"] = json!(format!(
+                            "Process started successfully. Pattern matched in logs."
+                        ));
                     }
                 }
 

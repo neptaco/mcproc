@@ -1,4 +1,4 @@
-use crate::cli::utils::resolve_project_name_optional;
+use crate::cli::utils::resolve_project_name;
 use crate::client::DaemonClient;
 use clap::Args;
 use colored::*;
@@ -18,7 +18,9 @@ impl RestartCommand {
     pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = RestartProcessRequest {
             name: self.name.clone(),
-            project: resolve_project_name_optional(self.project),
+            project: resolve_project_name(self.project)?,
+            wait_for_log: None,
+            wait_timeout: None,
         };
 
         println!("Restarting process '{}'...", self.name);
