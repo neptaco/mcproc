@@ -6,13 +6,19 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Process lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum ProcessStatus {
+    /// Process is being spawned
     Starting = 1,
+    /// Process is active and healthy
     Running = 2,
+    /// SIGTERM sent, waiting for graceful shutdown
     Stopping = 3,
+    /// Process has exited normally
     Stopped = 4,
+    /// Process exited with error
     Failed = 5,
 }
 
@@ -42,26 +48,49 @@ impl From<ProcessStatus> for proto::ProcessStatus {
     }
 }
 
+/// Metadata kept per managed process
+/// 
+/// This structure contains all the information about a process managed by mcprocd.
+/// The global registry is a `DashMap<ProcessKey, Arc<ProxyInfo>>` for concurrent access.
 pub struct ProxyInfo {
+    /// Unique identifier (UUID)
     pub id: String,
+    /// Composite key (project, name)
     #[allow(dead_code)]
     pub key: ProcessKey,
+    /// Process name (must be unique within project)
     pub name: String,
+    /// Project name for organization
     pub project: String,
+    /// Shell command to execute (mutually exclusive with args)
     pub cmd: Option<String>,
+    /// Direct command arguments (mutually exclusive with cmd)
     pub args: Vec<String>,
+    /// Working directory
     pub cwd: Option<PathBuf>,
+    /// Environment variables
     pub env: Option<std::collections::HashMap<String, String>>,
+    /// Regex pattern to wait for in logs before considering process ready
     pub wait_for_log: Option<String>,
+    /// Timeout in seconds for wait_for_log pattern
     pub wait_timeout: Option<u32>,
+    /// Process start time
     pub start_time: DateTime<Utc>,
+    /// Current process status (atomic for thread-safe updates)
     pub status: Arc<AtomicU8>,
+    /// Ring buffer for recent log lines (10K capacity)
     pub ring: Arc<Mutex<HeapRb<Vec<u8>>>>,
+    /// Process ID
     pub pid: u32,
+    /// Configured port (if any)
     pub port: Option<u16>,
+    /// Detected port from process output
     pub detected_port: Arc<Mutex<Option<u16>>>,
+    /// Flag indicating if port detection is complete
     pub port_ready: Arc<Mutex<bool>>,
+    /// Exit code when process terminates
     pub exit_code: Arc<Mutex<Option<i32>>>,
+    /// Time when process exited
     pub exit_time: Arc<Mutex<Option<DateTime<Utc>>>>,
 }
 

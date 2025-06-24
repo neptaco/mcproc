@@ -8,18 +8,49 @@ mcproc is a Rust-based daemon that fulfills Model Context Protocol (MCP) tool ca
 
 ## Key Architecture Components
 
+### High-Level Architecture
+
+```
+Claude / Other LLMs
+      │  JSON-RPC 2.0 (MCP) via stdio
+      ▼
+┌───────────────────────────────┐
+│   mcproc (CLI + MCP server)   │
+│───────────────────────────────│
+│  • MCP Tool Handlers          │
+│  • gRPC Client                │
+└───────────────────────────────┘
+      │ gRPC (Unix Domain Socket)
+      ▼
+┌───────────────────────────────┐
+│      mcprocd  (daemon)        │
+│───────────────────────────────│
+│  • Process Manager            │
+│  • Log Hub (direct file I/O)  │
+│  • gRPC API (tonic)           │
+└───────────────────────────────┘
+      │ stdout/stderr capture
+      ▼
+┌────────────────────────────────┐
+│  Child Processes               │
+│  (npm run dev, python app.py,  │
+│   cargo run, etc.)             │
+└────────────────────────────────┘
+```
+
 ### Core Components
 - **mcprocd**: The main daemon process
   - Process Manager for spawning/managing child processes
-  - Log Hub with ring buffer and file persistence
+  - Log Hub with ring buffer (10K lines) and file persistence
   - API Layer using tonic (gRPC via Unix Domain Socket)
   - Port detection and monitoring
-  - Process state tracking
+  - Process state tracking (Starting, Running, Stopping, Stopped, Failed)
 
 - **mcproc**: CLI tool for interacting with the daemon
   - Communicates via gRPC Unix socket
   - Supports commands: start, stop, restart, ps, logs, grep, clean, mcp serve
   - Project-based process organization
+  - Auto-starts daemon if not running
 
 - **mcp-rs**: Reusable MCP library
   - ServerBuilder for creating MCP servers
@@ -151,6 +182,17 @@ The project uses a Cargo workspace with the following crates:
   - Wait for log pattern on startup (with timeout)
   - Force restart option to replace running processes
   - Clean command to stop all processes in a project
+
+#### Process Start Sequence
+1. Validate parameters (name, cmd/args, project)
+2. Check if process already running → return error if exists
+3. Create log file immediately with startup information
+4. Spawn process:
+   - If `cmd`: Execute via shell (`sh -c` on Unix)
+   - If `args`: Direct execution without shell
+5. Pipe stdout/stderr → ring buffer + log file
+6. If `wait_for_log` provided, wait for pattern match
+7. Return process info (ID, PID, status, log_file)
 
 ### Security
 - **Local only**: No remote access support
