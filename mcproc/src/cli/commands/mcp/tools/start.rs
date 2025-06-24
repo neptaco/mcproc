@@ -253,7 +253,8 @@ impl ToolHandler for StartTool {
 
                 // Always include log context from ProcessInfo (strip ANSI codes)
                 if !process.log_context.is_empty() {
-                    let cleaned_context: Vec<String> = process.log_context
+                    let cleaned_context: Vec<String> = process
+                        .log_context
                         .iter()
                         .map(|line| String::from_utf8_lossy(&strip(line.as_bytes())).to_string())
                         .collect();
@@ -262,7 +263,8 @@ impl ToolHandler for StartTool {
 
                 // Add matched line if available (strip ANSI codes)
                 if let Some(matched_line) = process.matched_line {
-                    let cleaned_line = String::from_utf8_lossy(&strip(matched_line.as_bytes())).to_string();
+                    let cleaned_line =
+                        String::from_utf8_lossy(&strip(matched_line.as_bytes())).to_string();
                     response["matched_line"] = json!(cleaned_line);
                 }
 

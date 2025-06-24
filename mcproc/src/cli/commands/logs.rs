@@ -47,18 +47,21 @@ pub struct LogsCommand {
 }
 
 impl LogsCommand {
-    pub async fn execute(mut self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(
+        mut self,
+        mut client: DaemonClient,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Check NO_COLOR environment variable
         if std::env::var("NO_COLOR").is_ok() {
             self.no_color = true;
         }
-        
+
         let color_opts = ColorOptions {
             raw_color: self.raw_color,
             no_color: self.no_color,
             smart_color: self.smart_color,
         };
-        
+
         // Determine project name if not provided (use current working directory where mcproc is run)
         let project = resolve_project_name(self.project)?;
 
@@ -160,8 +163,15 @@ impl LogsCommand {
                         .unwrap_or(10)
                         .max(10); // Minimum 10 characters
 
-                    stream_multiple_logs(client, processes, Some(project), self.tail, max_name_len, &color_opts)
-                        .await?;
+                    stream_multiple_logs(
+                        client,
+                        processes,
+                        Some(project),
+                        self.tail,
+                        max_name_len,
+                        &color_opts,
+                    )
+                    .await?;
                 }
             }
         }
@@ -202,22 +212,27 @@ fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
         println!("{}", content);
     } else if color_opts.no_color {
         // No color mode: plain text
-        println!("{} {} {}", timestamp, if entry.level == 2 { "E" } else { "I" }, content);
+        println!(
+            "{} {} {}",
+            timestamp,
+            if entry.level == 2 { "E" } else { "I" },
+            content
+        );
     } else if color_opts.smart_color && contains_ansi_escape(&entry.content) {
         // Smart color mode: minimal mcproc colors when content has colors
-        println!("{} {} {}", timestamp.dimmed(), if entry.level == 2 { "E" } else { "I" }, content);
+        println!(
+            "{} {} {}",
+            timestamp.dimmed(),
+            if entry.level == 2 { "E" } else { "I" },
+            content
+        );
     } else {
         // Default mode: full mcproc colors
         let level_indicator = match entry.level {
             2 => "E".red().bold(),
             _ => "I".dimmed(),
         };
-        println!(
-            "{} {} {}",
-            timestamp.dimmed(),
-            level_indicator,
-            content
-        );
+        println!("{} {} {}", timestamp.dimmed(), level_indicator, content);
     }
 }
 
@@ -225,7 +240,11 @@ fn print_log_entry_with_process(entry: &proto::LogEntry, color_opts: &ColorOptio
     print_log_entry_with_process_padded(entry, 10, color_opts);
 }
 
-fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: usize, color_opts: &ColorOptions) {
+fn print_log_entry_with_process_padded(
+    entry: &proto::LogEntry,
+    max_name_len: usize,
+    color_opts: &ColorOptions,
+) {
     let timestamp = entry
         .timestamp
         .as_ref()
@@ -239,7 +258,7 @@ fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: us
 
     let process_name = entry.process_name.as_deref().unwrap_or("unknown");
     let padded_name = format!("{:width$}", process_name, width = max_name_len);
-    
+
     let content = if color_opts.no_color {
         strip_ansi_escapes_str(&entry.content)
     } else {
@@ -271,7 +290,7 @@ fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: us
             3 => padded_name.magenta(),
             _ => padded_name.bright_blue(),
         };
-        
+
         println!(
             "{} {} | {} {}",
             timestamp.dimmed(),

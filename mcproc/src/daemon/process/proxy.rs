@@ -49,7 +49,7 @@ impl From<ProcessStatus> for proto::ProcessStatus {
 }
 
 /// Metadata kept per managed process
-/// 
+///
 /// This structure contains all the information about a process managed by mcprocd.
 /// The global registry is a `DashMap<ProcessKey, Arc<ProxyInfo>>` for concurrent access.
 pub struct ProxyInfo {

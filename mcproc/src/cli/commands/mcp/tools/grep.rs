@@ -116,7 +116,8 @@ impl ToolHandler for GrepTool {
 
                     // Context before
                     for entry in &grep_match.context_before {
-                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
+                        let content =
+                            String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,
@@ -127,7 +128,9 @@ impl ToolHandler for GrepTool {
 
                     // Matched line (highlighted)
                     let matched_line_info = if let Some(matched_line) = &grep_match.matched_line {
-                        let content = String::from_utf8_lossy(&strip(matched_line.content.as_bytes())).to_string();
+                        let content =
+                            String::from_utf8_lossy(&strip(matched_line.content.as_bytes()))
+                                .to_string();
                         lines.push(format!(
                             "{:>6}: {} {} <<< MATCH",
                             matched_line.line_number,
@@ -146,7 +149,8 @@ impl ToolHandler for GrepTool {
 
                     // Context after
                     for entry in &grep_match.context_after {
-                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
+                        let content =
+                            String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,

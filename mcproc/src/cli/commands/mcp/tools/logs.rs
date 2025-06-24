@@ -101,8 +101,9 @@ impl ToolHandler for LogsTool {
                         };
 
                         // Strip ANSI escape codes from content for MCP output
-                        let content = String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
-                        
+                        let content =
+                            String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
+
                         let formatted = if timestamp.is_empty() {
                             format!("{} {}", level, content)
                         } else {
