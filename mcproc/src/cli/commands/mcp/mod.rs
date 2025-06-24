@@ -34,7 +34,7 @@ async fn serve_mcp(
     client: DaemonClient,
     default_project: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::cli::utils::validate_project_name;
+    use crate::common::validation::validate_project_name;
     use mcp_rs::{ServerBuilder, StdioTransport};
     use tools::{GrepTool, LogsTool, PsTool, RestartTool, StartTool, StatusTool, StopTool};
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};

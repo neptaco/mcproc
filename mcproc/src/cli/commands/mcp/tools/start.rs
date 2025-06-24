@@ -3,6 +3,7 @@
 use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
+use crate::common::validation::validate_process_name;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
@@ -87,6 +88,10 @@ impl ToolHandler for StartTool {
 
         let params: StartParams =
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
+
+        // Validate process name
+        validate_process_name(&params.name)
+            .map_err(|e| McpError::InvalidParams(format!("Invalid process name: {}", e)))?;
 
         // Validate that either cmd or args is provided, but not both
         // Note: Empty args array is treated as None

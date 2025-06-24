@@ -48,6 +48,23 @@ impl ProcessManagerService for GrpcService {
         request: Request<StartProcessRequest>,
     ) -> Result<Response<Self::StartProcessStream>, Status> {
         let req = request.into_inner();
+
+        // Validate process name
+        if let Err(e) = crate::common::validation::validate_process_name(&req.name) {
+            return Err(Status::invalid_argument(format!(
+                "Invalid process name: {}",
+                e
+            )));
+        }
+
+        // Validate project name
+        if let Err(e) = crate::common::validation::validate_project_name(&req.project) {
+            return Err(Status::invalid_argument(format!(
+                "Invalid project name: {}",
+                e
+            )));
+        }
+
         let cwd = req.cwd.map(std::path::PathBuf::from);
 
         let name = req.name.clone();
