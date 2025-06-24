@@ -1,5 +1,6 @@
 //! Grep tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
@@ -8,15 +9,11 @@ use serde_json::{json, Value};
 
 pub struct GrepTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl GrepTool {
-    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
     }
 }
 
@@ -69,21 +66,12 @@ impl ToolHandler for GrepTool {
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
         // Determine project name if not provided
-        let project = params
-            .project
-            .or(self.default_project.clone())
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                    .and_then(|n| n.into_string().ok())
-            })
-            .unwrap_or_else(|| "default".to_string());
+        let project = resolve_mcp_project_name(params.project)?;
 
         let request = proto::GrepLogsRequest {
             name: params.name.clone(),
             pattern: params.pattern.clone(),
-            project: Some(project),
+            project,
             context: params.context,
             before: params.before,
             after: params.after,

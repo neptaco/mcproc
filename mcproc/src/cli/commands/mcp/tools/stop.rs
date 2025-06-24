@@ -1,5 +1,6 @@
 //! Stop tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
@@ -8,15 +9,11 @@ use serde_json::{json, Value};
 
 pub struct StopTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl StopTool {
-    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
     }
 }
 
@@ -54,10 +51,12 @@ impl ToolHandler for StopTool {
         let params: StopParams =
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
+        let project = resolve_mcp_project_name(params.project)?;
+
         let request = proto::StopProcessRequest {
             name: params.name,
             force: None,
-            project: params.project.or(self.default_project.clone()),
+            project,
         };
 
         let mut client = self.client.clone();

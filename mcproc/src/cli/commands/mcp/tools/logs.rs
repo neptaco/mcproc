@@ -1,5 +1,6 @@
 //! Logs tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
@@ -9,15 +10,11 @@ use tokio_stream::StreamExt;
 
 pub struct LogsTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl LogsTool {
-    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
     }
 }
 
@@ -57,13 +54,8 @@ impl ToolHandler for LogsTool {
         let params: LogsParams =
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
-        // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = params.project.or(self.default_project.clone()).or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .and_then(|n| n.into_string().ok())
-        });
+        // Determine project name if not provided
+        let project = resolve_mcp_project_name(params.project)?;
 
         // Use gRPC get_logs method instead of direct file access
         let mut client = self.client.clone();

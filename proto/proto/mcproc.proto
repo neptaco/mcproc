@@ -42,7 +42,7 @@ message StartProcessRequest {
   repeated string args = 5; // Command args array (e.g., ["npm", "run", "dev"])
   optional string cwd = 3;
   map<string, string> env = 4;
-  optional string project = 6; // Project name (defaults to directory name)
+  string project = 6; // Project name (required)
   optional string wait_for_log = 7;  // Wait for this log pattern before considering the process ready (regex)
   optional uint32 wait_timeout = 8;  // Timeout for log wait in seconds (default: 30)
   optional bool force_restart = 9;  // If true, restart existing process with same name
@@ -51,19 +51,19 @@ message StartProcessRequest {
 message StopProcessRequest {
   string name = 1;
   optional bool force = 2;
-  optional string project = 3;
+  string project = 3;
 }
 
 message RestartProcessRequest {
   string name = 1;
-  optional string project = 2;
+  string project = 2;
   optional string wait_for_log = 3;  // Override wait pattern from original start
   optional uint32 wait_timeout = 4;  // Override wait timeout from original start
 }
 
 message GetProcessRequest {
   string name = 1;
-  optional string project = 2;
+  string project = 2;
 }
 
 message ListProcessesRequest {
@@ -75,13 +75,13 @@ message GetLogsRequest {
   string name = 1;
   optional uint32 tail = 2;  // Number of lines from the end (default: 100)
   optional bool follow = 3;  // Continue streaming new log lines
-  optional string project = 4;
+  string project = 4;
 }
 
 message GrepLogsRequest {
   string name = 1;
   string pattern = 2;
-  optional string project = 3;
+  string project = 3;
   optional uint32 context = 4;  // Lines before and after (default: 3)
   optional uint32 before = 5;   // Lines before match
   optional uint32 after = 6;    // Lines after match

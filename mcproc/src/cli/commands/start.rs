@@ -64,7 +64,7 @@ impl StartCommand {
             cmd: self.cmd,
             args: self.args.unwrap_or_default(),
             cwd: self.cwd,
-            project: Some(project.clone()),
+            project: project.clone(),
             env: env_map,
             wait_for_log: self.wait_for_log.clone(),
             wait_timeout: Some(self.wait_timeout),

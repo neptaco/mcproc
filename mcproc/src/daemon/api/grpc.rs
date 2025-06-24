@@ -66,12 +66,12 @@ impl ProcessManagerService for GrpcService {
 
         // Handle force_restart
         if force_restart {
-            if let Some(existing) =
-                process_manager.get_process_by_name_or_id_with_project(&name, project.as_deref())
+            if let Some(existing) = process_manager
+                .get_process_by_name_or_id_with_project(&name, Some(project.as_str()))
             {
                 // Stop existing process
                 let _ = process_manager
-                    .stop_process(&existing.id, project.as_deref(), false)
+                    .stop_process(&existing.id, Some(project.as_str()), false)
                     .await;
 
                 // Wait a bit for process to stop
@@ -84,7 +84,7 @@ impl ProcessManagerService for GrpcService {
             // Start the process with log streaming
             match process_manager.start_process_with_log_stream(
                 name.clone(),
-                project.clone(),
+                Some(project.clone()),
                 req.cmd,
                 req.args,
                 cwd,
@@ -173,10 +173,10 @@ impl ProcessManagerService for GrpcService {
                                 }),
                                 pid: None,
                                 log_file: log_dir
-                                    .join(project.as_ref().unwrap_or(&"default".to_string()))
+                                    .join(&project)
                                     .join(format!("{}.log", name.replace("/", "_")))
                                     .to_string_lossy().to_string(),
-                                project: project.clone().unwrap_or_default(),
+                                project: project.clone(),
                                 ports: vec![],
                                 wait_timeout_occurred: None,
                                 exit_code: Some(*exit_code),
@@ -213,7 +213,7 @@ impl ProcessManagerService for GrpcService {
             .process_manager
             .stop_process(
                 &req.name,
-                req.project.as_deref(),
+                Some(req.project.as_str()),
                 req.force.unwrap_or(false),
             )
             .await
@@ -239,7 +239,7 @@ impl ProcessManagerService for GrpcService {
             .process_manager
             .restart_process_with_log_stream(
                 &req.name,
-                req.project,
+                Some(req.project),
                 req.wait_for_log,
                 req.wait_timeout,
             )
@@ -330,7 +330,7 @@ impl ProcessManagerService for GrpcService {
 
         match self
             .process_manager
-            .get_process_by_name_or_id_with_project(&req.name, req.project.as_deref())
+            .get_process_by_name_or_id_with_project(&req.name, Some(req.project.as_str()))
         {
             Some(process) => {
                 // Get detected ports
@@ -464,7 +464,7 @@ impl ProcessManagerService for GrpcService {
         let req = request.into_inner();
 
         // Construct the log file path
-        let project = req.project.clone().unwrap_or_else(|| "default".to_string());
+        let project = req.project.clone();
 
         // Use project-based directory structure
         let log_file = self
@@ -488,7 +488,7 @@ impl ProcessManagerService for GrpcService {
         // Get process for follow mode status check (optional)
         let _process = self
             .process_manager
-            .get_process_by_name_or_id_with_project(&req.name, req.project.as_deref());
+            .get_process_by_name_or_id_with_project(&req.name, Some(req.project.as_str()));
 
         // Get config value before the stream
         let follow_poll_interval_ms = self.config.logging.follow_poll_interval_ms;
@@ -641,7 +641,7 @@ impl ProcessManagerService for GrpcService {
         let req = request.into_inner();
 
         // Construct the log file path
-        let project = req.project.clone().unwrap_or_else(|| "default".to_string());
+        let project = req.project.clone();
 
         // Use project-based directory structure
         let log_file = self

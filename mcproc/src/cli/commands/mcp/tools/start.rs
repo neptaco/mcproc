@@ -1,5 +1,6 @@
 //! Start process tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
@@ -11,23 +12,11 @@ use tonic::Request;
 
 pub struct StartTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl StartTool {
     pub fn new(client: DaemonClient) -> Self {
-        Self {
-            client,
-            default_project: None,
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_project(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+        Self { client }
     }
 }
 
@@ -121,20 +110,7 @@ impl ToolHandler for StartTool {
         }
 
         // Determine project name if not provided
-        let project = params
-            .project
-            .or(self.default_project.clone())
-            .or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                    .and_then(|n| n.into_string().ok())
-            })
-            .ok_or_else(|| {
-                McpError::InvalidParams(
-                    "Unable to determine project name from current directory".to_string(),
-                )
-            })?;
+        let project = resolve_mcp_project_name(params.project)?;
 
         // Use gRPC client to start process
         let name = params.name.clone();
@@ -146,7 +122,7 @@ impl ToolHandler for StartTool {
             cmd: params.cmd,
             args: params.args.unwrap_or_default(),
             cwd: params.cwd,
-            project: Some(project),
+            project,
             env: params.env.unwrap_or_default(),
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,

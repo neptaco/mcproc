@@ -1,4 +1,4 @@
-use crate::cli::utils::resolve_project_name_optional;
+use crate::cli::utils::resolve_project_name;
 use crate::client::DaemonClient;
 use clap::Args;
 use colored::*;
@@ -23,7 +23,7 @@ impl StopCommand {
         let request = StopProcessRequest {
             name: self.name.clone(),
             force: Some(self.force),
-            project: resolve_project_name_optional(self.project),
+            project: resolve_project_name(self.project)?,
         };
 
         let response = client.inner().stop_process(request).await?;

@@ -1,5 +1,6 @@
 //! Status tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
@@ -10,15 +11,11 @@ use tokio_stream::StreamExt;
 
 pub struct StatusTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl StatusTool {
-    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
     }
 }
 
@@ -57,16 +54,11 @@ impl ToolHandler for StatusTool {
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
         // Determine project name if not provided
-        let project = params.project.or(self.default_project.clone()).or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .and_then(|n| n.into_string().ok())
-        });
+        let project = resolve_mcp_project_name(params.project)?;
 
         let request = proto::GetProcessRequest {
             name: params.name.clone(),
-            project,
+            project: project.clone(),
         };
 
         let mut client = self.client.clone();
@@ -114,7 +106,7 @@ impl ToolHandler for StatusTool {
                     name: params.name.clone(),
                     tail: Some(5), // Get last 5 lines as preview
                     follow: Some(false),
-                    project: Some(process.project.clone()),
+                    project: process.project.clone(),
                 };
 
                 let mut logs_preview = Vec::new();

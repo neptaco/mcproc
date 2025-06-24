@@ -1,5 +1,6 @@
 //! Restart tool implementation
 
+use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
 use crate::common::status::format_status;
 use async_trait::async_trait;
@@ -9,15 +10,11 @@ use serde_json::{json, Value};
 
 pub struct RestartTool {
     client: DaemonClient,
-    default_project: Option<String>,
 }
 
 impl RestartTool {
-    pub fn new(client: DaemonClient, default_project: Option<String>) -> Self {
-        Self {
-            client,
-            default_project,
-        }
+    pub fn new(client: DaemonClient) -> Self {
+        Self { client }
     }
 }
 
@@ -65,9 +62,11 @@ impl ToolHandler for RestartTool {
         let params: RestartParams =
             serde_json::from_value(params).map_err(|e| McpError::InvalidParams(e.to_string()))?;
 
+        let project = resolve_mcp_project_name(params.project)?;
+
         let request = proto::RestartProcessRequest {
             name: params.name.clone(),
-            project: params.project.or(self.default_project.clone()),
+            project,
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
         };
