@@ -172,7 +172,6 @@ impl ToolHandler for StartTool {
             Ok(response) => {
                 let mut stream = response.into_inner();
                 let mut process_info = None;
-                let mut log_entries = Vec::new();
 
                 // Collect all streaming responses
                 let mut log_count = 0;
@@ -203,8 +202,6 @@ impl ToolHandler for StartTool {
                                     )
                                     .await?;
                             }
-
-                            log_entries.push(entry);
                         }
                         Some(proto::start_process_response::Response::Process(info)) => {
                             process_info = Some(info);
@@ -265,20 +262,23 @@ impl ToolHandler for StartTool {
                     }
                 }
 
-                // Add log context if wait_for_log was used and we collected logs
-                if wait_for_log_flag && !log_entries.is_empty() {
-                    let log_context: Vec<String> = log_entries
-                        .iter()
-                        .map(|entry| entry.content.clone())
-                        .collect();
-                    response["log_context"] = json!(log_context);
-                    
+                // Always include log context from ProcessInfo
+                if !process.log_context.is_empty() {
+                    response["log_context"] = json!(process.log_context);
+                }
+
+                // Add matched line if available
+                if let Some(matched_line) = process.matched_line {
+                    response["matched_line"] = json!(matched_line);
+                }
+
+                // Add pattern match information if wait_for_log was used
+                if wait_for_log_flag {
                     // If pattern was found (not timeout), mark it in the response
                     if !process.wait_timeout_occurred.unwrap_or(false) {
                         response["pattern_matched"] = json!(true);
                         response["message"] = json!(format!(
-                            "Process started successfully. Pattern matched after {} log lines.",
-                            log_entries.len()
+                            "Process started successfully. Pattern matched in logs."
                         ));
                     }
                 }

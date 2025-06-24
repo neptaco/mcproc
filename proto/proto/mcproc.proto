@@ -30,6 +30,8 @@ message ProcessInfo {
   optional int32 exit_code = 12;  // Exit code if process failed
   optional string exit_reason = 13;  // Human-readable exit reason
   optional string stderr_tail = 14;  // Last few lines of stderr for debugging
+  repeated string log_context = 15;  // Log context when wait_for_log pattern matches
+  optional string matched_line = 16;  // The exact line that matched wait_for_log pattern
 }
 
 // Request messages
@@ -140,6 +142,7 @@ message GrepLogsResponse {
 message CleanProjectRequest {
   optional string project = 1;  // If not specified, clean the default project
   bool all_projects = 2;        // If true, clean all projects (ignores project field)
+  bool force = 3;               // If true, force stop processes with SIGKILL
 }
 
 message CleanProjectResponse {

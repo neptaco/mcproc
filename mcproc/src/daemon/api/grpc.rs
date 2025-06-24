@@ -58,13 +58,7 @@ impl ProcessManagerService for GrpcService {
         let cwd_for_error = cwd.clone(); // Clone for use in error handling
         let log_dir = self.config.paths.log_dir.clone(); // Clone for use in async block
 
-        // Create a channel for log streaming if wait_for_log is specified
-        let (log_tx, log_rx) = if wait_for_log.is_some() {
-            let (tx, rx) = tokio::sync::mpsc::channel(100);
-            (Some(tx), Some(rx))
-        } else {
-            (None, None)
-        };
+        // We no longer need log streaming channel since log_context is included in ProcessInfo
 
         let process_manager = self.process_manager.clone();
         let _log_hub = self.log_hub.clone();
@@ -81,33 +75,10 @@ impl ProcessManagerService for GrpcService {
                 Some(req.env),
                 wait_for_log.clone(),
                 wait_timeout,
-                log_tx,
             ).await {
-                Ok((process, timeout_occurred, _pattern_matched)) => {
-                    // If we have a log receiver and wait_for_log is specified, stream logs
-                    if let Some(mut rx) = log_rx {
-                        if wait_for_log.is_some() {
-                            // For wait_for_log, only stream logs until pattern is found or timeout
-                            // The channel will be closed when pattern matches or timeout occurs
-                            while let Some(line) = rx.recv().await {
-                                // Create log entry
-                                let (timestamp, level, content) = parse_log_line(&line);
-
-                                yield StartProcessResponse {
-                                    response: Some(start_process_response::Response::LogEntry(LogEntry {
-                                        line_number: 0,
-                                        content,
-                                        timestamp,
-                                        level: level as i32,
-                                        process_name: None,
-                                    })),
-                                };
-                            }
-                            // After streaming ends, close the channel to stop log readers
-                            drop(rx);
-                        }
-                        // If no wait_for_log, we don't stream logs during startup
-                    }
+                Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
+                    // We no longer stream logs during startup
+                    // Log context is now included in ProcessInfo
 
                     // Send final process info
                     let current_status = process.get_status();
@@ -127,24 +98,35 @@ impl ProcessManagerService for GrpcService {
                         (None, None, None)
                     };
 
+                    // Get detected ports
+                    let ports = if let Some(port) = process.port {
+                        vec![port as u32]
+                    } else if let Ok(detected) = process.detected_port.lock() {
+                        detected.map(|p| vec![p as u32]).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+
                     let info = ProcessInfo {
-                        id: process.id.to_string(),
+                        id: process.id.clone(),
                         name: process.name.clone(),
-                        cmd: process.cmd.clone(),
-                        cwd: process.cwd.to_string_lossy().to_string(),
+                        cmd: process.cmd.clone().unwrap_or_default(),
+                        cwd: process.cwd.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
                         status: proto::ProcessStatus::from(current_status).into(),
                         start_time: Some(prost_types::Timestamp {
                             seconds: process.start_time.timestamp(),
                             nanos: process.start_time.timestamp_subsec_nanos() as i32,
                         }),
-                        pid: process.pid,
-                        log_file: process.log_file.to_string_lossy().to_string(),
+                        pid: Some(process.pid),
+                        log_file: log_dir.join(format!("{}-{}.log", process.project, process.name)).to_string_lossy().to_string(),
                         project: process.project.clone(),
-                        ports: process.ports.lock().unwrap().clone(),
+                        ports,
                         wait_timeout_occurred: if wait_for_log.is_some() { Some(timeout_occurred) } else { None },
                         exit_code,
                         exit_reason,
                         stderr_tail,
+                        log_context,
+                        matched_line,
                     };
 
                     yield StartProcessResponse {
@@ -184,6 +166,8 @@ impl ProcessManagerService for GrpcService {
                                 exit_code: Some(*exit_code),
                                 exit_reason: Some(exit_reason.clone()),
                                 stderr_tail: Some(stderr.clone()),
+                                log_context: vec![],
+                                matched_line: None,
                             };
 
                             yield StartProcessResponse {
@@ -241,24 +225,45 @@ impl ProcessManagerService for GrpcService {
             .await
         {
             Ok(process) => {
+                // Get detected ports
+                let ports = if let Some(port) = process.port {
+                    vec![port as u32]
+                } else if let Ok(detected) = process.detected_port.lock() {
+                    detected.map(|p| vec![p as u32]).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
                 let info = ProcessInfo {
-                    id: process.id.to_string(),
+                    id: process.id.clone(),
                     name: process.name.clone(),
-                    cmd: process.cmd.clone(),
-                    cwd: process.cwd.to_string_lossy().to_string(),
+                    cmd: process.cmd.clone().unwrap_or_default(),
+                    cwd: process
+                        .cwd
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                     status: proto::ProcessStatus::Running as i32,
                     start_time: Some(prost_types::Timestamp {
                         seconds: process.start_time.timestamp(),
                         nanos: process.start_time.timestamp_subsec_nanos() as i32,
                     }),
-                    pid: process.pid,
-                    log_file: process.log_file.to_string_lossy().to_string(),
+                    pid: Some(process.pid),
+                    log_file: self
+                        .config
+                        .paths
+                        .log_dir
+                        .join(format!("{}-{}.log", process.project, process.name))
+                        .to_string_lossy()
+                        .to_string(),
                     project: process.project.clone(),
-                    ports: process.ports.lock().unwrap().clone(),
+                    ports,
                     wait_timeout_occurred: None,
                     exit_code: None,
                     exit_reason: None,
                     stderr_tail: None,
+                    log_context: vec![],
+                    matched_line: None,
                 };
 
                 Ok(Response::new(RestartProcessResponse {
@@ -280,11 +285,24 @@ impl ProcessManagerService for GrpcService {
             .get_process_by_name_or_id_with_project(&req.name, req.project.as_deref())
         {
             Some(process) => {
+                // Get detected ports
+                let ports = if let Some(port) = process.port {
+                    vec![port as u32]
+                } else if let Ok(detected) = process.detected_port.lock() {
+                    detected.map(|p| vec![p as u32]).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
                 let info = ProcessInfo {
-                    id: process.id.to_string(),
+                    id: process.id.clone(),
                     name: process.name.clone(),
-                    cmd: process.cmd.clone(),
-                    cwd: process.cwd.to_string_lossy().to_string(),
+                    cmd: process.cmd.clone().unwrap_or_default(),
+                    cwd: process
+                        .cwd
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
                     status: match process.get_status() {
                         ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
                         ProcessStatus::Running => proto::ProcessStatus::Running as i32,
@@ -296,14 +314,22 @@ impl ProcessManagerService for GrpcService {
                         seconds: process.start_time.timestamp(),
                         nanos: process.start_time.timestamp_subsec_nanos() as i32,
                     }),
-                    pid: process.pid,
-                    log_file: process.log_file.to_string_lossy().to_string(),
+                    pid: Some(process.pid),
+                    log_file: self
+                        .config
+                        .paths
+                        .log_dir
+                        .join(format!("{}-{}.log", process.project, process.name))
+                        .to_string_lossy()
+                        .to_string(),
                     project: process.project.clone(),
-                    ports: process.ports.lock().unwrap().clone(),
+                    ports,
                     wait_timeout_occurred: None,
                     exit_code: None,
                     exit_reason: None,
                     stderr_tail: None,
+                    log_context: vec![],
+                    matched_line: None,
                 };
 
                 Ok(Response::new(GetProcessResponse {
@@ -326,32 +352,53 @@ impl ProcessManagerService for GrpcService {
             processes.retain(|p| p.project == project_filter);
         }
 
+        let log_dir = self.config.paths.log_dir.clone();
         let process_infos: Vec<ProcessInfo> = processes
             .into_iter()
-            .map(|process| ProcessInfo {
-                id: process.id.to_string(),
-                name: process.name.clone(),
-                cmd: process.cmd.clone(),
-                cwd: process.cwd.to_string_lossy().to_string(),
-                status: match process.get_status() {
-                    ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
-                    ProcessStatus::Running => proto::ProcessStatus::Running as i32,
-                    ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
-                    ProcessStatus::Stopped => proto::ProcessStatus::Stopped as i32,
-                    ProcessStatus::Failed => proto::ProcessStatus::Failed as i32,
-                },
-                start_time: Some(prost_types::Timestamp {
-                    seconds: process.start_time.timestamp(),
-                    nanos: process.start_time.timestamp_subsec_nanos() as i32,
-                }),
-                pid: process.pid,
-                log_file: process.log_file.to_string_lossy().to_string(),
-                project: process.project.clone(),
-                ports: process.ports.lock().unwrap().clone(),
-                wait_timeout_occurred: None,
-                exit_code: None,
-                exit_reason: None,
-                stderr_tail: None,
+            .map(|process| {
+                // Get detected ports
+                let ports = if let Some(port) = process.port {
+                    vec![port as u32]
+                } else if let Ok(detected) = process.detected_port.lock() {
+                    detected.map(|p| vec![p as u32]).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                ProcessInfo {
+                    id: process.id.clone(),
+                    name: process.name.clone(),
+                    cmd: process.cmd.clone().unwrap_or_default(),
+                    cwd: process
+                        .cwd
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    status: match process.get_status() {
+                        ProcessStatus::Starting => proto::ProcessStatus::Starting as i32,
+                        ProcessStatus::Running => proto::ProcessStatus::Running as i32,
+                        ProcessStatus::Stopping => proto::ProcessStatus::Stopping as i32,
+                        ProcessStatus::Stopped => proto::ProcessStatus::Stopped as i32,
+                        ProcessStatus::Failed => proto::ProcessStatus::Failed as i32,
+                    },
+                    start_time: Some(prost_types::Timestamp {
+                        seconds: process.start_time.timestamp(),
+                        nanos: process.start_time.timestamp_subsec_nanos() as i32,
+                    }),
+                    pid: Some(process.pid),
+                    log_file: log_dir
+                        .join(format!("{}-{}.log", process.project, process.name))
+                        .to_string_lossy()
+                        .to_string(),
+                    project: process.project.clone(),
+                    ports,
+                    wait_timeout_occurred: None,
+                    exit_code: None,
+                    exit_reason: None,
+                    stderr_tail: None,
+                    log_context: vec![],
+                    matched_line: None,
+                }
             })
             .collect();
 
@@ -372,7 +419,11 @@ impl ProcessManagerService for GrpcService {
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
 
         // Use project-based directory structure
-        let log_file = self.log_hub.config.paths.log_dir
+        let log_file = self
+            .log_hub
+            .config
+            .paths
+            .log_dir
             .join(&project)
             .join(format!("{}.log", req.name));
 
@@ -545,7 +596,11 @@ impl ProcessManagerService for GrpcService {
         let project = req.project.clone().unwrap_or_else(|| "default".to_string());
 
         // Use project-based directory structure
-        let log_file = self.log_hub.config.paths.log_dir
+        let log_file = self
+            .log_hub
+            .config
+            .paths
+            .log_dir
             .join(&project)
             .join(format!("{}.log", req.name));
 
@@ -587,21 +642,19 @@ impl ProcessManagerService for GrpcService {
             // Clean all projects
             let results = self
                 .process_manager
-                .clean_all_projects()
+                .clean_all_projects(req.force)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to clean all projects: {}", e)))?;
 
             let project_results: Vec<_> = results
                 .into_iter()
                 .map(
-                    |(project, (processes_stopped, logs_deleted, stopped_names, deleted_files))| {
-                        proto::clean_project_response::ProjectCleanResult {
-                            project,
-                            processes_stopped: processes_stopped as u32,
-                            logs_deleted: logs_deleted as u32,
-                            stopped_process_names: stopped_names,
-                            deleted_log_files: deleted_files,
-                        }
+                    |(project, stopped_names)| proto::clean_project_response::ProjectCleanResult {
+                        project,
+                        processes_stopped: stopped_names.len() as u32,
+                        logs_deleted: 0,
+                        stopped_process_names: stopped_names,
+                        deleted_log_files: vec![],
                     },
                 )
                 .collect();
@@ -616,19 +669,19 @@ impl ProcessManagerService for GrpcService {
         } else {
             // Clean single project
             let project = req.project.as_deref().unwrap_or("default");
-            let (processes_stopped, logs_deleted, stopped_names, deleted_files) = self
+            let stopped_names = self
                 .process_manager
-                .clean_project(project)
+                .clean_project(project, req.force)
                 .await
                 .map_err(|e| {
                     Status::internal(format!("Failed to clean project {}: {}", project, e))
                 })?;
 
             Ok(Response::new(CleanProjectResponse {
-                processes_stopped: processes_stopped as u32,
-                logs_deleted: logs_deleted as u32,
+                processes_stopped: stopped_names.len() as u32,
+                logs_deleted: 0,
                 stopped_process_names: stopped_names,
-                deleted_log_files: deleted_files,
+                deleted_log_files: vec![],
                 project_results: vec![],
             }))
         }

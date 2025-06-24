@@ -1,33 +1,34 @@
 use crate::common::config::Config;
-use crate::common::exit_code::format_exit_reason;
 use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::log::LogHub;
+use crate::daemon::process::exit_handler::ExitHandler;
+use crate::daemon::process::launcher::ProcessLauncher;
+use crate::daemon::process::log_stream::LogStreamConfig;
 use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
-use dashmap::DashMap;
-use regex::Regex;
-use ringbuf::traits::{Consumer, RingBuffer};
+use crate::daemon::process::registry::ProcessRegistry;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 pub struct ProcessManager {
-    processes: Arc<DashMap<String, Arc<ProxyInfo>>>,
+    registry: ProcessRegistry,
     config: Arc<Config>,
     log_hub: Arc<LogHub>,
+    launcher: ProcessLauncher,
 }
 
 impl ProcessManager {
     pub fn new(config: Arc<Config>, log_hub: Arc<LogHub>) -> Self {
+        let launcher = ProcessLauncher::new(config.clone());
         Self {
-            processes: Arc::new(DashMap::new()),
+            registry: ProcessRegistry::new(),
             config,
             log_hub,
+            launcher,
         }
     }
 
@@ -39,11 +40,11 @@ impl ProcessManager {
         cmd: Option<String>,
         args: Vec<String>,
         cwd: Option<PathBuf>,
-        env: Option<std::collections::HashMap<String, String>>,
+        env: Option<HashMap<String, String>>,
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
     ) -> Result<Arc<ProxyInfo>> {
-        let (proxy, _timeout, _pattern_matched) = self
+        let (proxy, _timeout, _pattern_matched, _log_context, _matched_line) = self
             .start_process_with_log_stream(
                 name,
                 project,
@@ -53,7 +54,6 @@ impl ProcessManager {
                 env,
                 wait_for_log,
                 wait_timeout,
-                None,
             )
             .await?;
         Ok(proxy)
@@ -67,676 +67,237 @@ impl ProcessManager {
         cmd: Option<String>,
         args: Vec<String>,
         cwd: Option<PathBuf>,
-        env: Option<std::collections::HashMap<String, String>>,
+        env: Option<HashMap<String, String>>,
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
-        log_stream_tx: Option<tokio::sync::mpsc::Sender<String>>,
-    ) -> Result<(Arc<ProxyInfo>, bool, bool)> {
-        let project = match project {
-            Some(p) => p,
-            None => {
-                return Err(McprocdError::InvalidRequest(
-                    "Project name must be provided".to_string(),
-                ));
-            }
-        };
-
-        // Create unique key for process: project/name
-        let process_key = format!("{}/{}", &project, &name);
+    ) -> Result<(Arc<ProxyInfo>, bool, bool, Vec<String>, Option<String>)> {
+        let project = project.unwrap_or_else(|| {
+            cwd.as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .unwrap_or("default")
+                .to_string()
+        });
 
         // Check if process already exists
-        if let Some(existing) = self.processes.get(&process_key) {
-            if matches!(
-                existing.get_status(),
-                ProcessStatus::Running | ProcessStatus::Starting
-            ) {
-                info!("Process {}/{} already running", project, name);
-                return Err(McprocdError::ProcessAlreadyExists(format!(
-                    "{}/{}",
-                    project, name
-                )));
+        if let Some(existing) = self.registry.get_process_by_name(&name) {
+            if matches!(existing.get_status(), ProcessStatus::Running) {
+                return Err(McprocdError::ProcessAlreadyExists(name));
             }
         }
 
-        let cwd = match cwd {
-            Some(dir) => dir,
-            None => std::env::current_dir().map_err(|e| {
-                McprocdError::ConfigError(format!("Failed to get current directory: {}", e))
-            })?,
-        };
+        // Parse wait pattern if provided
+        let log_pattern = self.launcher.parse_wait_pattern(wait_for_log)?;
 
-        // Create project-specific log directory if it doesn't exist
-        let project_log_dir = self.config.paths.log_dir.join(&project);
-        if !project_log_dir.exists() {
-            tokio::fs::create_dir_all(&project_log_dir)
-                .await
-                .map_err(McprocdError::IoError)?;
-        }
-
-        let log_file =
-            self.log_hub
-                .get_log_file_path_for_key(&ProcessKey::new(
-                    &project, &name,
-                ));
-
-        // Determine command string for ProxyInfo
-        let cmd_string = if let Some(cmd) = cmd.clone() {
-            cmd
-        } else if !args.is_empty() {
-            args.join(" ")
+        // Setup log ready channel
+        let (log_ready_tx, log_ready_rx) = if log_pattern.is_some() {
+            let (tx, rx) = oneshot::channel();
+            (Some(Arc::new(Mutex::new(Some(tx)))), Some(rx))
         } else {
-            return Err(McprocdError::SpawnError("No command provided".to_string()));
+            (None, None)
         };
 
-        let mut proxy = ProxyInfo::new(
+        // Setup log streaming channel (always needed for continuous log streaming)
+        let log_stream_tx = Arc::new(Mutex::new(None::<mpsc::Sender<Vec<u8>>>));
+
+        // Pattern match tracking
+        let pattern_matched = Arc::new(Mutex::new(false));
+        let timeout_occurred = Arc::new(Mutex::new(false));
+        let log_context = Arc::new(Mutex::new(Vec::new()));
+        let matched_line = Arc::new(Mutex::new(None::<String>));
+
+        // Launch the process
+        let (mut child, process_key) = self
+            .launcher
+            .launch_process(
+                name.clone(),
+                project.clone(),
+                cmd.clone(),
+                args.clone(),
+                cwd.clone(),
+                env.clone(),
+            )
+            .await?;
+
+        let pid = child.id().ok_or_else(|| McprocdError::ProcessSpawnFailed {
+            name: name.clone(),
+            error: "Failed to get PID".to_string(),
+        })?;
+
+        // Create proxy info
+        let proxy_arc = self.launcher.create_proxy_info(
             name.clone(),
             project.clone(),
-            cmd_string.clone(),
-            cwd.clone(),
-            log_file,
-            self.config.logging.ring_buffer_size,
+            cmd,
+            args,
+            cwd,
+            env,
+            pid,
         );
 
-        // Create command based on whether cmd or args was provided
-        let mut command = if let Some(cmd) = cmd {
-            // Use shell to execute the command
-            if cfg!(unix) {
-                let mut shell_cmd = Command::new("sh");
-                shell_cmd.arg("-c");
-                shell_cmd.arg(&cmd);
-                shell_cmd
-            } else {
-                let mut shell_cmd = Command::new("cmd");
-                shell_cmd.arg("/C");
-                shell_cmd.arg(&cmd);
-                shell_cmd
-            }
-        } else if !args.is_empty() {
-            // Direct execution without shell
-            let mut direct_cmd = Command::new(&args[0]);
-            if args.len() > 1 {
-                direct_cmd.args(&args[1..]);
-            }
-            direct_cmd
-        } else {
-            return Err(McprocdError::SpawnError("No command provided".to_string()));
-        };
-
-        // Set up process group for Unix systems
-        #[cfg(unix)]
-        {
-            command.process_group(0); // Create new process group
-        }
-
-        command
-            .current_dir(&cwd)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .stdin(std::process::Stdio::null());
-
-        if let Some(env_vars) = env {
-            for (key, value) in env_vars {
-                command.env(key, value);
-            }
-        }
-
-        let mut child = command
-            .spawn()
-            .map_err(|e| McprocdError::SpawnError(format!("Failed to spawn process: {}", e)))?;
-
-        proxy.pid = child.id();
-        proxy.set_status(ProcessStatus::Running);
-
-        // Write startup information to log file immediately
-        let startup_info = format!(
-            "=== Process Started ===\nProject: {}\nName: {}\nCommand: {}\nWorking Directory: {}\nPID: {:?}\nStart Time: {}\n===================\n",
-            project, name, cmd_string, cwd.display(), proxy.pid, proxy.start_time.format("%Y-%m-%d %H:%M:%S UTC")
-        );
-        if let Err(e) = self
-            .log_hub
-            .append_log(&process_key, startup_info.as_bytes(), false)
-            .await
-        {
-            error!("Failed to write startup log for {}: {}", process_key, e);
-        }
-
-        let proxy_arc = Arc::new(proxy);
-        self.processes
-            .insert(process_key.clone(), proxy_arc.clone());
-
-        // Setup log wait channel if pattern is provided
-        let log_ready_tx = if wait_for_log.is_some() {
-            let (tx, rx) = oneshot::channel();
-            let shared_tx = Arc::new(Mutex::new(Some(tx)));
-            Some((shared_tx, rx))
-        } else {
-            None
-        };
-
-        // Create a shared flag to track pattern match
-        let pattern_matched = Arc::new(Mutex::new(false));
-
-        // Create a shared flag to track timeout
-        let timeout_occurred = Arc::new(Mutex::new(false));
-
-        // Wrap log_stream_tx in Arc<Mutex> for shared access
-        let log_stream_tx_shared = log_stream_tx.map(|tx| Arc::new(Mutex::new(Some(tx))));
-
-        // Compile regex pattern if provided (case-insensitive)
-        let log_pattern = if let Some(pattern) = &wait_for_log {
-            // Prepend (?i) to make the pattern case-insensitive
-            let case_insensitive_pattern = format!("(?i){}", pattern);
-            match Regex::new(&case_insensitive_pattern) {
-                Ok(regex) => Some(regex),
-                Err(e) => {
-                    warn!("Invalid log pattern '{}': {}", pattern, e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // Add to registry
+        self.registry.add_process(proxy_arc.clone());
 
         // Setup stdout/stderr capture
         let stdout = child.stdout.take().expect("stdout should be captured");
         let stderr = child.stderr.take().expect("stderr should be captured");
 
-        let log_hub = self.log_hub.clone();
-        let proxy_stdout = proxy_arc.clone();
-        let log_key_stdout = process_key.clone();
-        let log_pattern_stdout = log_pattern.clone();
-        let log_ready_tx_stdout = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
-        let log_stream_tx_stdout = log_stream_tx_shared.clone();
-        let pattern_matched_stdout = pattern_matched.clone();
-        let wait_timeout_stdout = wait_timeout;
-        let has_pattern_stdout = log_pattern_stdout.is_some();
-        let timeout_occurred_stdout = timeout_occurred.clone();
-        let default_wait_timeout_secs = self.config.process.startup.default_wait_timeout_secs;
-        let proxy_status_check = proxy_arc.clone();
+        // Spawn stdout reader
+        let stdout_config = LogStreamConfig {
+            stream_name: "stdout",
+            process_key: process_key.clone(),
+            log_hub: self.log_hub.clone(),
+            proxy: proxy_arc.clone(),
+            log_pattern: log_pattern.clone(),
+            log_ready_tx: log_ready_tx.clone(),
+            log_stream_tx: Some(log_stream_tx.clone()),
+            pattern_matched: pattern_matched.clone(),
+            timeout_occurred: timeout_occurred.clone(),
+            wait_timeout,
+            default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
+            log_context: log_context.clone(),
+            matched_line: matched_line.clone(),
+        };
+        stdout_config.spawn_log_reader(stdout).await;
 
-        tokio::spawn(async move {
-            let reader = BufReader::new(stdout);
-            let mut lines = reader.lines();
-            
-            // Buffer to store recent log lines for context
-            let mut log_buffer: Vec<String> = Vec::new();
-            const LOG_BUFFER_SIZE: usize = 20;
+        // Spawn stderr reader
+        let stderr_config = LogStreamConfig {
+            stream_name: "stderr",
+            process_key: process_key.clone(),
+            log_hub: self.log_hub.clone(),
+            proxy: proxy_arc.clone(),
+            log_pattern: log_pattern.clone(),
+            log_ready_tx: log_ready_tx.clone(),
+            log_stream_tx: Some(log_stream_tx.clone()),
+            pattern_matched: pattern_matched.clone(),
+            timeout_occurred: timeout_occurred.clone(),
+            wait_timeout,
+            default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
+            log_context: log_context.clone(),
+            matched_line: matched_line.clone(),
+        };
+        stderr_config.spawn_log_reader(stderr).await;
 
-            // Set up timeout future if we're waiting for a pattern
-            let timeout_future = if has_pattern_stdout {
-                let duration = tokio::time::Duration::from_secs(
-                    wait_timeout_stdout.unwrap_or(default_wait_timeout_secs) as u64,
-                );
-                tokio::time::sleep(duration)
-            } else {
-                tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
-            };
-            tokio::pin!(timeout_future);
-
-            // Set up process status check interval
-            let mut status_check_interval =
-                tokio::time::interval(tokio::time::Duration::from_millis(100));
-
-            loop {
-                tokio::select! {
-                // Check if process has exited
-                _ = status_check_interval.tick() => {
-                    if !matches!(proxy_status_check.get_status(), ProcessStatus::Running) {
-                        debug!("Process exited, stopping stdout log reader");
-                        // Close the channel if process exited
-                        if let Some(ref tx_shared) = log_stream_tx_stdout {
-                            if let Ok(mut guard) = tx_shared.lock() {
-                                guard.take();
-                            }
-                        }
-                        break;
-                    }
-                }
-                // Check for timeout
-                _ = &mut timeout_future, if has_pattern_stdout => {
-                    warn!("Log streaming timeout reached for stdout");
-                    // Mark timeout occurred
-                    if let Ok(mut timeout_flag) = timeout_occurred_stdout.lock() {
-                        *timeout_flag = true;
-                    }
-                    // Close the channel on timeout
-                    if let Some(ref tx_shared) = log_stream_tx_stdout {
-                        if let Ok(mut guard) = tx_shared.lock() {
-                            guard.take();
-                        }
-                    }
-                    break;
-                }
-                    // Read next line
-                    line_result = lines.next_line() => {
-                        match line_result {
-                            Ok(Some(line)) => {
-                                if let Err(e) = log_hub.append_log(&log_key_stdout, line.as_bytes(), false).await {
-                                    error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
-                                }
-
-                                // Add to buffer for context if we're waiting for a pattern
-                                if has_pattern_stdout {
-                                    log_buffer.push(line.clone());
-                                    if log_buffer.len() > LOG_BUFFER_SIZE {
-                                        log_buffer.remove(0);
-                                    }
-                                }
-
-                                // Check if line matches the wait pattern
-                                if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stdout, &log_ready_tx_stdout) {
-                                    if pattern.is_match(&line) {
-                                        debug!("Found log pattern match: {}", line);
-                                        if let Ok(mut tx_guard) = tx.lock() {
-                                            if let Some(sender) = tx_guard.take() {
-                                                let _ = sender.send(());
-                                            }
-                                        }
-                                        // Mark pattern as matched
-                                        if let Ok(mut matched) = pattern_matched_stdout.lock() {
-                                            *matched = true;
-                                        }
-                                        
-                                        // Send buffered context lines and the matching line
-                                        if let Some(ref tx_shared) = log_stream_tx_stdout {
-                                            let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
-                                            if let Some(tx) = tx_opt {
-                                                // Send all buffered lines as context
-                                                for buffered_line in &log_buffer {
-                                                    let _ = tx.send(buffered_line.clone()).await;
-                                                }
-                                                // Send the matching line if it's not already in the buffer
-                                                if log_buffer.is_empty() || log_buffer.last() != Some(&line) {
-                                                    let _ = tx.send(line.clone()).await;
-                                                }
-                                            }
-                                        }
-                                        
-                                        // Close the log stream channel when pattern matches
-                                        // This signals the gRPC stream to stop waiting for logs
-                                        if let Some(ref tx_shared) = log_stream_tx_stdout {
-                                            if let Ok(mut guard) = tx_shared.lock() {
-                                                guard.take(); // Drop the sender to close the channel
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if let Ok(mut ring) = proxy_stdout.ring.lock() {
-                                    let _ = ring.push_overwrite(line.into_bytes());
-                                }
-                            }
-                            Ok(None) => break, // EOF
-                            Err(_) => break,
-                        }
-                    }
-                }
-            }
-        });
-
-        let log_hub_stderr = self.log_hub.clone();
-        let proxy_stderr = proxy_arc.clone();
-        let log_key_stderr = process_key.clone();
-        let log_pattern_stderr = log_pattern;
-        let log_ready_tx_stderr = log_ready_tx.as_ref().map(|(tx, _)| tx.clone());
-        let log_stream_tx_stderr = log_stream_tx_shared.clone();
-        let pattern_matched_stderr = pattern_matched.clone();
-        let wait_timeout_stderr = wait_timeout;
-        let has_pattern_stderr = log_pattern_stderr.is_some();
-        let timeout_occurred_stderr = timeout_occurred.clone();
-        let default_wait_timeout_secs_stderr =
-            self.config.process.startup.default_wait_timeout_secs;
-        let proxy_status_check_stderr = proxy_arc.clone();
-
-        tokio::spawn(async move {
-            let reader = BufReader::new(stderr);
-            let mut lines = reader.lines();
-            
-            // Buffer to store recent log lines for context
-            let mut log_buffer: Vec<String> = Vec::new();
-            const LOG_BUFFER_SIZE: usize = 20;
-
-            // Set up timeout future if we're waiting for a pattern
-            let timeout_future = if has_pattern_stderr {
-                let duration = tokio::time::Duration::from_secs(
-                    wait_timeout_stderr.unwrap_or(default_wait_timeout_secs_stderr) as u64,
-                );
-                tokio::time::sleep(duration)
-            } else {
-                tokio::time::sleep(tokio::time::Duration::from_secs(u64::MAX)) // Never timeout
-            };
-            tokio::pin!(timeout_future);
-
-            // Set up process status check interval
-            let mut status_check_interval =
-                tokio::time::interval(tokio::time::Duration::from_millis(100));
-
-            loop {
-                tokio::select! {
-                    // Check if process has exited
-                    _ = status_check_interval.tick() => {
-                        if !matches!(proxy_status_check_stderr.get_status(), ProcessStatus::Running) {
-                            debug!("Process exited, stopping stderr log reader");
-                            // Close the channel if process exited
-                            if let Some(ref tx_shared) = log_stream_tx_stderr {
-                                if let Ok(mut guard) = tx_shared.lock() {
-                                    guard.take();
-                                }
-                            }
-                            break;
-                        }
-                    }
-                    // Check for timeout
-                    _ = &mut timeout_future, if has_pattern_stderr => {
-                        warn!("Log streaming timeout reached for stderr");
-                        // Mark timeout occurred
-                        if let Ok(mut timeout_flag) = timeout_occurred_stderr.lock() {
-                            *timeout_flag = true;
-                        }
-                        // Close the channel on timeout
-                        if let Some(ref tx_shared) = log_stream_tx_stderr {
-                            if let Ok(mut guard) = tx_shared.lock() {
-                                guard.take();
-                            }
-                        }
-                        break;
-                    }
-                        // Read next line
-                        line_result = lines.next_line() => {
-                            match line_result {
-                                Ok(Some(line)) => {
-                if let Err(e) = log_hub_stderr.append_log(&log_key_stderr, line.as_bytes(), true).await {
-                    error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
-                }
-
-                // Add to buffer for context if we're waiting for a pattern
-                if has_pattern_stderr {
-                    log_buffer.push(line.clone());
-                    if log_buffer.len() > LOG_BUFFER_SIZE {
-                        log_buffer.remove(0);
-                    }
-                }
-
-                // Check if line matches the wait pattern
-                if let (Some(ref pattern), Some(ref tx)) = (&log_pattern_stderr, &log_ready_tx_stderr) {
-                    if pattern.is_match(&line) {
-                        debug!("Found log pattern match in stderr: {}", line);
-                        if let Ok(mut tx_guard) = tx.lock() {
-                            if let Some(sender) = tx_guard.take() {
-                                let _ = sender.send(());
-                            }
-                        }
-                        // Mark pattern as matched
-                        if let Ok(mut matched) = pattern_matched_stderr.lock() {
-                            *matched = true;
-                        }
-                        
-                        // Send buffered context lines and the matching line
-                        if let Some(ref tx_shared) = log_stream_tx_stderr {
-                            let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
-                            if let Some(tx) = tx_opt {
-                                // Send all buffered lines as context
-                                for buffered_line in &log_buffer {
-                                    let _ = tx.send(buffered_line.clone()).await;
-                                }
-                                // Send the matching line if it's not already in the buffer
-                                if log_buffer.is_empty() || log_buffer.last() != Some(&line) {
-                                    let _ = tx.send(line.clone()).await;
-                                }
-                            }
-                        }
-                        
-                        // Close the log stream channel when pattern matches
-                        // This signals the gRPC stream to stop waiting for logs
-                        if let Some(ref tx_shared) = log_stream_tx_stderr {
-                            if let Ok(mut guard) = tx_shared.lock() {
-                                guard.take(); // Drop the sender to close the channel
-                            }
-                        }
-                    }
-                }
-
-                                    if let Ok(mut ring) = proxy_stderr.ring.lock() {
-                                        let _ = ring.push_overwrite(line.into_bytes());
-                                    }
-                                }
-                                Ok(None) => break, // EOF
-                                Err(_) => break,
-                            }
-                        }
-                    }
-            }
-        });
-
-        // Monitor process
-        let processes = self.processes.clone();
-        let proxy_monitor = proxy_arc.clone();
-        let name_clone = name.clone();
-        let log_hub_monitor = self.log_hub.clone();
-        let log_key_monitor = process_key.clone();
+        // Spawn process monitor
+        let monitor_proxy = proxy_arc.clone();
+        let monitor_name = name.clone();
+        let monitor_key = process_key.clone();
+        let monitor_log_hub = self.log_hub.clone();
+        let monitor_registry = self.registry.clone();
 
         tokio::spawn(async move {
             match child.wait().await {
                 Ok(status) => {
-                    info!("Process {} exited with status: {:?}", name_clone, status);
-
-                    // Store exit code and time
-                    if let Ok(mut exit_code) = proxy_monitor.exit_code.lock() {
-                        *exit_code = status.code();
+                    let exit_code = status.code();
+                    if let Ok(mut code_guard) = monitor_proxy.exit_code.lock() {
+                        *code_guard = exit_code;
                     }
-                    if let Ok(mut exit_time) = proxy_monitor.exit_time.lock() {
-                        *exit_time = Some(chrono::Utc::now());
-                    }
+                    monitor_proxy.set_status(ProcessStatus::Stopped);
 
-                    // Write exit information to log
-                    let exit_info = format!(
-                        "\n=== Process Exited ===\nName: {}\nExit Status: {:?}\nExit Time: {}\n===================\n",
-                        name_clone,
-                        status,
-                        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-                    );
-                    if let Err(e) = log_hub_monitor
-                        .append_log(&log_key_monitor, exit_info.as_bytes(), false)
+                    let exit_msg = ExitHandler::format_exit_message(&monitor_name, exit_code);
+                    info!("{}", exit_msg);
+
+                    // Log the exit
+                    let log_msg = format!("[mcproc] {}\n", exit_msg);
+                    if let Err(e) = monitor_log_hub
+                        .append_log_for_key(&monitor_key, log_msg.as_bytes(), true)
                         .await
                     {
-                        error!("Failed to write exit log for {}: {}", log_key_monitor, e);
+                        error!("Failed to write exit log: {}", e);
                     }
-
-                    proxy_monitor.set_status(if status.success() {
-                        ProcessStatus::Stopped
-                    } else {
-                        ProcessStatus::Failed
-                    });
                 }
                 Err(e) => {
-                    error!("Failed to wait for process {}: {}", name_clone, e);
-
-                    // Write error information to log
-                    let error_info = format!(
-                        "\n=== Process Error ===\nName: {}\nError: {}\nTime: {}\n===================\n",
-                        name_clone,
-                        e,
-                        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
-                    );
-                    if let Err(e) = log_hub_monitor
-                        .append_log(&log_key_monitor, error_info.as_bytes(), true)
-                        .await
-                    {
-                        error!("Failed to write error log for {}: {}", log_key_monitor, e);
-                    }
-
-                    proxy_monitor.set_status(ProcessStatus::Failed);
+                    error!("Failed to wait for process {}: {}", monitor_name, e);
+                    monitor_proxy.set_status(ProcessStatus::Failed);
                 }
             }
 
-            // Close the log file handle
-            log_hub_monitor.close_log(&log_key_monitor).await;
-
-            // Remove from active processes
-            processes.remove(&log_key_monitor);
+            // Clean up: close log file and remove from registry
+            monitor_log_hub.close_log_for_key(&monitor_key).await;
+            monitor_registry.remove_process(&monitor_proxy.id);
         });
 
-        // Start port detection task
-        if let Some(pid) = proxy_arc.pid {
-            let proxy_port = proxy_arc.clone();
-            let port_detect_initial_delay_secs =
-                self.config.process.port_detection.initial_delay_secs;
-            let port_detect_interval_secs = self.config.process.port_detection.interval_secs;
-            let port_detect_max_attempts = self.config.process.port_detection.max_attempts;
-
+        // Spawn port detector
+        if let Some(configured_port) = proxy_arc.port {
+            let port_proxy = proxy_arc.clone();
+            let port_name = name.clone();
             tokio::spawn(async move {
-                // Initial delay to let the process start up (Next.js needs more time)
-                tokio::time::sleep(tokio::time::Duration::from_secs(
-                    port_detect_initial_delay_secs,
-                ))
-                .await;
-
-                // Detect ports periodically
-                let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                    port_detect_interval_secs,
-                ));
-                let mut consecutive_checks = 0;
-                let mut total_checks = 0;
-
-                loop {
-                    interval.tick().await;
-
-                    // Stop checking if process is no longer running
-                    if !matches!(proxy_port.get_status(), ProcessStatus::Running) {
-                        break;
+                if let Err(e) = port_detector::wait_for_port(configured_port, 30).await {
+                    warn!(
+                        "Port {} not available for process {}: {}",
+                        configured_port, port_name, e
+                    );
+                } else {
+                    info!(
+                        "Port {} is now available for process {}",
+                        configured_port, port_name
+                    );
+                    port_proxy.mark_port_ready();
+                }
+            });
+        } else {
+            let detect_proxy = proxy_arc.clone();
+            let detect_name = name.clone();
+            let detect_pid = pid;
+            tokio::spawn(async move {
+                match port_detector::detect_port_for_pid(detect_pid).await {
+                    Ok(Some(port)) => {
+                        info!("Detected port {} for process {}", port, detect_name);
+                        detect_proxy.set_detected_port(port);
                     }
-
-                    let detected_ports = port_detector::detect_ports(pid);
-
-                    // Update ports if changed
-                    if let Ok(mut ports) = proxy_port.ports.lock() {
-                        if *ports != detected_ports {
-                            debug!("Updated ports for PID {}: {:?}", pid, detected_ports);
-                            *ports = detected_ports.clone();
-                        }
-
-                        // Stop checking after finding stable ports
-                        if !detected_ports.is_empty() {
-                            consecutive_checks += 1;
-                            if consecutive_checks >= 3 {
-                                debug!(
-                                    "Port detection stabilized for PID {}, stopping checks",
-                                    pid
-                                );
-                                break;
-                            }
-                        } else {
-                            consecutive_checks = 0;
-                        }
+                    Ok(None) => {
+                        debug!("No port detected for process {}", detect_name);
                     }
-
-                    total_checks += 1;
-
-                    // Stop checking after configured max attempts
-                    if total_checks >= port_detect_max_attempts {
-                        debug!(
-                            "Port detection timeout for PID {} after {} checks",
-                            pid, total_checks
-                        );
-                        break;
+                    Err(e) => {
+                        debug!("Error detecting port for process {}: {}", detect_name, e);
                     }
                 }
             });
         }
 
-        // Wait for log pattern if specified, or perform health check after 500ms
-        if let Some((_, rx)) = log_ready_tx {
-            let timeout_duration = tokio::time::Duration::from_secs(
-                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs)
-                    as u64,
-            );
-
-            match tokio::time::timeout(timeout_duration, rx).await {
-                Ok(Ok(())) => {
-                    info!("Process {} is ready (log pattern matched)", name);
-                }
-                Ok(Err(_)) => {
-                    warn!("Log wait channel closed for process {}", name);
+        // Wait for pattern match or initial startup time
+        if let Some(rx) = log_ready_rx {
+            match rx.await {
+                Ok(_) => {
+                    debug!("Log pattern matched for process {}", name);
+                    // Pattern matched - return immediately
                 }
                 Err(_) => {
-                    warn!(
-                        "Timeout waiting for log pattern for process {} after {}s",
-                        name,
-                        timeout_duration.as_secs()
-                    );
-                    // Mark timeout occurred
-                    if let Ok(mut timeout_flag) = timeout_occurred.lock() {
-                        *timeout_flag = true;
-                    }
-                    // Close the log stream channel on timeout
-                    if let Some(ref tx_shared) = log_stream_tx_shared {
-                        if let Ok(mut guard) = tx_shared.lock() {
-                            guard.take(); // Drop the sender to close the channel
-                        }
-                    }
+                    // Channel closed without match (likely timeout)
+                    debug!("Pattern match channel closed for process {}", name);
                 }
             }
         } else {
-            // No wait_for_log pattern, perform health check after configured delay
-            debug!(
-                "No wait_for_log pattern, will check health after {}ms for process {}",
-                self.config.process.startup.health_check_delay_ms, name
-            );
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                self.config.process.startup.health_check_delay_ms,
-            ))
-            .await;
+            // No wait_for_log pattern, but still wait a bit to collect initial logs
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        }
 
-            // Check if process is still running
-            let current_status = proxy_arc.get_status();
-            debug!(
-                "Health check for process {}: status = {:?}",
-                name, current_status
-            );
-
-            if !matches!(current_status, ProcessStatus::Running) {
-                // Process has already exited
-                if let Ok(exit_code) = proxy_arc.exit_code.lock() {
-                    debug!("Process {} exited with code: {:?}", name, *exit_code);
-                    if let Some(code) = *exit_code {
-                        let exit_reason = format_exit_reason(code);
-
-                        // Get recent logs for error context
-                        let recent_logs = if let Ok(ring) = proxy_arc.ring.lock() {
-                            ring.iter()
-                                .take(5)
-                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        } else {
-                            String::new()
-                        };
-
-                        return Err(McprocdError::ProcessFailedToStart {
-                            name: name.clone(),
-                            exit_code: code,
-                            exit_reason,
-                            stderr: recent_logs,
-                        });
-                    }
-                }
-            }
+        // Check if process exited during startup
+        let current_status = proxy_arc.get_status();
+        if !matches!(current_status, ProcessStatus::Running) {
+            ExitHandler::check_process_exit(&proxy_arc, &name)?;
         }
 
         info!("Started process {} with PID {:?}", name, proxy_arc.pid);
 
-        // Add timeout status to the proxy info if it's available
-        if let Ok(timeout_flag) = timeout_occurred.lock() {
-            if *timeout_flag {
-                // Store timeout status in proxy (we'll need to modify ProxyInfo struct)
-                // For now, we'll handle this in the gRPC layer
-            }
-        }
+        // Always get log context (not just when pattern matched)
+        let collected_log_context = log_context
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        
+        let collected_matched_line = matched_line
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
 
         Ok((
             proxy_arc,
             timeout_occurred.lock().map(|g| *g).unwrap_or(false),
             pattern_matched.lock().map(|g| *g).unwrap_or(false),
+            collected_log_context,
+            collected_matched_line,
         ))
     }
 
@@ -747,79 +308,41 @@ impl ProcessManager {
         force: bool,
     ) -> Result<()> {
         let process = self
+            .registry
             .get_process_by_name_or_id_with_project(name_or_id, project)
-            .ok_or_else(|| McprocdError::ProcessNotFound(name_or_id.to_string()))?;
+            .ok_or_else(|| McprocdError::ProcessNotFound {
+                name: name_or_id.to_string(),
+            })?;
 
-        process.set_status(ProcessStatus::Stopping);
+        let name = process.name.clone();
+        let project = process.project.clone();
+        let process_key = ProcessKey::new(project.clone(), name.clone());
 
-        if let Some(pid) = process.pid {
-            use nix::sys::signal::{self, Signal};
-            use nix::unistd::Pid;
+        info!("Stopping process {} in project {}", name, project);
 
-            let signal = if force {
-                Signal::SIGKILL
-            } else {
-                Signal::SIGTERM
-            };
-            let process_pid = Pid::from_raw(pid as i32);
-
-            // Try to kill the entire process group
-            #[cfg(unix)]
-            {
-                // Get the process group ID (usually same as PID for group leaders)
-                match nix::unistd::getpgid(Some(process_pid)) {
-                    Ok(pgid) => {
-                        // Kill the entire process group
-                        match signal::kill(Pid::from_raw(-pgid.as_raw()), signal) {
-                            Ok(()) => {
-                                info!(
-                                    "Sent {} to process group {} for process {}",
-                                    signal, pgid, process.name
-                                );
-                            }
-                            Err(e) => {
-                                warn!("Failed to kill process group {}: {}, falling back to single process", pgid, e);
-                                // Fall back to killing just the process
-                                signal::kill(process_pid, signal).map_err(|e| {
-                                    McprocdError::StopError(format!(
-                                        "Failed to stop process: {}",
-                                        e
-                                    ))
-                                })?;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to get process group for PID {}: {}, killing single process",
-                            pid, e
-                        );
-                        // Fall back to killing just the process
-                        signal::kill(process_pid, signal).map_err(|e| {
-                            McprocdError::StopError(format!("Failed to stop process: {}", e))
-                        })?;
-                    }
-                }
-            }
-
-            #[cfg(not(unix))]
-            {
-                // On non-Unix systems, just kill the single process
-                signal::kill(process_pid, signal).map_err(|e| {
-                    McprocdError::StopError(format!("Failed to stop process: {}", e))
-                })?;
-            }
-
-            info!("Sent {} to process {} (PID {})", signal, process.name, pid);
-            // Remove from processes map after sending signal
-            if force {
-                let process_key = format!("{}/{}", process.project, process.name);
-                self.processes.remove(&process_key);
-            }
-            Ok(())
-        } else {
-            Err(McprocdError::StopError("Process has no PID".to_string()))
+        // Log the stop event
+        let log_msg = format!("[mcproc] Stopping process {}\n", name);
+        if let Err(e) = self
+            .log_hub
+            .append_log_for_key(&process_key, log_msg.as_bytes(), true)
+            .await
+        {
+            error!("Failed to write stop log: {}", e);
         }
+
+        process
+            .stop(force)
+            .await
+            .map_err(|e| McprocdError::StopError(e))?;
+
+        // Remove from registry
+        self.registry.remove_process(&process.id);
+
+        // Wait a bit for graceful shutdown
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        info!("Stopped process {} in project {}", name, project);
+        Ok(())
     }
 
     pub async fn restart_process(
@@ -827,13 +350,16 @@ impl ProcessManager {
         name_or_id: &str,
         project: Option<String>,
     ) -> Result<Arc<ProxyInfo>> {
-        if let Some(process) =
-            self.get_process_by_name_or_id_with_project(name_or_id, project.as_deref())
+        if let Some(process) = self
+            .registry
+            .get_process_by_name_or_id_with_project(name_or_id, project.as_deref())
         {
             let name = process.name.clone();
             let project = process.project.clone();
             let cmd = process.cmd.clone();
+            let args = process.args.clone();
             let cwd = process.cwd.clone();
+            let env = process.env.clone();
             drop(process);
 
             self.stop_process(name_or_id, Some(&project), false).await?;
@@ -844,48 +370,13 @@ impl ProcessManager {
             ))
             .await;
 
-            // For restart, we use the original command as a shell command
-            self.start_process(
-                name,
-                Some(project),
-                Some(cmd),
-                vec![],
-                Some(cwd),
-                None,
-                None,
-                None,
-            )
-            .await
+            self.start_process(name, Some(project), cmd, args, cwd, env, None, None)
+                .await
         } else {
-            Err(McprocdError::ProcessNotFound(name_or_id.to_string()))
+            Err(McprocdError::ProcessNotFound {
+                name: name_or_id.to_string(),
+            })
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn get_process(&self, name: &str) -> Option<Arc<ProxyInfo>> {
-        self.processes.get(name).map(|p| p.clone())
-    }
-
-    #[allow(dead_code)]
-    pub fn get_process_by_id(&self, id: &str) -> Option<Arc<ProxyInfo>> {
-        if let Ok(uuid) = Uuid::parse_str(id) {
-            for entry in self.processes.iter() {
-                if entry.value().id == uuid {
-                    return Some(entry.value().clone());
-                }
-            }
-        }
-        None
-    }
-
-    #[allow(dead_code)]
-    pub fn get_process_by_name_or_id(&self, name_or_id: &str) -> Option<Arc<ProxyInfo>> {
-        // First try as name
-        if let Some(process) = self.get_process(name_or_id) {
-            return Some(process);
-        }
-        // Then try as ID
-        self.get_process_by_id(name_or_id)
     }
 
     pub fn get_process_by_name_or_id_with_project(
@@ -893,185 +384,48 @@ impl ProcessManager {
         name_or_id: &str,
         project: Option<&str>,
     ) -> Option<Arc<ProxyInfo>> {
-        // If project is provided, try project/name first
-        if let Some(proj) = project {
-            let key = format!("{}/{}", proj, name_or_id);
-            if let Some(process) = self.processes.get(&key) {
-                return Some(process.clone());
-            }
-        }
-
-        // Try to find by ID
-        if let Ok(uuid) = Uuid::parse_str(name_or_id) {
-            for entry in self.processes.iter() {
-                if entry.value().id == uuid {
-                    return Some(entry.value().clone());
-                }
-            }
-        }
-
-        // If no project specified, try to find by name in any project
-        if project.is_none() {
-            for entry in self.processes.iter() {
-                if entry.value().name == name_or_id {
-                    return Some(entry.value().clone());
-                }
-            }
-        }
-
-        None
+        self.registry
+            .get_process_by_name_or_id_with_project(name_or_id, project)
     }
 
     pub fn get_all_processes(&self) -> Vec<Arc<ProxyInfo>> {
-        self.processes
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.registry.get_all_processes()
     }
 
     pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
-        self.processes
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
+        self.registry.list_processes()
     }
 
-    /// Clean a project by stopping all processes and deleting logs
-    ///
-    /// Returns: (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
-    pub async fn clean_project(
-        &self,
-        project: &str,
-    ) -> Result<(usize, usize, Vec<String>, Vec<String>)> {
-        // Find all processes in this project
-        let processes_to_stop: Vec<_> = self
-            .processes
-            .iter()
-            .filter(|entry| entry.value().project == project)
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
+    pub async fn clean_project(&self, project: &str, force: bool) -> Result<Vec<String>> {
+        let processes = self.registry.get_processes_by_project(project);
+        let mut stopped = Vec::new();
 
-        let mut stopped_process_names = Vec::new();
-        let mut processes_stopped = 0;
-
-        // Stop all processes in the project
-        for (key, process) in processes_to_stop {
-            if matches!(
-                process.get_status(),
-                ProcessStatus::Running | ProcessStatus::Starting
-            ) {
-                match self
-                    .stop_process(&process.name, Some(&process.project), true)
-                    .await
-                {
-                    Ok(_) => {
-                        info!("Stopped process {} in project {}", process.name, project);
-                        stopped_process_names.push(process.name.clone());
-                        processes_stopped += 1;
-                        
-                        // Close log file handle immediately
-                        self.log_hub.close_log(&key).await;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to stop process {} in project {}: {}",
-                            process.name, project, e
-                        );
-                    }
-                }
-            }
-            // Remove from processes map
-            self.processes.remove(&key);
-        }
-
-        // Wait a bit for log handlers to close and cleanup tasks to complete
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        // Delete log directory for the project
-        let project_log_dir = self.config.paths.log_dir.join(project);
-        let mut deleted_log_files = Vec::new();
-        let mut logs_deleted = 0;
-
-        if project_log_dir.exists() {
-            match std::fs::read_dir(&project_log_dir) {
-                Ok(entries) => {
-                    for entry in entries.flatten() {
-                        if entry.path().is_file() {
-                            let file_path = entry.path();
-                            match std::fs::remove_file(&file_path) {
-                                Ok(_) => {
-                                    info!("Deleted log file: {:?}", file_path);
-                                    deleted_log_files
-                                        .push(file_path.to_string_lossy().to_string());
-                                    logs_deleted += 1;
-                                }
-                                Err(e) => {
-                                    warn!("Failed to delete log file {:?}: {}", file_path, e);
-                                }
-                            }
-                        }
-                    }
-
-                    // Try to remove the project directory itself
-                    if let Err(e) = std::fs::remove_dir(&project_log_dir) {
-                        debug!(
-                            "Could not remove project log directory {:?}: {}",
-                            project_log_dir, e
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to read project log directory {:?}: {}",
-                        project_log_dir, e
-                    );
-                }
+        for process in processes {
+            let name = process.name.clone();
+            if let Err(e) = self.stop_process(&process.id, Some(project), force).await {
+                error!(
+                    "Failed to stop process {} in project {}: {}",
+                    name, project, e
+                );
+            } else {
+                stopped.push(name);
             }
         }
 
-        Ok((
-            processes_stopped,
-            logs_deleted,
-            stopped_process_names,
-            deleted_log_files,
-        ))
+        Ok(stopped)
     }
 
-    /// Clean all projects
-    ///
-    /// Returns a map of project -> (processes_stopped, logs_deleted, stopped_process_names, deleted_log_files)
-    pub async fn clean_all_projects(
-        &self,
-    ) -> Result<
-        std::collections::HashMap<String, (usize, usize, Vec<String>, Vec<String>)>,
-    > {
-        // Get all unique projects
-        let mut projects: std::collections::HashSet<String> = self
-            .processes
-            .iter()
-            .map(|entry| entry.value().project.clone())
-            .collect();
-
-        // Also check for projects that only have log directories
-        if let Ok(entries) = std::fs::read_dir(&self.config.paths.log_dir) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        projects.insert(name.to_string());
-                    }
-                }
-            }
-        }
-
-        let mut results = std::collections::HashMap::new();
+    pub async fn clean_all_projects(&self, force: bool) -> Result<HashMap<String, Vec<String>>> {
+        let projects = self.registry.get_all_projects();
+        let mut results = HashMap::new();
 
         for project in projects {
-            match self.clean_project(&project).await {
-                Ok(result) => {
-                    results.insert(project, result);
+            match self.clean_project(&project, force).await {
+                Ok(stopped) => {
+                    results.insert(project, stopped);
                 }
                 Err(e) => {
-                    warn!("Failed to clean project {}: {}", project, e);
+                    error!("Failed to clean project {}: {}", project, e);
                 }
             }
         }

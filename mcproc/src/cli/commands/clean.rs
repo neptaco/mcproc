@@ -21,6 +21,10 @@ pub struct CleanCommand {
     #[arg(short, long)]
     project: Option<String>,
 
+    /// Force stop processes with SIGKILL
+    #[arg(short = 'f', long)]
+    force: bool,
+
     /// Verbose output (set from global flag)
     #[arg(skip)]
     pub verbose: bool,
@@ -41,6 +45,7 @@ impl CleanCommand {
         let request = Request::new(CleanProjectRequest {
             project: resolved_project,
             all_projects: self.all_projects,
+            force: self.force,
         });
 
         let response = client.inner().clean_project(request).await?;

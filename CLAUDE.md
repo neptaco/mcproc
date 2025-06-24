@@ -206,3 +206,9 @@ Basic implementation complete. Remaining tasks:
 - Always retrieve paths dynamically from configuration
 - Use cross-platform APIs like `dirs::home_dir()`
 - This applies to both code AND documentation - never expose user information
+
+### Code Cleanup Policy
+- This project is NOT a library - it's a standalone application
+- Remove unused code instead of marking it with `#[allow(dead_code)]`
+- Don't worry about "public API compatibility" - only keep code that is actually used
+- Prefer deletion over deprecation for internal functions

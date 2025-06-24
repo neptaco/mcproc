@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -44,49 +43,55 @@ impl From<ProcessStatus> for proto::ProcessStatus {
 }
 
 pub struct ProxyInfo {
-    pub id: Uuid,
+    pub id: String,
     #[allow(dead_code)]
     pub key: ProcessKey,
     pub name: String,
     pub project: String,
-    pub cmd: String,
-    pub cwd: PathBuf,
+    pub cmd: Option<String>,
+    pub args: Vec<String>,
+    pub cwd: Option<PathBuf>,
+    pub env: Option<std::collections::HashMap<String, String>>,
     pub start_time: DateTime<Utc>,
     pub status: Arc<AtomicU8>,
     pub ring: Arc<Mutex<HeapRb<Vec<u8>>>>,
-    pub log_file: PathBuf,
-    pub pid: Option<u32>,
-    pub ports: Arc<Mutex<Vec<u32>>>,
-    #[allow(dead_code)]
-    pub child_handle: Option<tokio::process::Child>,
+    pub pid: u32,
+    pub port: Option<u16>,
+    pub detected_port: Arc<Mutex<Option<u16>>>,
+    pub port_ready: Arc<Mutex<bool>>,
     pub exit_code: Arc<Mutex<Option<i32>>>,
     pub exit_time: Arc<Mutex<Option<DateTime<Utc>>>>,
 }
 
 impl ProxyInfo {
     pub fn new(
+        id: String,
         name: String,
         project: String,
-        cmd: String,
-        cwd: PathBuf,
-        log_file: PathBuf,
+        cmd: Option<String>,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        env: Option<std::collections::HashMap<String, String>>,
+        pid: u32,
         ring_buffer_size: usize,
     ) -> Self {
-        let key = ProcessKey::new(&project, &name);
+        let key = ProcessKey::new(project.clone(), name.clone());
         Self {
-            id: Uuid::new_v4(),
+            id,
             key,
             name,
             project,
             cmd,
+            args,
             cwd,
+            env,
             start_time: Utc::now(),
-            status: Arc::new(AtomicU8::new(ProcessStatus::Starting as u8)),
+            status: Arc::new(AtomicU8::new(ProcessStatus::Running as u8)),
             ring: Arc::new(Mutex::new(HeapRb::new(ring_buffer_size))),
-            log_file,
-            pid: None,
-            ports: Arc::new(Mutex::new(Vec::new())),
-            child_handle: None,
+            pid,
+            port: None,
+            detected_port: Arc::new(Mutex::new(None)),
+            port_ready: Arc::new(Mutex::new(false)),
             exit_code: Arc::new(Mutex::new(None)),
             exit_time: Arc::new(Mutex::new(None)),
         }
@@ -103,5 +108,42 @@ impl ProxyInfo {
     #[allow(dead_code)]
     pub fn get_key(&self) -> &ProcessKey {
         &self.key
+    }
+
+    pub async fn stop(&self, force: bool) -> Result<(), String> {
+        self.set_status(ProcessStatus::Stopping);
+
+        // Send SIGTERM or SIGKILL based on force flag
+        let signal = if force { "KILL" } else { "TERM" };
+        let output = tokio::process::Command::new("kill")
+            .arg(format!("-{}", signal))
+            .arg(self.pid.to_string())
+            .output()
+            .await
+            .map_err(|e| format!("Failed to send signal: {}", e))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(format!("Failed to stop process: {}", stderr));
+        }
+
+        self.set_status(ProcessStatus::Stopped);
+        if let Ok(mut exit_time) = self.exit_time.lock() {
+            *exit_time = Some(Utc::now());
+        }
+
+        Ok(())
+    }
+
+    pub fn mark_port_ready(&self) {
+        if let Ok(mut ready) = self.port_ready.lock() {
+            *ready = true;
+        }
+    }
+
+    pub fn set_detected_port(&self, port: u16) {
+        if let Ok(mut detected) = self.detected_port.lock() {
+            *detected = Some(port);
+        }
     }
 }

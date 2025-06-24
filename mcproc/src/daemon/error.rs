@@ -3,8 +3,8 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 #[allow(dead_code)]
 pub enum McprocdError {
-    #[error("Process not found: {0}")]
-    ProcessNotFound(String),
+    #[error("Process not found: {name}")]
+    ProcessNotFound { name: String },
 
     #[error("Process already exists: {0}")]
     ProcessAlreadyExists(String),
@@ -37,6 +37,15 @@ pub enum McprocdError {
 
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
+
+    #[error("Invalid command: {message}")]
+    InvalidCommand { message: String },
+
+    #[error("Process {name} failed to spawn: {error}")]
+    ProcessSpawnFailed { name: String, error: String },
+
+    #[error("Invalid regex pattern {pattern}: {error}")]
+    InvalidRegex { pattern: String, error: String },
 }
 
 pub type Result<T> = std::result::Result<T, McprocdError>;
