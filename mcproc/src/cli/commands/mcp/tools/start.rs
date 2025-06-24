@@ -265,6 +265,24 @@ impl ToolHandler for StartTool {
                     }
                 }
 
+                // Add log context if wait_for_log was used and we collected logs
+                if wait_for_log_flag && !log_entries.is_empty() {
+                    let log_context: Vec<String> = log_entries
+                        .iter()
+                        .map(|entry| entry.content.clone())
+                        .collect();
+                    response["log_context"] = json!(log_context);
+                    
+                    // If pattern was found (not timeout), mark it in the response
+                    if !process.wait_timeout_occurred.unwrap_or(false) {
+                        response["pattern_matched"] = json!(true);
+                        response["message"] = json!(format!(
+                            "Process started successfully. Pattern matched after {} log lines.",
+                            log_entries.len()
+                        ));
+                    }
+                }
+
                 Ok(response)
             }
             Err(e) => {

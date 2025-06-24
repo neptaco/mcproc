@@ -257,6 +257,10 @@ impl ProcessManager {
         tokio::spawn(async move {
             let reader = BufReader::new(stdout);
             let mut lines = reader.lines();
+            
+            // Buffer to store recent log lines for context
+            let mut log_buffer: Vec<String> = Vec::new();
+            const LOG_BUFFER_SIZE: usize = 20;
 
             // Set up timeout future if we're waiting for a pattern
             let timeout_future = if has_pattern_stdout {
@@ -311,11 +315,11 @@ impl ProcessManager {
                                     error!("Failed to write stdout log for {}: {}", log_key_stdout, e);
                                 }
 
-                                // Send log to stream if provided
-                                if let Some(ref tx_shared) = log_stream_tx_stdout {
-                                    let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
-                                    if let Some(tx) = tx_opt {
-                                        let _ = tx.send(line.clone()).await;
+                                // Add to buffer for context if we're waiting for a pattern
+                                if has_pattern_stdout {
+                                    log_buffer.push(line.clone());
+                                    if log_buffer.len() > LOG_BUFFER_SIZE {
+                                        log_buffer.remove(0);
                                     }
                                 }
 
@@ -332,6 +336,22 @@ impl ProcessManager {
                                         if let Ok(mut matched) = pattern_matched_stdout.lock() {
                                             *matched = true;
                                         }
+                                        
+                                        // Send buffered context lines and the matching line
+                                        if let Some(ref tx_shared) = log_stream_tx_stdout {
+                                            let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
+                                            if let Some(tx) = tx_opt {
+                                                // Send all buffered lines as context
+                                                for buffered_line in &log_buffer {
+                                                    let _ = tx.send(buffered_line.clone()).await;
+                                                }
+                                                // Send the matching line if it's not already in the buffer
+                                                if log_buffer.is_empty() || log_buffer.last() != Some(&line) {
+                                                    let _ = tx.send(line.clone()).await;
+                                                }
+                                            }
+                                        }
+                                        
                                         // Close the log stream channel when pattern matches
                                         // This signals the gRPC stream to stop waiting for logs
                                         if let Some(ref tx_shared) = log_stream_tx_stdout {
@@ -371,6 +391,10 @@ impl ProcessManager {
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
+            
+            // Buffer to store recent log lines for context
+            let mut log_buffer: Vec<String> = Vec::new();
+            const LOG_BUFFER_SIZE: usize = 20;
 
             // Set up timeout future if we're waiting for a pattern
             let timeout_future = if has_pattern_stderr {
@@ -425,11 +449,11 @@ impl ProcessManager {
                     error!("Failed to write stderr log for {}: {}", log_key_stderr, e);
                 }
 
-                // Send log to stream if provided
-                if let Some(ref tx_shared) = log_stream_tx_stderr {
-                    let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
-                    if let Some(tx) = tx_opt {
-                        let _ = tx.send(line.clone()).await;
+                // Add to buffer for context if we're waiting for a pattern
+                if has_pattern_stderr {
+                    log_buffer.push(line.clone());
+                    if log_buffer.len() > LOG_BUFFER_SIZE {
+                        log_buffer.remove(0);
                     }
                 }
 
@@ -446,6 +470,22 @@ impl ProcessManager {
                         if let Ok(mut matched) = pattern_matched_stderr.lock() {
                             *matched = true;
                         }
+                        
+                        // Send buffered context lines and the matching line
+                        if let Some(ref tx_shared) = log_stream_tx_stderr {
+                            let tx_opt = tx_shared.lock().ok().and_then(|guard| guard.clone());
+                            if let Some(tx) = tx_opt {
+                                // Send all buffered lines as context
+                                for buffered_line in &log_buffer {
+                                    let _ = tx.send(buffered_line.clone()).await;
+                                }
+                                // Send the matching line if it's not already in the buffer
+                                if log_buffer.is_empty() || log_buffer.last() != Some(&line) {
+                                    let _ = tx.send(line.clone()).await;
+                                }
+                            }
+                        }
+                        
                         // Close the log stream channel when pattern matches
                         // This signals the gRPC stream to stop waiting for logs
                         if let Some(ref tx_shared) = log_stream_tx_stderr {
