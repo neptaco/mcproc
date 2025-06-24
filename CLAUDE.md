@@ -62,29 +62,45 @@ cargo run --bin mcproc -- <command>  # Run CLI
 
 ### Pre-commit Checklist
 
-Before committing changes, always run these checks to ensure CI passes:
+**🚨 MANDATORY - NEVER commit without completing ALL steps below 🚨**
+
+Run these checks in order. If ANY step fails, STOP and fix before proceeding:
 
 ```bash
-# 1. Format check
+# 1. Format check (MUST pass)
 cargo fmt -- --check
 
-# 2. Clippy (linting) - Include all targets
+# 2. Clippy (linting) - Include all targets (MUST pass with zero warnings)
 cargo clippy --all-targets -- -D warnings
 
-# 3. Build check - Include binaries
+# 3. Build check - Include binaries (MUST compile successfully)
 cargo build --all-targets
 
-# 4. Tests
+# 4. Tests (MUST pass)
 cargo test
 
 # 5. Binary check (ensure mcproc can be installed)
 cargo check --bin mcproc
 
-# 6. Security audit
+# 6. Security audit (review any issues)
 cargo audit
 ```
 
-If any of these fail, fix the issues before committing. This helps maintain code quality and prevents CI failures.
+**Verification command (all-in-one check):**
+```bash
+cargo fmt -- --check && \
+cargo clippy --all-targets -- -D warnings && \
+cargo build --all-targets && \
+cargo test
+```
+
+**Failure Protocol:**
+- If format check fails: Run `cargo fmt` then re-check
+- If clippy fails: Fix ALL warnings before proceeding (no #[allow] without permission)
+- If build fails: Fix compilation errors
+- If tests fail: Fix failing tests
+
+**NO EXCEPTIONS**: Quality gates are mandatory for every commit, regardless of change size.
 
 ## Project Structure
 
@@ -228,3 +244,37 @@ Basic implementation complete. Remaining tasks:
 - **Solution**: Always use `--all-targets` option when building
 - **Reason**: Code under `mcproc/src/cli/` is only compiled during binary builds
 - **Recommendation**: Always run `cargo build --all-targets` after changes to catch errors early
+
+## Code Quality Rules
+
+### Mandatory Pre-commit Process
+**NEVER commit code without running the complete pre-commit checklist.** This is non-negotiable.
+
+1. **Run lint checks immediately after any significant code changes**
+2. **Never skip format/lint checks - even for "small" changes**
+3. **Fix all lint warnings before proceeding with further development**
+
+### Lint Warning Policy
+- **Primary approach**: Fix the root cause of lint warnings through proper refactoring
+- **#[allow] usage**: PROHIBITED without explicit user permission
+- **When #[allow] might be appropriate**:
+  - Generated code (like protobuf) where refactoring is not feasible
+  - Temporary compatibility workarounds with clear timeline for removal
+  - Cases where the lint is demonstrably incorrect for the specific context
+- **Process for #[allow] usage**:
+  1. Attempt proper refactoring first
+  2. Document why refactoring is not feasible
+  3. Request explicit user permission with justification
+  4. Include TODO comment with removal plan if temporary
+
+### Continuous Quality Checks
+Run these checks at key development milestones:
+- After implementing any new function or module
+- Before switching to a different task
+- After resolving any compilation errors
+- Immediately before committing
+
+### Quality-First Development
+- Treat lint warnings as compilation errors
+- Prioritize code quality equally with functionality
+- Never rationalize skipping quality checks due to "time constraints"
