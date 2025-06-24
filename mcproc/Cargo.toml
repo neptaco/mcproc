@@ -79,6 +79,7 @@ colored = "2.2"
 tabled = "0.18"
 async-stream = "0.3"
 prost-types.workspace = true
+strip-ansi-escapes = "0.2.1"
 
 # Platform specific
 [target.'cfg(unix)'.dependencies]

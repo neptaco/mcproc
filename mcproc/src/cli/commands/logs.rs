@@ -4,9 +4,17 @@ use chrono;
 use clap::Args;
 use colored::*;
 use proto::{GetLogsRequest, ListProcessesRequest};
+use strip_ansi_escapes::strip;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
+
+#[derive(Debug, Clone)]
+struct ColorOptions {
+    raw_color: bool,
+    no_color: bool,
+    smart_color: bool,
+}
 
 #[derive(Debug, Args)]
 pub struct LogsCommand {
@@ -24,10 +32,33 @@ pub struct LogsCommand {
     /// Project name (optional, helps disambiguate)
     #[arg(short, long)]
     project: Option<String>,
+
+    /// Show process output colors only (disable mcproc colors)
+    #[arg(long)]
+    raw_color: bool,
+
+    /// Disable all colors
+    #[arg(long)]
+    no_color: bool,
+
+    /// Smart color mode: auto-adjust colors based on process output
+    #[arg(long)]
+    smart_color: bool,
 }
 
 impl LogsCommand {
-    pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(mut self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
+        // Check NO_COLOR environment variable
+        if std::env::var("NO_COLOR").is_ok() {
+            self.no_color = true;
+        }
+        
+        let color_opts = ColorOptions {
+            raw_color: self.raw_color,
+            no_color: self.no_color,
+            smart_color: self.smart_color,
+        };
+        
         // Determine project name if not provided (use current working directory where mcproc is run)
         let project = resolve_project_name_optional(self.project);
 
@@ -48,7 +79,7 @@ impl LogsCommand {
                         Ok(logs_response) => {
                             // Display entries immediately
                             for entry in logs_response.entries {
-                                print_log_entry(&entry);
+                                print_log_entry(&entry, &color_opts);
                             }
                         }
                         Err(e) => {
@@ -117,7 +148,7 @@ impl LogsCommand {
                     // Take only the last N entries
                     let start = all_entries.len().saturating_sub(self.tail as usize);
                     for entry in &all_entries[start..] {
-                        print_log_entry_with_process(entry);
+                        print_log_entry_with_process(entry, &color_opts);
                     }
                 } else {
                     // For follow mode, stream from all processes concurrently
@@ -129,7 +160,7 @@ impl LogsCommand {
                         .unwrap_or(10)
                         .max(10); // Minimum 10 characters
 
-                    stream_multiple_logs(client, processes, project, self.tail, max_name_len)
+                    stream_multiple_logs(client, processes, project, self.tail, max_name_len, &color_opts)
                         .await?;
                 }
             }
@@ -139,7 +170,16 @@ impl LogsCommand {
     }
 }
 
-fn print_log_entry(entry: &proto::LogEntry) {
+fn contains_ansi_escape(text: &str) -> bool {
+    text.contains("\x1b[")
+}
+
+fn strip_ansi_escapes_str(text: &str) -> String {
+    let stripped = strip(text);
+    String::from_utf8_lossy(&stripped).to_string()
+}
+
+fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
     let timestamp = entry
         .timestamp
         .as_ref()
@@ -151,24 +191,41 @@ fn print_log_entry(entry: &proto::LogEntry) {
         })
         .unwrap_or_default();
 
-    let level_indicator = match entry.level {
-        2 => "E".red().bold(),
-        _ => "I".green(),
+    let content = if color_opts.no_color {
+        strip_ansi_escapes_str(&entry.content)
+    } else {
+        entry.content.clone()
     };
 
-    println!(
-        "{} {} {}",
-        timestamp.dimmed(),
-        level_indicator,
-        entry.content
-    );
+    if color_opts.raw_color {
+        // Raw color mode: no mcproc colors, just content
+        println!("{}", content);
+    } else if color_opts.no_color {
+        // No color mode: plain text
+        println!("{} {} {}", timestamp, if entry.level == 2 { "E" } else { "I" }, content);
+    } else if color_opts.smart_color && contains_ansi_escape(&entry.content) {
+        // Smart color mode: minimal mcproc colors when content has colors
+        println!("{} {} {}", timestamp.dimmed(), if entry.level == 2 { "E" } else { "I" }, content);
+    } else {
+        // Default mode: full mcproc colors
+        let level_indicator = match entry.level {
+            2 => "E".red().bold(),
+            _ => "I".green(),
+        };
+        println!(
+            "{} {} {}",
+            timestamp.dimmed(),
+            level_indicator,
+            content
+        );
+    }
 }
 
-fn print_log_entry_with_process(entry: &proto::LogEntry) {
-    print_log_entry_with_process_padded(entry, 10);
+fn print_log_entry_with_process(entry: &proto::LogEntry, color_opts: &ColorOptions) {
+    print_log_entry_with_process_padded(entry, 10, color_opts);
 }
 
-fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: usize) {
+fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: usize, color_opts: &ColorOptions) {
     let timestamp = entry
         .timestamp
         .as_ref()
@@ -180,35 +237,75 @@ fn print_log_entry_with_process_padded(entry: &proto::LogEntry, max_name_len: us
         })
         .unwrap_or_default();
 
-    let level_indicator = match entry.level {
-        2 => "E".red().bold(),
-        _ => "I".green(),
-    };
-
-    // Color code process names
     let process_name = entry.process_name.as_deref().unwrap_or("unknown");
-
-    // Pad the process name to align columns
     let padded_name = format!("{:width$}", process_name, width = max_name_len);
-    let colored_padded_name = match process_name
-        .chars()
-        .fold(0u8, |acc, c| acc.wrapping_add(c as u8))
-        % 5
-    {
-        0 => padded_name.green(),
-        1 => padded_name.blue(),
-        2 => padded_name.cyan(),
-        3 => padded_name.magenta(),
-        _ => padded_name.bright_blue(),
+    
+    let content = if color_opts.no_color {
+        strip_ansi_escapes_str(&entry.content)
+    } else {
+        entry.content.clone()
     };
 
-    println!(
-        "{} {} | {} {}",
-        timestamp.dimmed(),
-        colored_padded_name.bold(),
-        level_indicator,
-        entry.content
-    );
+    if color_opts.raw_color {
+        // Raw color mode: minimal formatting, preserve content colors
+        println!("{} {} | {}", timestamp, padded_name, content);
+    } else if color_opts.no_color {
+        // No color mode: plain text
+        println!(
+            "{} {} | {} {}",
+            timestamp,
+            padded_name,
+            if entry.level == 2 { "E" } else { "I" },
+            content
+        );
+    } else if color_opts.smart_color && contains_ansi_escape(&entry.content) {
+        // Smart color mode: reduced mcproc colors when content has colors
+        let colored_padded_name = match process_name
+            .chars()
+            .fold(0u8, |acc, c| acc.wrapping_add(c as u8))
+            % 5
+        {
+            0 => padded_name.green(),
+            1 => padded_name.blue(),
+            2 => padded_name.cyan(),
+            3 => padded_name.magenta(),
+            _ => padded_name.bright_blue(),
+        };
+        
+        println!(
+            "{} {} | {} {}",
+            timestamp.dimmed(),
+            colored_padded_name,
+            if entry.level == 2 { "E" } else { "I" },
+            content
+        );
+    } else {
+        // Default mode: full mcproc colors
+        let level_indicator = match entry.level {
+            2 => "E".red().bold(),
+            _ => "I".green(),
+        };
+
+        let colored_padded_name = match process_name
+            .chars()
+            .fold(0u8, |acc, c| acc.wrapping_add(c as u8))
+            % 5
+        {
+            0 => padded_name.green(),
+            1 => padded_name.blue(),
+            2 => padded_name.cyan(),
+            3 => padded_name.magenta(),
+            _ => padded_name.bright_blue(),
+        };
+
+        println!(
+            "{} {} | {} {}",
+            timestamp.dimmed(),
+            colored_padded_name.bold(),
+            level_indicator,
+            content
+        );
+    }
 }
 
 async fn stream_multiple_logs(
@@ -217,6 +314,7 @@ async fn stream_multiple_logs(
     project: Option<String>,
     tail: u32,
     max_name_len: usize,
+    color_opts: &ColorOptions,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::collections::HashSet;
     use std::sync::{Arc, Mutex};
@@ -356,7 +454,7 @@ async fn stream_multiple_logs(
     let shared_max_name_len_print = shared_max_name_len.clone();
     while let Some(entry) = rx.recv().await {
         let current_max_len = *shared_max_name_len_print.lock().unwrap();
-        print_log_entry_with_process_padded(&entry, current_max_len);
+        print_log_entry_with_process_padded(&entry, current_max_len, color_opts);
     }
 
     // Wait for all tasks to complete
