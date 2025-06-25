@@ -54,7 +54,7 @@ impl ToolHandler for StartTool {
                         "items": { "type": "string" },
                         "description": "Command and arguments as an array for direct execution without shell interpretation. Safer than 'cmd' for user input. Examples: ['npm', 'run', 'dev'], ['python', '-m', 'http.server', '8000']. Choose either 'cmd' or 'args', not both."
                     },
-                    "cwd": { "type": "string", "description": "Working directory path (defaults to current directory)" },
+                    "cwd": { "type": "string", "description": "Working directory path. Absolute paths are recommended for clarity and consistency. Defaults to current directory if not specified." },
                     "project": { "type": "string", "description": "Project name (defaults to directory name)" },
                     "env": { 
                         "type": "object", 
@@ -63,7 +63,7 @@ impl ToolHandler for StartTool {
                     },
                     "wait_for_log": { 
                         "type": "string", 
-                        "description": "Optional regex pattern to wait for in the process output before considering it ready. Useful for servers that take time to start. Examples: 'Server running on', 'Compiled successfully', 'Ready on http://'. The tool will wait up to wait_timeout seconds." 
+                        "description": "Optional regex pattern to wait for in the process output before considering it ready. Useful for servers that take time to start. For best results, use patterns that indicate the bound address (e.g., 'Local:\\s+http://', 'Listening on', 'Server running at'). Common examples: Next.js: 'Local:', Vite: 'Local:', Express: 'listening on', Python http.server: 'Serving HTTP on', .NET: 'Now listening on'. The tool will wait up to wait_timeout seconds." 
                     },
                     "wait_timeout": { 
                         "type": "integer", 
