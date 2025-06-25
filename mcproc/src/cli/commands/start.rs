@@ -40,6 +40,10 @@ pub struct StartCommand {
     /// Timeout for log wait in seconds (default: 30)
     #[arg(long, default_value = "30")]
     wait_timeout: u32,
+
+    /// Version management tool (mise, asdf, nvm, rbenv, pyenv, etc.)
+    #[arg(long)]
+    toolchain: Option<String>,
 }
 
 impl StartCommand {
@@ -73,6 +77,7 @@ impl StartCommand {
             wait_for_log: self.wait_for_log.clone(),
             wait_timeout: Some(self.wait_timeout),
             force_restart: None,
+            toolchain: self.toolchain,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup

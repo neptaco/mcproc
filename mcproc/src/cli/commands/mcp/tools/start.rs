@@ -36,6 +36,8 @@ struct StartParams {
     wait_timeout: Option<u32>,
     #[serde(default)]
     force_restart: Option<bool>,
+    #[serde(default)]
+    toolchain: Option<String>,
 }
 
 #[async_trait]
@@ -43,7 +45,7 @@ impl ToolHandler for StartTool {
     fn tool_info(&self) -> ToolInfo {
         ToolInfo {
             name: "start_process".to_string(),
-            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.\n\nNOTE: Processes are NOT connected to a TTY, so many tools disable colored output by default. To enable colors:\n- For npm/yarn/pnpm: Add --color or --color=always flag (e.g., 'npm run dev --color')\n- For cargo: Set CARGO_TERM_COLOR=always in env parameter\n- For other tools: Check their documentation for color flags or use env parameter to set FORCE_COLOR=1".to_string(),
+            description: "Start and manage a long-running development process (web servers, build watchers, etc). The process will continue running in the background and can be monitored/controlled later. Use this for commands like 'npm run dev', 'python app.py', 'cargo watch', etc. Each process needs a unique name for identification. Use force_restart=true to automatically stop and restart an existing process with the same name, which is useful when you're unsure if the process is already running.\n\nNOTE: Processes are NOT connected to a TTY, so many tools disable colored output by default. To enable colors:\n- For npm/yarn/pnpm: Add --color or --color=always flag (e.g., 'npm run dev --color')\n- For cargo: Set CARGO_TERM_COLOR=always in env parameter\n- For other tools: Check their documentation for color flags or use env parameter to set FORCE_COLOR=1\n\nTOOLCHAIN SUPPORT: If you're using version management tools like mise, asdf, nvm, etc., specify the toolchain parameter to ensure proper path resolution. The command will be executed through the specified tool (e.g., 'mise exec -- <command>' for mise).".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -72,6 +74,10 @@ impl ToolHandler for StartTool {
                     "force_restart": { 
                         "type": "boolean", 
                         "description": "If true, automatically stop any existing process with the same name before starting. This prevents 'already running' errors and ensures a fresh start. Useful when the LLM agent isn't sure if a process is running or when you want to guarantee a clean restart. (default: false)" 
+                    },
+                    "toolchain": { 
+                        "type": "string", 
+                        "description": format!("Version management tool to use for executing the command. Supported tools: {}. When specified, the command will be executed through the tool (e.g., 'mise exec -- <command>'). This ensures proper PATH resolution for tool-managed environments.", crate::daemon::process::toolchain::Toolchain::all_supported())
                     }
                 },
                 "required": ["name"]
@@ -133,6 +139,7 @@ impl ToolHandler for StartTool {
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
             force_restart: params.force_restart,
+            toolchain: params.toolchain,
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup

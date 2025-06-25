@@ -58,6 +58,7 @@ impl ProcessManager {
         env: Option<HashMap<String, String>>,
         wait_for_log: Option<String>,
         wait_timeout: Option<u32>,
+        toolchain: Option<String>,
     ) -> Result<(Arc<ProxyInfo>, bool, bool, Vec<String>, Option<String>)> {
         let project = project.unwrap_or_else(|| {
             cwd.as_ref()
@@ -97,14 +98,15 @@ impl ProcessManager {
         // Launch the process
         let (mut child, process_key) = self
             .launcher
-            .launch_process(
-                name.clone(),
-                project.clone(),
-                cmd.clone(),
-                args.clone(),
-                cwd.clone(),
-                env.clone(),
-            )
+            .launch_process(crate::daemon::process::launcher::LaunchProcessParams {
+                name: name.clone(),
+                project: project.clone(),
+                cmd: cmd.clone(),
+                args: args.clone(),
+                cwd: cwd.clone(),
+                env: env.clone(),
+                toolchain: toolchain.clone(),
+            })
             .await?;
 
         let pid = child.id().ok_or_else(|| McprocdError::ProcessSpawnFailed {
@@ -123,6 +125,7 @@ impl ProcessManager {
                 env,
                 wait_for_log: wait_for_log.clone(),
                 wait_timeout,
+                toolchain,
                 pid,
             },
         );
@@ -467,6 +470,7 @@ impl ProcessManager {
             // Use override values if provided, otherwise use saved values
             let wait_for_log = override_wait_for_log.or(process.wait_for_log.clone());
             let wait_timeout = override_wait_timeout.or(process.wait_timeout);
+            let toolchain = process.toolchain.clone();
             drop(process);
 
             self.stop_process(name_or_id, Some(&project), false).await?;
@@ -486,6 +490,7 @@ impl ProcessManager {
                 env,
                 wait_for_log,
                 wait_timeout,
+                toolchain,
             )
             .await
         } else {

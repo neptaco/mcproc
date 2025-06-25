@@ -46,6 +46,7 @@ message StartProcessRequest {
   optional string wait_for_log = 7;  // Wait for this log pattern before considering the process ready (regex)
   optional uint32 wait_timeout = 8;  // Timeout for log wait in seconds (default: 30)
   optional bool force_restart = 9;  // If true, restart existing process with same name
+  optional string toolchain = 10;  // Version management tool (e.g., "mise", "asdf", "nvm", "rbenv", "pyenv", "nodenv", "jenv", "tfenv", "goenv", "rustup")
 }
 
 message StopProcessRequest {

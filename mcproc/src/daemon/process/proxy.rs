@@ -74,6 +74,8 @@ pub struct ProxyInfo {
     pub wait_for_log: Option<String>,
     /// Timeout in seconds for wait_for_log pattern
     pub wait_timeout: Option<u32>,
+    /// Version management tool (mise, asdf, nvm, etc.)
+    pub toolchain: Option<String>,
     /// Process start time
     pub start_time: DateTime<Utc>,
     /// Current process status (atomic for thread-safe updates)
@@ -108,6 +110,7 @@ impl ProxyInfo {
             env: params.env,
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
+            toolchain: params.toolchain,
             start_time: Utc::now(),
             status: Arc::new(AtomicU8::new(ProcessStatus::Starting as u8)),
             ring: Arc::new(Mutex::new(HeapRb::new(params.ring_buffer_size))),

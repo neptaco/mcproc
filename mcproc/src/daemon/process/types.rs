@@ -12,6 +12,7 @@ pub struct ProxyInfoParams {
     pub env: Option<HashMap<String, String>>,
     pub wait_for_log: Option<String>,
     pub wait_timeout: Option<u32>,
+    pub toolchain: Option<String>,
     pub pid: u32,
     pub ring_buffer_size: usize,
 }

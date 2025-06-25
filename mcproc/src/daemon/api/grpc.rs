@@ -112,6 +112,7 @@ impl ProcessManagerService for GrpcService {
                 Some(req.env),
                 wait_for_log.clone(),
                 wait_timeout,
+                req.toolchain,
             ).await {
                 Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
                     // We no longer stream logs during startup
