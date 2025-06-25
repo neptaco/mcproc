@@ -1,0 +1,76 @@
+version: '3'
+
+tasks:
+  install:
+    desc: Install mcproc binary
+    cmds:
+      - cargo install --path mcproc
+
+  debug:
+    desc: Install and restart daemon with debug logging
+    cmds:
+      - task: install
+      - RUST_LOG=mcproc=debug mcproc daemon restart
+
+  daemon:start:
+    desc: Start daemon
+    cmds:
+      - mcproc daemon start
+
+  daemon:stop:
+    desc: Stop daemon
+    cmds:
+      - mcproc daemon stop
+
+  daemon:restart:
+    desc: Restart daemon
+    cmds:
+      - mcproc daemon restart
+
+  daemon:status:
+    desc: Show daemon status
+    cmds:
+      - mcproc daemon status
+
+  daemon:logs:
+    desc: Show daemon logs
+    cmds:
+      - tail -f ~/.local/state/mcproc/log/mcprocd.log
+
+  build:
+    desc: Build all targets
+    cmds:
+      - cargo build --all-targets
+
+  test:
+    desc: Run tests
+    cmds:
+      - cargo test
+
+  clippy:
+    desc: Run clippy
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  fmt:
+    desc: Format code
+    cmds:
+      - cargo fmt
+
+  check:
+    desc: Run all checks (format, clippy, build, test)
+    cmds:
+      - task: fmt
+      - task: clippy
+      - task: build
+      - task: test
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - cargo clean
+
+  release:
+    desc: Build release version
+    cmds:
+      - cargo build --release --all-targets
