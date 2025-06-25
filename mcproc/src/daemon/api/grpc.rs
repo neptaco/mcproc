@@ -3,6 +3,7 @@ use crate::common::exit_code::format_exit_reason;
 use crate::common::version::VERSION;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
+use crate::daemon::stream::{SharedStreamEventHub, StreamEvent, StreamFilter};
 use chrono::Utc;
 use proto::process_manager_server::{
     ProcessManager as ProcessManagerService, ProcessManagerServer,
@@ -13,13 +14,14 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::Stream;
 use tonic::{transport::Server, Request, Response, Status};
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 pub struct GrpcService {
     process_manager: Arc<ProcessManager>,
     log_hub: Arc<LogHub>,
     config: Arc<Config>,
+    event_hub: SharedStreamEventHub,
     start_time: chrono::DateTime<Utc>,
 }
 
@@ -28,11 +30,13 @@ impl GrpcService {
         process_manager: Arc<ProcessManager>,
         log_hub: Arc<LogHub>,
         config: Arc<Config>,
+        event_hub: SharedStreamEventHub,
     ) -> Self {
         Self {
             process_manager,
             log_hub,
             config,
+            event_hub,
             start_time: Utc::now(),
         }
     }
@@ -112,6 +116,14 @@ impl ProcessManagerService for GrpcService {
                 Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
                     // We no longer stream logs during startup
                     // Log context is now included in ProcessInfo
+                    
+                    // Debug log to verify we have log context
+                    debug!(
+                        "gRPC start_process - process: {}, log_context: {} lines, matched_line: {}",
+                        process.name,
+                        log_context.len(),
+                        matched_line.is_some()
+                    );
 
                     // Send final process info
                     let current_status = process.get_status();
@@ -480,168 +492,223 @@ impl ProcessManagerService for GrpcService {
     ) -> Result<Response<Self::GetLogsStream>, Status> {
         let req = request.into_inner();
 
-        // Construct the log file path
         let project = req.project.clone();
-
-        // Use project-based directory structure
-        let log_file = self
-            .log_hub
-            .config
-            .paths
-            .log_dir
-            .join(&project)
-            .join(format!("{}.log", req.name));
-
-        if !log_file.exists() {
-            return Err(Status::not_found(format!(
-                "Log file not found: {}",
-                log_file.display()
-            )));
-        }
-
+        let process_names = req.process_names.clone();
         let tail = req.tail.unwrap_or(100) as usize;
         let follow = req.follow.unwrap_or(false);
+        let include_events = req.include_events.unwrap_or(false);
 
-        // Get process for follow mode status check (optional)
-        let _process = self
-            .process_manager
-            .get_process_by_name_or_id_with_project(&req.name, Some(req.project.as_str()));
+        // Log the request details for debugging
+        info!(
+            "get_logs request: project={}, process_names={:?}, tail={}, follow={}, include_events={}",
+            project, process_names, tail, follow, include_events
+        );
 
-        // Get config value before the stream
-        let follow_poll_interval_ms = self.config.logging.follow_poll_interval_ms;
+        // Create filter based on request
+        let filter = StreamFilter {
+            project: Some(project.clone()),
+            process_names: process_names.clone(),
+            include_events,
+        };
 
-        // Create stream from log file
+        // Subscribe to event hub
+        let mut event_receiver = self.event_hub.subscribe();
+        
+        // For tail functionality, read existing logs from files first
+        let log_hub = self.log_hub.clone();
+        let process_manager = self.process_manager.clone();
+
+        // Create stream
         let stream = async_stream::try_stream! {
             use tokio::io::{AsyncBufReadExt, BufReader};
             use tokio::fs::File;
-
-            let file = File::open(&log_file).await
-                .map_err(|e| Status::internal(format!("Failed to open log file: {}", e)))?;
-
-            let reader = BufReader::new(file);
-            let mut lines = reader.lines();
-            let mut all_lines = Vec::new();
-
-            // Read all existing lines first
-            while let Ok(Some(line)) = lines.next_line().await {
-                all_lines.push(line);
-            }
-
-            // Get the tail
-            let start_idx = if follow {
-                // If follow mode, show all lines initially or tail amount
-                all_lines.len().saturating_sub(tail)
-            } else {
-                all_lines.len().saturating_sub(tail)
-            };
-
-            let mut entries = Vec::new();
-            let mut line_num = start_idx as u32;
-
-            // Send initial lines
-            for line in &all_lines[start_idx..] {
-                line_num += 1;
-
-                // Parse log line
-                let (timestamp, level, content) = parse_log_line(line);
-
-                entries.push(LogEntry {
-                    line_number: line_num,
-                    content,
-                    timestamp,
-                    level: level as i32,
-                    process_name: None,
-                });
-
-                // Send batch of entries
-                if entries.len() >= 100 {
-                    yield GetLogsResponse {
-                        entries: std::mem::take(&mut entries),
+            use crate::common::process_key::ProcessKey;
+            
+            // First, send existing logs if tail is requested
+            if tail > 0 {
+                info!("Reading tail logs (tail={})", tail);
+                // Get list of processes matching the filter
+                let processes = process_manager.list_processes();
+                info!("Found {} total processes", processes.len());
+                let matching_processes: Vec<_> = processes
+                    .into_iter()
+                    .filter(|p| filter.matches_process(&p.project, &p.name))
+                    .collect();
+                info!("Found {} matching processes", matching_processes.len());
+                
+                // Read tail lines from each matching process's log file
+                for process_info in matching_processes {
+                    let key = ProcessKey {
+                        name: process_info.name.clone(),
+                        project: process_info.project.clone(),
                     };
+                    let log_file = log_hub.get_log_file_path_for_key(&key);
+                    
+                    if log_file.exists() {
+                        match File::open(&log_file).await {
+                            Ok(file) => {
+                                let reader = BufReader::new(file);
+                                let mut lines = reader.lines();
+                                let mut all_lines = Vec::new();
+                                
+                                // Read all lines
+                                while let Ok(Some(line)) = lines.next_line().await {
+                                    all_lines.push(line);
+                                }
+                                
+                                // Get tail lines
+                                let start_idx = all_lines.len().saturating_sub(tail);
+                                let mut line_num = start_idx as u32;
+                                
+                                for line in &all_lines[start_idx..] {
+                                    line_num += 1;
+                                    let (timestamp, level, content) = parse_log_line(line);
+                                    
+                                    let log_entry = LogEntry {
+                                        line_number: line_num,
+                                        content,
+                                        timestamp,
+                                        level: level as i32,
+                                        process_name: Some(process_info.name.clone()),
+                                    };
+                                    
+                                    yield GetLogsResponse {
+                                        content: Some(proto::get_logs_response::Content::LogEntry(log_entry)),
+                                    };
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to open log file for {}/{}: {}", 
+                                    process_info.project, process_info.name, e);
+                            }
+                        }
+                    }
                 }
             }
-
-            // Send remaining entries
-            if !entries.is_empty() {
-                yield GetLogsResponse { entries };
-            }
-
-            // Follow mode: continue reading new lines
+            
+            // If follow mode, subscribe to event hub for new logs
             if follow {
-                use tokio::io::{AsyncSeekExt, SeekFrom};
-                use std::fs;
-
-                let mut last_size = all_lines.len();
-                let mut file_reopened = false;
-
-                // Re-open file for continuous reading
-                let mut file = File::open(&log_file).await
-                    .map_err(|e| Status::internal(format!("Failed to reopen log file: {}", e)))?;
-
-                // Seek to end of file
-                file.seek(SeekFrom::End(0)).await
-                    .map_err(|e| Status::internal(format!("Failed to seek to end: {}", e)))?;
-
-                let mut reader = BufReader::new(file);
-                let mut lines = reader.lines();
-                line_num = all_lines.len() as u32;
-
+                info!("Starting follow mode for filter: project={:?}, process_names={:?}", 
+                    filter.project, filter.process_names);
                 loop {
-                    match lines.next_line().await {
-                        Ok(Some(line)) => {
-                            line_num += 1;
-                            let (timestamp, level, content) = parse_log_line(&line);
-
-                            yield GetLogsResponse {
-                                entries: vec![LogEntry {
-                                    line_number: line_num,
-                                    content,
-                                    timestamp,
-                                    level: level as i32,
-                                    process_name: None,
-                                }],
-                            };
-                        }
-                        Ok(None) => {
-                            // No more lines, wait and check for new content
-                            tokio::time::sleep(tokio::time::Duration::from_millis(follow_poll_interval_ms)).await;
-
-                            // Check if the file has been recreated (e.g., after process restart)
-                            if let Ok(metadata) = fs::metadata(&log_file) {
-                                let current_size = metadata.len() as usize;
-
-                                // If file is smaller or we've had read errors, it might have been recreated
-                                if current_size < last_size || file_reopened {
-                                    // Re-open the file
-                                    match File::open(&log_file).await {
-                                        Ok(new_file) => {
-                                            let mut new_file = new_file;
-                                            // For a recreated file, start from beginning
-                                            new_file.seek(SeekFrom::Start(0)).await
-                                                .map_err(|e| Status::internal(format!("Failed to seek: {}", e)))?;
-
-                                            reader = BufReader::new(new_file);
-                                            lines = reader.lines();
-                                            file_reopened = false;
-                                            // Note: line_num continues incrementing
+                    tokio::select! {
+                        event = event_receiver.recv() => {
+                            match event {
+                                Ok(stream_event) => {
+                                    // Check if event matches filter
+                                    if !filter.matches(&stream_event) {
+                                        continue;
+                                    }
+                                    debug!("Received matching event: {:?}", stream_event);
+                                    
+                                    match stream_event {
+                                        StreamEvent::Log { process_name, entry, .. } => {
+                                            // Set process_name in log entry
+                                            let mut log_entry = entry;
+                                            log_entry.process_name = Some(process_name);
+                                            
+                                            yield GetLogsResponse {
+                                                content: Some(proto::get_logs_response::Content::LogEntry(log_entry)),
+                                            };
                                         }
-                                        Err(_) => {
-                                            // File might be temporarily unavailable during rotation
-                                            file_reopened = true;
+                                        StreamEvent::Process(event) => {
+                                            if include_events {
+                                                // Convert ProcessEvent to ProcessLifecycleEvent
+                                                let lifecycle_event = match event {
+                                                    crate::daemon::process::event::ProcessEvent::Starting { process_id, name, project } => {
+                                                        ProcessLifecycleEvent {
+                                                            event_type: proto::process_lifecycle_event::EventType::Starting as i32,
+                                                            process_id,
+                                                            name,
+                                                            project,
+                                                            pid: None,
+                                                            exit_code: None,
+                                                            error: None,
+                                                            timestamp: Some(prost_types::Timestamp {
+                                                                seconds: chrono::Utc::now().timestamp(),
+                                                                nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                                            }),
+                                                        }
+                                                    }
+                                                    crate::daemon::process::event::ProcessEvent::Started { process_id, name, project, pid } => {
+                                                        ProcessLifecycleEvent {
+                                                            event_type: proto::process_lifecycle_event::EventType::Started as i32,
+                                                            process_id,
+                                                            name,
+                                                            project,
+                                                            pid: Some(pid),
+                                                            exit_code: None,
+                                                            error: None,
+                                                            timestamp: Some(prost_types::Timestamp {
+                                                                seconds: chrono::Utc::now().timestamp(),
+                                                                nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                                            }),
+                                                        }
+                                                    }
+                                                    crate::daemon::process::event::ProcessEvent::Stopping { process_id, name, project } => {
+                                                        ProcessLifecycleEvent {
+                                                            event_type: proto::process_lifecycle_event::EventType::Stopping as i32,
+                                                            process_id,
+                                                            name,
+                                                            project,
+                                                            pid: None,
+                                                            exit_code: None,
+                                                            error: None,
+                                                            timestamp: Some(prost_types::Timestamp {
+                                                                seconds: chrono::Utc::now().timestamp(),
+                                                                nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                                            }),
+                                                        }
+                                                    }
+                                                    crate::daemon::process::event::ProcessEvent::Stopped { process_id, name, project, exit_code } => {
+                                                        ProcessLifecycleEvent {
+                                                            event_type: proto::process_lifecycle_event::EventType::Stopped as i32,
+                                                            process_id,
+                                                            name,
+                                                            project,
+                                                            pid: None,
+                                                            exit_code,
+                                                            error: None,
+                                                            timestamp: Some(prost_types::Timestamp {
+                                                                seconds: chrono::Utc::now().timestamp(),
+                                                                nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                                            }),
+                                                        }
+                                                    }
+                                                    crate::daemon::process::event::ProcessEvent::Failed { process_id, name, project, error } => {
+                                                        ProcessLifecycleEvent {
+                                                            event_type: proto::process_lifecycle_event::EventType::Failed as i32,
+                                                            process_id,
+                                                            name,
+                                                            project,
+                                                            pid: None,
+                                                            exit_code: None,
+                                                            error: Some(error),
+                                                            timestamp: Some(prost_types::Timestamp {
+                                                                seconds: chrono::Utc::now().timestamp(),
+                                                                nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                                            }),
+                                                        }
+                                                    }
+                                                };
+                                                
+                                                yield GetLogsResponse {
+                                                    content: Some(proto::get_logs_response::Content::Event(lifecycle_event)),
+                                                };
+                                            }
                                         }
                                     }
                                 }
-                                last_size = current_size;
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                                    // We missed some events due to lag
+                                    error!("Event receiver lagged by {} events", count);
+                                    // Continue processing
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                    // Event hub closed, exit
+                                    break;
+                                }
                             }
-
-                            // Continue following the file regardless of process status
-                            // This allows us to see logs even after restart
-                        }
-                        Err(e) => {
-                            // Handle read errors gracefully - file might be rotating
-                            eprintln!("Error reading log file (will retry): {}", e);
-                            tokio::time::sleep(tokio::time::Duration::from_millis(follow_poll_interval_ms)).await;
-                            file_reopened = true;
                         }
                     }
                 }
@@ -1012,8 +1079,9 @@ pub async fn start_grpc_server(
     config: Arc<Config>,
     process_manager: Arc<ProcessManager>,
     log_hub: Arc<LogHub>,
+    event_hub: SharedStreamEventHub,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service = GrpcService::new(process_manager, log_hub, config.clone());
+    let service = GrpcService::new(process_manager, log_hub, config.clone(), event_hub);
 
     // Remove old socket file if it exists
     if config.paths.socket_path.exists() {

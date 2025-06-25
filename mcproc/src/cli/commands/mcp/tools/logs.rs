@@ -61,10 +61,11 @@ impl ToolHandler for LogsTool {
         // Use gRPC get_logs method instead of direct file access
         let mut client = self.client.clone();
         let request = proto::GetLogsRequest {
-            name: params.name.clone(),
+            process_names: vec![params.name.clone()],
             tail: params.tail,
             follow: Some(false),
             project,
+            include_events: Some(false),
         };
 
         let mut stream = client
@@ -80,37 +81,44 @@ impl ToolHandler for LogsTool {
         while let Some(response) = stream.next().await {
             match response {
                 Ok(logs_response) => {
-                    for entry in logs_response.entries {
-                        // Format log entry similar to the CLI output
-                        let timestamp = entry
-                            .timestamp
-                            .as_ref()
-                            .map(|ts| {
-                                let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                                    ts.seconds,
-                                    ts.nanos as u32,
-                                )
-                                .unwrap_or_else(chrono::Utc::now);
-                                dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                            })
-                            .unwrap_or_else(|| "".to_string());
+                    if let Some(content) = logs_response.content {
+                        match content {
+                            proto::get_logs_response::Content::LogEntry(entry) => {
+                                // Format log entry similar to the CLI output
+                                let timestamp = entry
+                                    .timestamp
+                                    .as_ref()
+                                    .map(|ts| {
+                                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                                            ts.seconds,
+                                            ts.nanos as u32,
+                                        )
+                                        .unwrap_or_else(chrono::Utc::now);
+                                        dt.format("%Y-%m-%d %H:%M:%S").to_string()
+                                    })
+                                    .unwrap_or_else(|| "".to_string());
 
-                        let level = match entry.level {
-                            2 => "E",
-                            _ => "I",
-                        };
+                                let level = match entry.level {
+                                    2 => "E",
+                                    _ => "I",
+                                };
 
-                        // Strip ANSI escape codes from content for MCP output
-                        let content =
-                            String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
+                                // Strip ANSI escape codes from content for MCP output
+                                let content =
+                                    String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
 
-                        let formatted = if timestamp.is_empty() {
-                            format!("{} {}", level, content)
-                        } else {
-                            format!("{} {} {}", timestamp, level, content)
-                        };
+                                let formatted = if timestamp.is_empty() {
+                                    format!("{} {}", level, content)
+                                } else {
+                                    format!("{} {} {}", timestamp, level, content)
+                                };
 
-                        all_logs.push(formatted);
+                                all_logs.push(formatted);
+                            }
+                            proto::get_logs_response::Content::Event(_) => {
+                                // Ignore events in logs MCP tool
+                            }
+                        }
                     }
                 }
                 Err(e) => {

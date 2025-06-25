@@ -8,6 +8,7 @@ use crate::daemon::process::log_stream::LogStreamConfig;
 use crate::daemon::process::port_detector;
 use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use crate::daemon::process::registry::ProcessRegistry;
+use crate::daemon::stream::{SharedStreamEventHub, StreamEvent};
 use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,16 +21,30 @@ pub struct ProcessManager {
     config: Arc<Config>,
     log_hub: Arc<LogHub>,
     launcher: ProcessLauncher,
+    event_hub: Option<SharedStreamEventHub>,
 }
 
 impl ProcessManager {
-    pub fn new(config: Arc<Config>, log_hub: Arc<LogHub>) -> Self {
+
+    pub fn with_event_hub(
+        config: Arc<Config>,
+        log_hub: Arc<LogHub>,
+        event_hub: SharedStreamEventHub,
+    ) -> Self {
         let launcher = ProcessLauncher::new(config.clone());
         Self {
             registry: ProcessRegistry::new(),
             config,
             log_hub,
             launcher,
+            event_hub: Some(event_hub),
+        }
+    }
+
+    /// Publish a process event to the event hub
+    fn publish_process_event(&self, event: crate::daemon::process::event::ProcessEvent) {
+        if let Some(ref event_hub) = self.event_hub {
+            event_hub.publish(StreamEvent::Process(event));
         }
     }
 
@@ -116,6 +131,13 @@ impl ProcessManager {
         // Add to registry
         self.registry.add_process(proxy_arc.clone());
 
+        // Publish Starting event
+        self.publish_process_event(crate::daemon::process::event::ProcessEvent::Starting {
+            process_id: proxy_arc.id.clone(),
+            name: name.clone(),
+            project: project.clone(),
+        });
+
         // Log the start event with color (green for starting)
         let start_msg = format!(
             "{} Starting process '{}' (PID: {})\n",
@@ -177,6 +199,8 @@ impl ProcessManager {
         let monitor_key = process_key.clone();
         let monitor_log_hub = self.log_hub.clone();
         let monitor_registry = self.registry.clone();
+        let monitor_event_hub = self.event_hub.clone();
+        let monitor_project = project.clone();
 
         tokio::spawn(async move {
             match child.wait().await {
@@ -198,6 +222,18 @@ impl ProcessManager {
                         None => monitor_proxy.set_status(ProcessStatus::Failed), // Terminated by signal
                     }
 
+                    // Publish Stopped event
+                    if let Some(ref event_hub) = monitor_event_hub {
+                        event_hub.publish(StreamEvent::Process(
+                            crate::daemon::process::event::ProcessEvent::Stopped {
+                                process_id: monitor_proxy.id.clone(),
+                                name: monitor_name.clone(),
+                                project: monitor_project.clone(),
+                                exit_code,
+                            }
+                        ));
+                    }
+
                     let exit_msg = ExitHandler::format_exit_message(&monitor_name, exit_code);
                     info!("{}", exit_msg);
 
@@ -216,11 +252,23 @@ impl ProcessManager {
                 Err(e) => {
                     error!("Failed to wait for process {}: {}", monitor_name, e);
                     monitor_proxy.set_status(ProcessStatus::Failed);
+
+                    // Publish Failed event
+                    if let Some(ref event_hub) = monitor_event_hub {
+                        event_hub.publish(StreamEvent::Process(
+                            crate::daemon::process::event::ProcessEvent::Failed {
+                                process_id: monitor_proxy.id.clone(),
+                                name: monitor_name.clone(),
+                                project: monitor_project.clone(),
+                                error: e.to_string(),
+                            }
+                        ));
+                    }
                 }
             }
 
             // Clean up: close log file and remove from registry
-            monitor_log_hub.close_log_for_key(&monitor_key).await;
+            let _ = monitor_log_hub.close_log_for_key(&monitor_key).await;
             monitor_registry.remove_process(&monitor_proxy.id);
         });
 
@@ -279,8 +327,21 @@ impl ProcessManager {
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
 
-        // Ensure we have the latest process status before returning
+        // Always sync process status to ensure accuracy
+        // This is critical for detecting processes that exit immediately (e.g., "command not found")
         self.sync_process_status(&proxy_arc, &name).await;
+        
+        // Check final status and publish appropriate event
+        let current_status = proxy_arc.get_status();
+        if matches!(current_status, ProcessStatus::Running) {
+            // Publish Started event only if actually running
+            self.publish_process_event(crate::daemon::process::event::ProcessEvent::Started {
+                process_id: proxy_arc.id.clone(),
+                name: name.clone(),
+                project: project.clone(),
+                pid,
+            });
+        }
 
         let status = proxy_arc.get_status();
         match status {
@@ -299,6 +360,14 @@ impl ProcessManager {
             .unwrap_or_default();
 
         let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
+        
+        // Debug log to check what we're returning
+        debug!(
+            "Process {} - log_context: {} lines, matched_line: {}",
+            name,
+            collected_log_context.len(),
+            collected_matched_line.is_some()
+        );
 
         Ok((
             proxy_arc,
@@ -328,6 +397,13 @@ impl ProcessManager {
 
         info!("Stopping process {} in project {}", name, project);
 
+        // Publish Stopping event
+        self.publish_process_event(crate::daemon::process::event::ProcessEvent::Stopping {
+            process_id: process.id.clone(),
+            name: name.clone(),
+            project: project.clone(),
+        });
+
         // Log the stop event with color (yellow for stopping)
         let log_msg = format!(
             "{} Stopping process {}\n",
@@ -347,8 +423,25 @@ impl ProcessManager {
         // Remove from registry
         self.registry.remove_process(&process.id);
 
-        // Wait a bit for graceful shutdown
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Close log file to ensure all data is flushed
+        if let Err(e) = self.log_hub.close_log_for_key(&process_key).await {
+            error!("Failed to close log file for {}/{}: {}", project, name, e);
+        }
+
+        // Log the stopped event with color (red for stopped)
+        let log_msg = format!("{} Process stopped\n", "[mcproc]".red().bold());
+        // Write to a new log entry after reopening (if process restarts)
+        if let Err(e) = self
+            .log_hub
+            .append_log_for_key(&process_key, log_msg.as_bytes(), true)
+            .await
+        {
+            // This is expected if the file was closed, so just log at debug level
+            debug!("Could not write final stop log (expected): {}", e);
+        }
+
+        // Wait a bit for graceful shutdown and log flushing
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
         info!("Stopped process {} in project {}", name, project);
         Ok(())
@@ -460,17 +553,23 @@ impl ProcessManager {
     /// Synchronize process status with actual process state
     /// This is critical to ensure we report accurate status to MCP
     async fn sync_process_status(&self, proxy: &Arc<ProxyInfo>, name: &str) {
+        debug!("sync_process_status: checking process {} (PID: {})", name, proxy.pid);
         // Check if process monitor has already detected exit
         if let Ok(exit_code) = proxy.exit_code.lock() {
-            if exit_code.is_some() {
+            if let Some(code) = *exit_code {
                 // Process has exited - ensure status reflects this
                 let current_status = proxy.get_status();
-                if matches!(current_status, ProcessStatus::Running) {
-                    // Status hasn't been updated yet, update it now
-                    proxy.set_status(ProcessStatus::Failed);
+                if matches!(current_status, ProcessStatus::Running | ProcessStatus::Starting) {
+                    // Update status based on exit code
+                    let new_status = if code == 0 {
+                        ProcessStatus::Stopped
+                    } else {
+                        ProcessStatus::Failed
+                    };
+                    proxy.set_status(new_status);
                     debug!(
-                        "Synchronized status for process {} from Running to Failed (exit_code: {:?})",
-                        name, exit_code
+                        "Synchronized status for process {} from {:?} to {:?} (exit_code: {})",
+                        name, current_status, new_status, code
                     );
                 }
                 return;
@@ -488,9 +587,27 @@ impl ProcessManager {
             Ok(output) => {
                 if !output.status.success() {
                     // Process is not running
-                    proxy.set_status(ProcessStatus::Failed);
+                    let current_status = proxy.get_status();
+                    if matches!(current_status, ProcessStatus::Starting) {
+                        // Process died during startup - mark as failed
+                        proxy.set_status(ProcessStatus::Failed);
+                        debug!(
+                            "Process {} (PID {}) died during startup, updating status to Failed",
+                            name, pid
+                        );
+                    } else if matches!(current_status, ProcessStatus::Running) {
+                        // Process was running but is now dead
+                        proxy.set_status(ProcessStatus::Failed);
+                        debug!(
+                            "Process {} (PID {}) is not running, updating status to Failed",
+                            name, pid
+                        );
+                    }
+                } else if matches!(proxy.get_status(), ProcessStatus::Starting) {
+                    // Process is alive and was starting, update to Running
+                    proxy.set_status(ProcessStatus::Running);
                     debug!(
-                        "Process {} (PID {}) is not running, updating status to Failed",
+                        "Process {} (PID {}) is running, updating status from Starting to Running",
                         name, pid
                     );
                 }

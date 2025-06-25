@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 /// Parameters for creating a ProxyInfo via launcher
@@ -47,19 +47,30 @@ impl ProcessLauncher {
         let process_key = ProcessKey::new(project.clone(), name.clone());
 
         // Build command
-        let mut command = if !args.is_empty() {
-            let mut cmd = Command::new(&args[0]);
-            cmd.args(&args[1..]);
-            cmd
+        // Construct the command to execute via shell
+        let shell_command = if !args.is_empty() {
+            // Join args into a single command string, properly escaping each argument
+            args.iter()
+                .map(|arg| {
+                    // Simple escaping: wrap in single quotes and escape any single quotes
+                    format!("'{}'", arg.replace("'", "'\"'\"'"))
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
         } else if let Some(cmd_str) = cmd {
-            let mut cmd = Command::new("sh");
-            cmd.arg("-c").arg(cmd_str);
-            cmd
+            // Use the cmd string as-is
+            cmd_str
         } else {
             return Err(McprocdError::InvalidCommand {
                 message: "Either cmd or args must be provided".to_string(),
             });
         };
+
+        // Always execute via shell for consistent behavior
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(&shell_command);
+        
+        debug!("Executing command via shell: sh -c '{}'", shell_command);
 
         // Set working directory
         if let Some(cwd_path) = &cwd {
@@ -88,10 +99,15 @@ impl ProcessLauncher {
         // Spawn the process
         let child = command
             .spawn()
-            .map_err(|e| McprocdError::ProcessSpawnFailed {
-                name: name.clone(),
-                error: e.to_string(),
+            .map_err(|e| {
+                error!("Failed to spawn process '{}': {}", name, e);
+                McprocdError::ProcessSpawnFailed {
+                    name: name.clone(),
+                    error: e.to_string(),
+                }
             })?;
+        
+        info!("Successfully spawned process '{}' with PID {:?}", name, child.id());
 
         Ok((child, process_key))
     }

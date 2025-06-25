@@ -72,10 +72,11 @@ message ListProcessesRequest {
 }
 
 message GetLogsRequest {
-  string name = 1;
-  optional uint32 tail = 2;  // Number of lines from the end (default: 100)
-  optional bool follow = 3;  // Continue streaming new log lines
-  string project = 4;
+  repeated string process_names = 1;  // Process names to filter (empty = all processes)
+  optional uint32 tail = 2;          // Number of lines from the end (default: 100)
+  optional bool follow = 3;          // Continue streaming new log lines
+  string project = 4;                // Project name (required)
+  optional bool include_events = 5;  // Include process lifecycle events
 }
 
 message GrepLogsRequest {
@@ -128,8 +129,30 @@ message LogEntry {
   optional string process_name = 5;  // Process name (for multi-process logs)
 }
 
+message ProcessLifecycleEvent {
+  enum EventType {
+    STARTING = 0;
+    STARTED = 1;
+    STOPPING = 2;
+    STOPPED = 3;
+    FAILED = 4;
+  }
+  
+  EventType event_type = 1;
+  string process_id = 2;
+  string name = 3;
+  string project = 4;
+  optional uint32 pid = 5;          // For STARTED event
+  optional int32 exit_code = 6;     // For STOPPED event
+  optional string error = 7;         // For FAILED event
+  google.protobuf.Timestamp timestamp = 8;
+}
+
 message GetLogsResponse {
-  repeated LogEntry entries = 1;
+  oneof content {
+    LogEntry log_entry = 1;
+    ProcessLifecycleEvent event = 2;
+  }
 }
 
 message GrepMatch {

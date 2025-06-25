@@ -109,7 +109,7 @@ impl ProxyInfo {
             wait_for_log: params.wait_for_log,
             wait_timeout: params.wait_timeout,
             start_time: Utc::now(),
-            status: Arc::new(AtomicU8::new(ProcessStatus::Running as u8)),
+            status: Arc::new(AtomicU8::new(ProcessStatus::Starting as u8)),
             ring: Arc::new(Mutex::new(HeapRb::new(params.ring_buffer_size))),
             pid: params.pid,
             port: None,

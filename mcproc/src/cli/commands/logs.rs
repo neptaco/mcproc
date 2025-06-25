@@ -3,11 +3,21 @@ use crate::client::DaemonClient;
 use chrono;
 use clap::Args;
 use colored::*;
-use proto::{GetLogsRequest, ListProcessesRequest};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use strip_ansi_escapes::strip;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
+
+/// Target specification for log streaming
+#[derive(Debug, Clone)]
+enum LogTarget {
+    /// Multiple specific processes (including single process as vec with one element)
+    Multiple { names: Vec<String>, project: String },
+    /// All processes in a project (wildcard)
+    All { project: String },
+}
 
 #[derive(Debug, Clone)]
 struct ColorOptions {
@@ -18,8 +28,9 @@ struct ColorOptions {
 
 #[derive(Debug, Args)]
 pub struct LogsCommand {
-    /// Process name (omit to show logs from all processes)
-    name: Option<String>,
+    /// Process names to monitor (omit to show logs from all processes)
+    #[arg(help = "Process names to monitor (e.g., 'frontend backend' or leave empty for all)")]
+    names: Vec<String>,
 
     /// Follow log output
     #[arg(short, long)]
@@ -47,10 +58,7 @@ pub struct LogsCommand {
 }
 
 impl LogsCommand {
-    pub async fn execute(
-        mut self,
-        mut client: DaemonClient,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn execute(mut self, client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         // Check NO_COLOR environment variable
         if std::env::var("NO_COLOR").is_ok() {
             self.no_color = true;
@@ -62,123 +70,159 @@ impl LogsCommand {
             smart_color: self.smart_color,
         };
 
-        // Determine project name if not provided (use current working directory where mcproc is run)
-        let project = resolve_project_name(self.project)?;
+        // Determine project name
+        let project = resolve_project_name(self.project.clone())?;
 
-        match self.name {
-            Some(name) => {
-                // Single process logs
-                let request = GetLogsRequest {
-                    name: name.clone(),
-                    tail: Some(self.tail),
-                    follow: Some(self.follow),
-                    project: project.clone(),
-                };
+        // Create shutdown flag
+        let shutdown_flag = Arc::new(AtomicBool::new(false));
+        
+        // Set up Ctrl+C handler
+        let shutdown_flag_ctrl_c = shutdown_flag.clone();
+        tokio::spawn(async move {
+            tokio::signal::ctrl_c().await.ok();
+            shutdown_flag_ctrl_c.store(true, Ordering::Relaxed);
+        });
 
-                let mut stream = client.inner().get_logs(request).await?.into_inner();
-
-                while let Some(response) = stream.next().await {
-                    match response {
-                        Ok(logs_response) => {
-                            // Display entries immediately
-                            for entry in logs_response.entries {
-                                print_log_entry(&entry, &color_opts);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("{} Error receiving logs: {}", "✗".red(), e);
-                            break;
-                        }
-                    }
-                }
+        // Determine log target
+        let target = if self.names.is_empty() {
+            LogTarget::All {
+                project: project.clone(),
             }
-            None => {
-                // All processes in project
-                // Get list of processes in the current project
-                let list_request = ListProcessesRequest {
-                    project_filter: Some(project.clone()),
-                    status_filter: None,
-                };
+        } else {
+            LogTarget::Multiple {
+                names: self.names.clone(),
+                project: project.clone(),
+            }
+        };
 
-                let response = client.inner().list_processes(list_request).await?;
-                let processes = response.into_inner().processes;
+        // Start streaming
+        self.stream_logs(
+            client,
+            shutdown_flag,
+            target,
+            color_opts,
+        )
+        .await
+    }
 
-                if processes.is_empty() && !self.follow {
-                    eprintln!("{} No processes found in project", "✗".red());
-                    return Ok(());
+    async fn stream_logs(
+        &self,
+        mut client: DaemonClient,
+        shutdown_flag: Arc<AtomicBool>,
+        target: LogTarget,
+        color_opts: ColorOptions,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // Create channel for log entries
+        let (tx, mut rx) = mpsc::channel::<proto::LogEntry>(100);
+        let mut tasks: JoinSet<()> = JoinSet::new();
+
+        // Unified streaming for all target types
+        let process_names = match &target {
+            LogTarget::Multiple { names, .. } => names.clone(),
+            LogTarget::All { .. } => vec![], // Empty vec means all processes
+        };
+
+        let project = match &target {
+            LogTarget::Multiple { project, .. } => project.clone(),
+            LogTarget::All { project } => project.clone(),
+        };
+
+        // Display what we're following
+        if self.follow {
+            match &target {
+                LogTarget::Multiple { names, project } => {
+                    eprintln!(
+                        "{} Following logs for processes: {} in project: {}",
+                        "→".yellow(),
+                        names.join(", ").cyan().bold(),
+                        project.cyan().bold()
+                    );
                 }
-
-                if !self.follow {
-                    // For non-follow mode, get and merge all logs
-                    let mut all_entries = Vec::new();
-
-                    for process in &processes {
-                        let request = GetLogsRequest {
-                            name: process.name.clone(),
-                            tail: Some(self.tail),
-                            follow: Some(false),
-                            project: project.clone(),
-                        };
-
-                        let mut stream = client.inner().get_logs(request).await?.into_inner();
-
-                        while let Some(response) = stream.next().await {
-                            if let Ok(logs_response) = response {
-                                for mut entry in logs_response.entries {
-                                    // Add process name to the entry
-                                    entry.process_name = Some(process.name.clone());
-                                    all_entries.push(entry);
-                                }
-                            }
-                        }
-                    }
-
-                    // Sort by timestamp
-                    all_entries.sort_by(|a, b| {
-                        let a_ts = a
-                            .timestamp
-                            .as_ref()
-                            .map(|t| (t.seconds, t.nanos))
-                            .unwrap_or((0, 0));
-                        let b_ts = b
-                            .timestamp
-                            .as_ref()
-                            .map(|t| (t.seconds, t.nanos))
-                            .unwrap_or((0, 0));
-                        a_ts.cmp(&b_ts)
-                    });
-
-                    // Take only the last N entries
-                    let start = all_entries.len().saturating_sub(self.tail as usize);
-                    for entry in &all_entries[start..] {
-                        print_log_entry_with_process(entry, &color_opts);
-                    }
-                } else {
-                    // For follow mode, stream from all processes concurrently
-                    // Calculate max name length for padding
-                    let max_name_len = processes
-                        .iter()
-                        .map(|p| p.name.len())
-                        .max()
-                        .unwrap_or(10)
-                        .max(10); // Minimum 10 characters
-
-                    stream_multiple_logs(
-                        client,
-                        processes,
-                        Some(project),
-                        self.tail,
-                        max_name_len,
-                        &color_opts,
-                    )
-                    .await?;
+                LogTarget::All { project } => {
+                    eprintln!(
+                        "{} Following logs for all processes in project: {}",
+                        "→".yellow(),
+                        project.cyan().bold()
+                    );
                 }
             }
         }
 
+        // Spawn unified gRPC stream task
+        let tx_clone = tx.clone();
+        let shutdown_flag_clone = shutdown_flag.clone();
+        let tail = self.tail;
+        let follow = self.follow;
+        tasks.spawn(async move {
+            let request = proto::GetLogsRequest {
+                process_names,
+                tail: Some(tail),
+                follow: Some(follow),
+                project,
+                include_events: Some(false),
+            };
+
+            // Start single gRPC stream
+            match client.inner().get_logs(request).await {
+                Ok(response) => {
+                    let mut stream = response.into_inner();
+                    
+                    // Simple loop to receive and forward logs
+                    while let Some(response) = stream.next().await {
+                        // Check for shutdown
+                        if shutdown_flag_clone.load(Ordering::Relaxed) {
+                            break;
+                        }
+
+                        match response {
+                            Ok(logs_response) => {
+                                if let Some(content) = logs_response.content {
+                                    match content {
+                                        proto::get_logs_response::Content::LogEntry(entry) => {
+                                            if tx_clone.send(entry).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        proto::get_logs_response::Content::Event(_) => {
+                                            // Ignore events in logs command
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("{} Error receiving logs: {}", "✗".red(), e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{} Failed to start log stream: {}", "✗".red(), e);
+                }
+            }
+        });
+
+        // Drop original tx to ensure channel closes when task completes
+        drop(tx);
+
+        // Process and display logs
+        while let Some(entry) = rx.recv().await {
+            // Check if we should shutdown
+            if shutdown_flag.load(Ordering::Relaxed) {
+                break;
+            }
+
+            print_log_entry(&entry, &color_opts);
+        }
+
+        // Wait for all tasks to complete
+        while tasks.join_next().await.is_some() {}
+
         Ok(())
     }
 }
+
+// Helper functions
 
 fn contains_ansi_escape(text: &str) -> bool {
     text.contains("\x1b[")
@@ -207,28 +251,33 @@ fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
         entry.content.clone()
     };
 
+    // Format based on whether we have a process name
+    if let Some(process_name) = &entry.process_name {
+        print_log_entry_with_process(entry, process_name, &timestamp, &content, color_opts);
+    } else {
+        print_log_entry_simple(&timestamp, &content, entry.level, color_opts);
+    }
+}
+
+fn print_log_entry_simple(timestamp: &str, content: &str, level: i32, color_opts: &ColorOptions) {
     if color_opts.raw_color {
-        // Raw color mode: no mcproc colors, just content
         println!("{}", content);
     } else if color_opts.no_color {
-        // No color mode: plain text
         println!(
             "{} {} {}",
             timestamp,
-            if entry.level == 2 { "E" } else { "I" },
+            if level == 2 { "E" } else { "I" },
             content
         );
-    } else if color_opts.smart_color && contains_ansi_escape(&entry.content) {
-        // Smart color mode: minimal mcproc colors when content has colors
+    } else if color_opts.smart_color && contains_ansi_escape(content) {
         println!(
             "{} {} {}",
             timestamp.dimmed(),
-            if entry.level == 2 { "E" } else { "I" },
+            if level == 2 { "E" } else { "I" },
             content
         );
     } else {
-        // Default mode: full mcproc colors
-        let level_indicator = match entry.level {
+        let level_indicator = match level {
             2 => "E".red().bold(),
             _ => "I".dimmed(),
         };
@@ -236,40 +285,18 @@ fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
     }
 }
 
-fn print_log_entry_with_process(entry: &proto::LogEntry, color_opts: &ColorOptions) {
-    print_log_entry_with_process_padded(entry, 10, color_opts);
-}
-
-fn print_log_entry_with_process_padded(
+fn print_log_entry_with_process(
     entry: &proto::LogEntry,
-    max_name_len: usize,
+    process_name: &str,
+    timestamp: &str,
+    content: &str,
     color_opts: &ColorOptions,
 ) {
-    let timestamp = entry
-        .timestamp
-        .as_ref()
-        .map(|ts| {
-            let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
-                .unwrap_or_else(chrono::Utc::now);
-            let local_dt: chrono::DateTime<chrono::Local> = dt.into();
-            local_dt.format("%H:%M:%S").to_string()
-        })
-        .unwrap_or_default();
-
-    let process_name = entry.process_name.as_deref().unwrap_or("unknown");
-    let padded_name = format!("{:width$}", process_name, width = max_name_len);
-
-    let content = if color_opts.no_color {
-        strip_ansi_escapes_str(&entry.content)
-    } else {
-        entry.content.clone()
-    };
+    let padded_name = format!("{:10}", process_name);
 
     if color_opts.raw_color {
-        // Raw color mode: minimal formatting, preserve content colors
         println!("{} {} | {}", timestamp, padded_name, content);
     } else if color_opts.no_color {
-        // No color mode: plain text
         println!(
             "{} {} | {} {}",
             timestamp,
@@ -277,34 +304,7 @@ fn print_log_entry_with_process_padded(
             if entry.level == 2 { "E" } else { "I" },
             content
         );
-    } else if color_opts.smart_color && contains_ansi_escape(&entry.content) {
-        // Smart color mode: reduced mcproc colors when content has colors
-        let colored_padded_name = match process_name
-            .chars()
-            .fold(0u8, |acc, c| acc.wrapping_add(c as u8))
-            % 5
-        {
-            0 => padded_name.green(),
-            1 => padded_name.blue(),
-            2 => padded_name.cyan(),
-            3 => padded_name.magenta(),
-            _ => padded_name.bright_blue(),
-        };
-
-        println!(
-            "{} {} | {} {}",
-            timestamp.dimmed(),
-            colored_padded_name,
-            if entry.level == 2 { "E" } else { "I" },
-            content
-        );
     } else {
-        // Default mode: full mcproc colors
-        let level_indicator = match entry.level {
-            2 => "E".red().bold(),
-            _ => "I".dimmed(),
-        };
-
         let colored_padded_name = match process_name
             .chars()
             .fold(0u8, |acc, c| acc.wrapping_add(c as u8))
@@ -317,215 +317,26 @@ fn print_log_entry_with_process_padded(
             _ => padded_name.bright_blue(),
         };
 
-        println!(
-            "{} {} | {} {}",
-            timestamp.dimmed(),
-            colored_padded_name.bold(),
-            level_indicator,
-            content
-        );
-    }
-}
-
-async fn stream_multiple_logs(
-    client: DaemonClient,
-    initial_processes: Vec<proto::ProcessInfo>,
-    project: Option<String>,
-    tail: u32,
-    max_name_len: usize,
-    color_opts: &ColorOptions,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashSet;
-    use std::sync::{Arc, Mutex};
-
-    // Create a channel to collect log entries
-    let (tx, mut rx) = mpsc::channel::<proto::LogEntry>(100);
-
-    // Keep track of processes we're monitoring
-    let mut monitored_processes: HashSet<String> = HashSet::new();
-    let mut tasks = JoinSet::new();
-
-    // Shared max name length that can be updated
-    let shared_max_name_len = Arc::new(Mutex::new(max_name_len));
-
-    // Spawn initial log streaming tasks
-    for process in initial_processes {
-        spawn_log_stream_task(&mut tasks, &tx, &client, &project, &process, tail);
-        monitored_processes.insert(process.id.clone());
-    }
-
-    // If no initial processes, show waiting message
-    if monitored_processes.is_empty() {
-        match &project {
-            Some(p) => {
-                eprintln!(
-                    "{} Waiting for processes to start in project: {}",
-                    "→".yellow(),
-                    p.cyan().bold()
-                );
-            }
-            None => {
-                eprintln!(
-                    "{} Waiting for processes to start (no project context)",
-                    "→".yellow()
-                );
-            }
-        }
-    }
-
-    // Clone for the monitoring task
-    let tx_monitor = tx.clone();
-    let mut client_monitor = client.clone();
-    let project_monitor = project.clone();
-    let shared_max_name_len_monitor = shared_max_name_len.clone();
-
-    // Spawn a task to periodically check for new processes
-    tasks.spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(2));
-        let mut local_monitored = monitored_processes.clone();
-
-        loop {
-            interval.tick().await;
-
-            // Get current processes
-            let list_request = ListProcessesRequest {
-                project_filter: project_monitor.clone(),
-                status_filter: None,
+        if color_opts.smart_color && contains_ansi_escape(content) {
+            println!(
+                "{} {} | {} {}",
+                timestamp.dimmed(),
+                colored_padded_name,
+                if entry.level == 2 { "E" } else { "I" },
+                content
+            );
+        } else {
+            let level_indicator = match entry.level {
+                2 => "E".red().bold(),
+                _ => "I".dimmed(),
             };
-
-            match client_monitor.inner().list_processes(list_request).await {
-                Ok(response) => {
-                    let current_processes = response.into_inner().processes;
-
-                    // Check for new processes
-                    for process in current_processes {
-                        if !local_monitored.contains(&process.id) {
-                            eprintln!(
-                                "{} New process started: {}",
-                                "→".green(),
-                                process.name.green().bold()
-                            );
-
-                            // Update max name length if needed
-                            {
-                                let mut max_len = shared_max_name_len_monitor.lock().unwrap();
-                                if process.name.len() > *max_len {
-                                    *max_len = process.name.len();
-                                }
-                            }
-
-                            // Spawn new log stream task
-                            let mut client_clone = client_monitor.clone();
-                            let tx_clone = tx_monitor.clone();
-                            let project_clone = project_monitor.clone();
-                            let process_name = process.name.clone();
-                            let process_id = process.id.clone();
-
-                            tokio::spawn(async move {
-                                let request = GetLogsRequest {
-                                    name: process_name.clone(),
-                                    tail: Some(tail),
-                                    follow: Some(true),
-                                    project: project_clone.unwrap_or_else(|| "default".to_string()),
-                                };
-
-                                match client_clone.inner().get_logs(request).await {
-                                    Ok(stream) => {
-                                        let mut stream = stream.into_inner();
-
-                                        while let Some(response) = stream.next().await {
-                                            if let Ok(logs_response) = response {
-                                                for mut entry in logs_response.entries {
-                                                    entry.process_name = Some(process_name.clone());
-                                                    if tx_clone.send(entry).await.is_err() {
-                                                        break;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "{} Error streaming logs for {}: {}",
-                                            "✗".red(),
-                                            process_name,
-                                            e
-                                        );
-                                    }
-                                }
-                            });
-
-                            local_monitored.insert(process_id);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{} Error checking for new processes: {}", "✗".red(), e);
-                }
-            }
+            println!(
+                "{} {} | {} {}",
+                timestamp.dimmed(),
+                colored_padded_name.bold(),
+                level_indicator,
+                content
+            );
         }
-    });
-
-    // Drop the original sender so the channel closes when all tasks complete
-    drop(tx);
-
-    // Print logs as they arrive
-    let shared_max_name_len_print = shared_max_name_len.clone();
-    while let Some(entry) = rx.recv().await {
-        let current_max_len = *shared_max_name_len_print.lock().unwrap();
-        print_log_entry_with_process_padded(&entry, current_max_len, color_opts);
     }
-
-    // Wait for all tasks to complete
-    while tasks.join_next().await.is_some() {}
-
-    Ok(())
-}
-
-fn spawn_log_stream_task(
-    tasks: &mut JoinSet<()>,
-    tx: &mpsc::Sender<proto::LogEntry>,
-    client: &DaemonClient,
-    project: &Option<String>,
-    process: &proto::ProcessInfo,
-    tail: u32,
-) {
-    let mut client_clone = client.clone();
-    let tx_clone = tx.clone();
-    let project_clone = project.clone();
-    let process_name = process.name.clone();
-
-    tasks.spawn(async move {
-        let request = GetLogsRequest {
-            name: process_name.clone(),
-            tail: Some(tail),
-            follow: Some(true),
-            project: project_clone.unwrap_or_else(|| "default".to_string()),
-        };
-
-        match client_clone.inner().get_logs(request).await {
-            Ok(stream) => {
-                let mut stream = stream.into_inner();
-
-                while let Some(response) = stream.next().await {
-                    if let Ok(logs_response) = response {
-                        for mut entry in logs_response.entries {
-                            entry.process_name = Some(process_name.clone());
-                            if tx_clone.send(entry).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                eprintln!(
-                    "{} Error streaming logs for {}: {}",
-                    "✗".red(),
-                    process_name,
-                    e
-                );
-            }
-        }
-    });
 }

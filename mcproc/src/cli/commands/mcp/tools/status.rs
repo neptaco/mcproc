@@ -103,10 +103,11 @@ impl ToolHandler for StatusTool {
 
                 // Get recent logs preview
                 let logs_request = proto::GetLogsRequest {
-                    name: params.name.clone(),
+                    process_names: vec![params.name.clone()],
                     tail: Some(5), // Get last 5 lines as preview
                     follow: Some(false),
                     project: process.project.clone(),
+                    include_events: Some(false),
                 };
 
                 let mut logs_preview = Vec::new();
@@ -115,8 +116,15 @@ impl ToolHandler for StatusTool {
                     // Take at most 100 log entries to avoid blocking
                     let mut count = 0;
                     while let Ok(Some(logs_response)) = stream.try_next().await {
-                        for entry in logs_response.entries {
-                            logs_preview.push(entry.content);
+                        if let Some(content) = logs_response.content {
+                            match content {
+                                proto::get_logs_response::Content::LogEntry(entry) => {
+                                    logs_preview.push(entry.content);
+                                }
+                                proto::get_logs_response::Content::Event(_) => {
+                                    // Ignore events in status tool
+                                }
+                            }
                         }
                         count += 1;
                         if count >= 100 {

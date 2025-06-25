@@ -1,3 +1,4 @@
+pub mod event;
 pub mod exit_handler;
 pub mod launcher;
 pub mod log_stream;

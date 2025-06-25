@@ -62,21 +62,17 @@ impl LogStreamConfig {
                 tokio::select! {
                     // Check if process has exited
                     _ = status_check_interval.tick() => {
-                        if !matches!(self.proxy.get_status(), ProcessStatus::Running) {
-                            debug!("Process exited, stopping {} log reader", self.stream_name);
+                        if !matches!(self.proxy.get_status(), ProcessStatus::Running | ProcessStatus::Starting) {
+                            debug!("Process no longer running, will continue reading remaining {} output", self.stream_name);
                             // Close the log_ready channel to notify waiters about process exit
+                            // This prevents hanging when wait_timeout is specified
                             if let Some(ref tx) = self.log_ready_tx {
                                 if let Ok(mut tx_guard) = tx.lock() {
                                     tx_guard.take(); // Drop the sender to close the channel
                                 }
                             }
-                            // Close the channel if process exited
-                            if let Some(ref tx_shared) = self.log_stream_tx {
-                                if let Ok(mut guard) = tx_shared.lock() {
-                                    guard.take();
-                                }
-                            }
-                            break;
+                            // Don't break immediately - let the stream close naturally
+                            // This ensures we capture all output including error messages
                         }
                     }
                     // Check for timeout
@@ -104,6 +100,12 @@ impl LogStreamConfig {
                     line_result = lines.next_line() => {
                         match line_result {
                             Ok(Some(line)) => {
+                                // Debug: log first few lines to understand what's happening
+                                if log_buffer.len() < 5 {
+                                    debug!("Process {} ({}): {}", self.process_key, self.stream_name, line);
+                                }
+                                
+                                // Write to log hub
                                 if let Err(e) = self.log_hub.append_log_for_key(&self.process_key, line.as_bytes(), false).await {
                                     error!("Failed to write {} log for {}: {}", self.stream_name, self.process_key, e);
                                 }
@@ -122,7 +124,8 @@ impl LogStreamConfig {
                                 // Check if line matches the wait pattern
                                 if let (Some(ref pattern), Some(ref tx)) = (&self.log_pattern, &self.log_ready_tx) {
                                     if pattern.is_match(&line) {
-                                        debug!("Found log pattern match: {}", line);
+                                        debug!("Found log pattern match for process {} ({}): '{}'", 
+                                            self.process_key, self.stream_name, line);
 
                                         // Log the pattern match with color (green for ready)
                                         let ready_msg = format!(

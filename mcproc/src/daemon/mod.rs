@@ -2,8 +2,9 @@ pub mod api;
 pub mod error;
 pub mod log;
 pub mod process;
+pub mod stream;
 
-use self::{log::LogHub, process::ProcessManager};
+use self::{log::LogHub, process::ProcessManager, stream::StreamEventHub};
 use crate::common::config::Config;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -66,18 +67,24 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize components
     info!("Initializing log hub and process manager...");
-    let log_hub = Arc::new(LogHub::new(config.clone()));
-    let process_manager = Arc::new(ProcessManager::new(config.clone(), log_hub.clone()));
+    let event_hub = Arc::new(StreamEventHub::new());
+    let log_hub = Arc::new(LogHub::with_event_hub(config.clone(), event_hub.clone()));
+    let process_manager = Arc::new(ProcessManager::with_event_hub(
+        config.clone(),
+        log_hub.clone(),
+        event_hub.clone(),
+    ));
     info!("Components initialized successfully");
 
     // Start servers
     let grpc_config = config.clone();
     let grpc_pm = process_manager.clone();
     let grpc_log = log_hub.clone();
+    let grpc_event_hub = event_hub.clone();
 
     info!("Starting gRPC server...");
     let grpc_handle = tokio::spawn(async move {
-        if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log).await {
+        if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log, grpc_event_hub).await {
             error!("gRPC server error: {}", e);
         }
     });
