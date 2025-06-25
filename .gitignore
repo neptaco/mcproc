@@ -40,3 +40,5 @@ test-project/
 
 # Worktree
 .worktree/
+.gwt/
+.worktrees/
