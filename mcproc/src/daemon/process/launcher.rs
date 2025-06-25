@@ -69,7 +69,7 @@ impl ProcessLauncher {
         // Always execute via shell for consistent behavior
         let mut command = Command::new("sh");
         command.arg("-c").arg(&shell_command);
-        
+
         debug!("Executing command via shell: sh -c '{}'", shell_command);
 
         // Set working directory
@@ -97,17 +97,19 @@ impl ProcessLauncher {
         info!("Starting process {} in project {}", name, project);
 
         // Spawn the process
-        let child = command
-            .spawn()
-            .map_err(|e| {
-                error!("Failed to spawn process '{}': {}", name, e);
-                McprocdError::ProcessSpawnFailed {
-                    name: name.clone(),
-                    error: e.to_string(),
-                }
-            })?;
-        
-        info!("Successfully spawned process '{}' with PID {:?}", name, child.id());
+        let child = command.spawn().map_err(|e| {
+            error!("Failed to spawn process '{}': {}", name, e);
+            McprocdError::ProcessSpawnFailed {
+                name: name.clone(),
+                error: e.to_string(),
+            }
+        })?;
+
+        info!(
+            "Successfully spawned process '{}' with PID {:?}",
+            name,
+            child.id()
+        );
 
         Ok((child, process_key))
     }

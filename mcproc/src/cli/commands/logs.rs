@@ -3,8 +3,8 @@ use crate::client::DaemonClient;
 use chrono;
 use clap::Args;
 use colored::*;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use strip_ansi_escapes::strip;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
@@ -75,7 +75,7 @@ impl LogsCommand {
 
         // Create shutdown flag
         let shutdown_flag = Arc::new(AtomicBool::new(false));
-        
+
         // Set up Ctrl+C handler
         let shutdown_flag_ctrl_c = shutdown_flag.clone();
         tokio::spawn(async move {
@@ -96,13 +96,8 @@ impl LogsCommand {
         };
 
         // Start streaming
-        self.stream_logs(
-            client,
-            shutdown_flag,
-            target,
-            color_opts,
-        )
-        .await
+        self.stream_logs(client, shutdown_flag, target, color_opts)
+            .await
     }
 
     async fn stream_logs(
@@ -166,7 +161,7 @@ impl LogsCommand {
             match client.inner().get_logs(request).await {
                 Ok(response) => {
                     let mut stream = response.into_inner();
-                    
+
                     // Simple loop to receive and forward logs
                     while let Some(response) = stream.next().await {
                         // Check for shutdown

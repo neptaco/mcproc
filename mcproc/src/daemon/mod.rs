@@ -84,7 +84,9 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting gRPC server...");
     let grpc_handle = tokio::spawn(async move {
-        if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log, grpc_event_hub).await {
+        if let Err(e) =
+            self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log, grpc_event_hub).await
+        {
             error!("gRPC server error: {}", e);
         }
     });

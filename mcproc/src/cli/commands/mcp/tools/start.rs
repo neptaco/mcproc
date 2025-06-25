@@ -166,15 +166,12 @@ impl ToolHandler for StartTool {
                 let mut log_count = 0;
 
                 eprintln!("DEBUG: MCP start - waiting for gRPC stream messages...");
-                while let Some(msg) = stream
-                    .message()
-                    .await
-                    .map_err(|e| {
-                        eprintln!("DEBUG: MCP start - stream error: {}", e);
-                        McpError::Internal(e.to_string())
-                    })?
-                {
-                    eprintln!("DEBUG: MCP start - received message type: {:?}", 
+                while let Some(msg) = stream.message().await.map_err(|e| {
+                    eprintln!("DEBUG: MCP start - stream error: {}", e);
+                    McpError::Internal(e.to_string())
+                })? {
+                    eprintln!(
+                        "DEBUG: MCP start - received message type: {:?}",
                         msg.response.as_ref().map(|r| match r {
                             proto::start_process_response::Response::LogEntry(_) => "LogEntry",
                             proto::start_process_response::Response::Process(_) => "Process",
@@ -219,8 +216,11 @@ impl ToolHandler for StartTool {
                         None => {}
                     }
                 }
-                
-                eprintln!("DEBUG: MCP start - stream ended, process_info available: {}", process_info.is_some());
+
+                eprintln!(
+                    "DEBUG: MCP start - stream ended, process_info available: {}",
+                    process_info.is_some()
+                );
 
                 let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
@@ -264,8 +264,9 @@ impl ToolHandler for StartTool {
                 }
 
                 // Always include log context from ProcessInfo (strip ANSI codes)
-                eprintln!("DEBUG: MCP start - process: {}, log_context: {} lines, matched_line: {}", 
-                    process.name, 
+                eprintln!(
+                    "DEBUG: MCP start - process: {}, log_context: {} lines, matched_line: {}",
+                    process.name,
                     process.log_context.len(),
                     process.matched_line.is_some()
                 );
@@ -280,7 +281,7 @@ impl ToolHandler for StartTool {
 
                 // Check if we have a matched line
                 let has_matched_line = process.matched_line.is_some();
-                
+
                 // Add matched line if available (strip ANSI codes)
                 if let Some(matched_line) = process.matched_line {
                     let cleaned_line =

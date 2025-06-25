@@ -116,7 +116,7 @@ impl ProcessManagerService for GrpcService {
                 Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
                     // We no longer stream logs during startup
                     // Log context is now included in ProcessInfo
-                    
+
                     // Debug log to verify we have log context
                     debug!(
                         "gRPC start_process - process: {}, log_context: {} lines, matched_line: {}",
@@ -513,7 +513,7 @@ impl ProcessManagerService for GrpcService {
 
         // Subscribe to event hub
         let mut event_receiver = self.event_hub.subscribe();
-        
+
         // For tail functionality, read existing logs from files first
         let log_hub = self.log_hub.clone();
         let process_manager = self.process_manager.clone();
@@ -523,7 +523,7 @@ impl ProcessManagerService for GrpcService {
             use tokio::io::{AsyncBufReadExt, BufReader};
             use tokio::fs::File;
             use crate::common::process_key::ProcessKey;
-            
+
             // First, send existing logs if tail is requested
             if tail > 0 {
                 info!("Reading tail logs (tail={})", tail);
@@ -535,7 +535,7 @@ impl ProcessManagerService for GrpcService {
                     .filter(|p| filter.matches_process(&p.project, &p.name))
                     .collect();
                 info!("Found {} matching processes", matching_processes.len());
-                
+
                 // Read tail lines from each matching process's log file
                 for process_info in matching_processes {
                     let key = ProcessKey {
@@ -543,27 +543,27 @@ impl ProcessManagerService for GrpcService {
                         project: process_info.project.clone(),
                     };
                     let log_file = log_hub.get_log_file_path_for_key(&key);
-                    
+
                     if log_file.exists() {
                         match File::open(&log_file).await {
                             Ok(file) => {
                                 let reader = BufReader::new(file);
                                 let mut lines = reader.lines();
                                 let mut all_lines = Vec::new();
-                                
+
                                 // Read all lines
                                 while let Ok(Some(line)) = lines.next_line().await {
                                     all_lines.push(line);
                                 }
-                                
+
                                 // Get tail lines
                                 let start_idx = all_lines.len().saturating_sub(tail);
                                 let mut line_num = start_idx as u32;
-                                
+
                                 for line in &all_lines[start_idx..] {
                                     line_num += 1;
                                     let (timestamp, level, content) = parse_log_line(line);
-                                    
+
                                     let log_entry = LogEntry {
                                         line_number: line_num,
                                         content,
@@ -571,24 +571,24 @@ impl ProcessManagerService for GrpcService {
                                         level: level as i32,
                                         process_name: Some(process_info.name.clone()),
                                     };
-                                    
+
                                     yield GetLogsResponse {
                                         content: Some(proto::get_logs_response::Content::LogEntry(log_entry)),
                                     };
                                 }
                             }
                             Err(e) => {
-                                error!("Failed to open log file for {}/{}: {}", 
+                                error!("Failed to open log file for {}/{}: {}",
                                     process_info.project, process_info.name, e);
                             }
                         }
                     }
                 }
             }
-            
+
             // If follow mode, subscribe to event hub for new logs
             if follow {
-                info!("Starting follow mode for filter: project={:?}, process_names={:?}", 
+                info!("Starting follow mode for filter: project={:?}, process_names={:?}",
                     filter.project, filter.process_names);
                 loop {
                     tokio::select! {
@@ -600,13 +600,13 @@ impl ProcessManagerService for GrpcService {
                                         continue;
                                     }
                                     debug!("Received matching event: {:?}", stream_event);
-                                    
+
                                     match stream_event {
                                         StreamEvent::Log { process_name, entry, .. } => {
                                             // Set process_name in log entry
                                             let mut log_entry = entry;
                                             log_entry.process_name = Some(process_name);
-                                            
+
                                             yield GetLogsResponse {
                                                 content: Some(proto::get_logs_response::Content::LogEntry(log_entry)),
                                             };
@@ -691,7 +691,7 @@ impl ProcessManagerService for GrpcService {
                                                         }
                                                     }
                                                 };
-                                                
+
                                                 yield GetLogsResponse {
                                                     content: Some(proto::get_logs_response::Content::Event(lifecycle_event)),
                                                 };

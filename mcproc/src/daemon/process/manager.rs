@@ -25,7 +25,6 @@ pub struct ProcessManager {
 }
 
 impl ProcessManager {
-
     pub fn with_event_hub(
         config: Arc<Config>,
         log_hub: Arc<LogHub>,
@@ -230,7 +229,7 @@ impl ProcessManager {
                                 name: monitor_name.clone(),
                                 project: monitor_project.clone(),
                                 exit_code,
-                            }
+                            },
                         ));
                     }
 
@@ -261,7 +260,7 @@ impl ProcessManager {
                                 name: monitor_name.clone(),
                                 project: monitor_project.clone(),
                                 error: e.to_string(),
-                            }
+                            },
                         ));
                     }
                 }
@@ -330,7 +329,7 @@ impl ProcessManager {
         // Always sync process status to ensure accuracy
         // This is critical for detecting processes that exit immediately (e.g., "command not found")
         self.sync_process_status(&proxy_arc, &name).await;
-        
+
         // Check final status and publish appropriate event
         let current_status = proxy_arc.get_status();
         if matches!(current_status, ProcessStatus::Running) {
@@ -360,7 +359,7 @@ impl ProcessManager {
             .unwrap_or_default();
 
         let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
-        
+
         // Debug log to check what we're returning
         debug!(
             "Process {} - log_context: {} lines, matched_line: {}",
@@ -553,13 +552,19 @@ impl ProcessManager {
     /// Synchronize process status with actual process state
     /// This is critical to ensure we report accurate status to MCP
     async fn sync_process_status(&self, proxy: &Arc<ProxyInfo>, name: &str) {
-        debug!("sync_process_status: checking process {} (PID: {})", name, proxy.pid);
+        debug!(
+            "sync_process_status: checking process {} (PID: {})",
+            name, proxy.pid
+        );
         // Check if process monitor has already detected exit
         if let Ok(exit_code) = proxy.exit_code.lock() {
             if let Some(code) = *exit_code {
                 // Process has exited - ensure status reflects this
                 let current_status = proxy.get_status();
-                if matches!(current_status, ProcessStatus::Running | ProcessStatus::Starting) {
+                if matches!(
+                    current_status,
+                    ProcessStatus::Running | ProcessStatus::Starting
+                ) {
                     // Update status based on exit code
                     let new_status = if code == 0 {
                         ProcessStatus::Stopped

@@ -28,7 +28,6 @@ pub struct StreamFilter {
 }
 
 impl StreamFilter {
-
     /// Check if an event matches this filter
     pub fn matches(&self, event: &StreamEvent) -> bool {
         match event {
@@ -55,10 +54,8 @@ impl StreamFilter {
         }
 
         // Check process names filter
-        if !self.process_names.is_empty() {
-            if !self.process_names.contains(&name.to_string()) {
-                return false;
-            }
+        if !self.process_names.is_empty() && !self.process_names.contains(&name.to_string()) {
+            return false;
         }
 
         true

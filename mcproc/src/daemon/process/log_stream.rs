@@ -104,7 +104,7 @@ impl LogStreamConfig {
                                 if log_buffer.len() < 5 {
                                     debug!("Process {} ({}): {}", self.process_key, self.stream_name, line);
                                 }
-                                
+
                                 // Write to log hub
                                 if let Err(e) = self.log_hub.append_log_for_key(&self.process_key, line.as_bytes(), false).await {
                                     error!("Failed to write {} log for {}: {}", self.stream_name, self.process_key, e);
@@ -124,7 +124,7 @@ impl LogStreamConfig {
                                 // Check if line matches the wait pattern
                                 if let (Some(ref pattern), Some(ref tx)) = (&self.log_pattern, &self.log_ready_tx) {
                                     if pattern.is_match(&line) {
-                                        debug!("Found log pattern match for process {} ({}): '{}'", 
+                                        debug!("Found log pattern match for process {} ({}): '{}'",
                                             self.process_key, self.stream_name, line);
 
                                         // Log the pattern match with color (green for ready)

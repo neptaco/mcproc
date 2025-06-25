@@ -21,7 +21,6 @@ pub struct LogHub {
 }
 
 impl LogHub {
-
     pub fn with_event_hub(config: Arc<Config>, event_hub: SharedStreamEventHub) -> Self {
         Self {
             config,
@@ -102,7 +101,7 @@ impl LogHub {
         // Publish log event if event hub is available
         if let Some(ref event_hub) = self.event_hub {
             let content_owned = content_str.into_owned();
-            
+
             let log_entry = LogEntry {
                 line_number: 0, // Line numbers are tracked per reader, not here
                 timestamp: Some(prost_types::Timestamp {
@@ -111,12 +110,14 @@ impl LogHub {
                 }),
                 content: content_owned.clone(),
                 level: if is_stderr { 2 } else { 1 }, // ERROR = 2, INFO = 1
-                process_name: None, // Will be set by subscriber if needed
+                process_name: None,                   // Will be set by subscriber if needed
             };
 
             debug!(
                 "Publishing log event for {}/{}: {}",
-                key.project, key.name, content_owned.trim()
+                key.project,
+                key.name,
+                content_owned.trim()
             );
 
             event_hub.publish(StreamEvent::Log {
