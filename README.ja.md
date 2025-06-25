@@ -191,7 +191,7 @@ mcproc logs web --project myapp -t 100
 
 mcprocは3つの主要コンポーネントで構成されています：
 
-1. **mcprocd**: プロセスを管理し、ログの永続化を処理する軽量デーモン
+1. **mcproc daemon**: プロセスを管理し、ログの永続化を処理する軽量デーモン
 2. **mcproc CLI**: デーモンと対話するための開発者向けコマンドラインインターフェース
 3. **MCPサーバー**: Model Context Protocolを介してAIエージェントにプロセス管理機能を公開
 

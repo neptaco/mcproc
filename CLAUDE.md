@@ -23,7 +23,7 @@ Claude / Other LLMs
       │ gRPC (Unix Domain Socket)
       ▼
 ┌───────────────────────────────┐
-│      mcprocd  (daemon)        │
+│   mcproc daemon (--daemon)    │
 │───────────────────────────────│
 │  • Process Manager            │
 │  • Log Hub (direct file I/O)  │
@@ -39,7 +39,7 @@ Claude / Other LLMs
 ```
 
 ### Core Components
-- **mcprocd**: The main daemon process
+- **mcproc daemon**: The main daemon process (runs as `mcproc --daemon`)
   - Process Manager for spawning/managing child processes
   - Log Hub with ring buffer (10K lines) and file persistence
   - API Layer using tonic (gRPC via Unix Domain Socket)
@@ -98,7 +98,8 @@ cargo check --bin mcproc  # Check binary compilation
 cargo install --path mcproc --dry-run  # Dry run to detect install errors
 
 # Run
-cargo run --bin mcprocd  # Run daemon
+cargo run --bin mcproc -- --daemon  # Run daemon (hidden option)
+cargo run --bin mcproc -- daemon start  # Run daemon (recommended)
 cargo run --bin mcproc -- <command>  # Run CLI
 ```
 
@@ -163,6 +164,7 @@ The project uses a Cargo workspace with the following crates:
 - **Ring buffer**: 10,000 lines in memory per process
 - **Log directory**: `$XDG_STATE_HOME/mcproc/log/{project}/` (defaults to `~/.local/state/mcproc/log/{project}/`)
 - **Format**: `{process_name}.log` (organized by project directory)
+- **Daemon log**: `$XDG_STATE_HOME/mcproc/log/mcprocd.log` (only when started via `mcproc daemon start`)
 - **Features**: 
   - Real-time log streaming with follow mode
   - Regex-based log searching with context

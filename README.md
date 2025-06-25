@@ -192,7 +192,7 @@ mcproc logs web --project myapp -t 100
 
 mcproc consists of three main components:
 
-1. **mcprocd**: A lightweight daemon that manages processes and handles log persistence
+1. **mcproc daemon**: A lightweight daemon that manages processes and handles log persistence
 2. **mcproc CLI**: Command-line interface for developers to interact with the daemon
 3. **MCP Server**: Exposes process management capabilities to AI agents via the Model Context Protocol
 

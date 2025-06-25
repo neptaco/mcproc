@@ -36,11 +36,22 @@ impl DaemonClient {
             // Start daemon in background (use current binary with --daemon flag)
             let mcproc_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mcproc"));
 
+            // Open log file for daemon output
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(config.daemon_log_file())
+                .map_err(|e| format!("Failed to open daemon log file: {}", e))?;
+
             let mut cmd = std::process::Command::new(&mcproc_path);
             cmd.arg("--daemon");
             cmd.stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null());
+                .stdout(
+                    log_file
+                        .try_clone()
+                        .map_err(|e| format!("Failed to clone log file: {}", e))?,
+                )
+                .stderr(log_file);
 
             // Detach from parent process
             #[cfg(unix)]
@@ -58,6 +69,7 @@ impl DaemonClient {
             match cmd.spawn() {
                 Ok(_) => {
                     eprintln!("Started mcprocd daemon");
+                    eprintln!("Daemon logs: {}", config.daemon_log_file().display());
                     // Wait a bit for daemon to start
                     tokio::time::sleep(Duration::from_millis(config.daemon.client_startup_wait_ms))
                         .await;

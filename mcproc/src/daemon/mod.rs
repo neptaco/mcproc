@@ -58,15 +58,24 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&config.paths.pid_file, pid.to_string())?;
     info!("Written PID {} to {:?}", pid, config.paths.pid_file);
 
+    // Log configuration paths
+    info!("Configuration paths:");
+    info!("  Socket: {:?}", config.paths.socket_path);
+    info!("  Data directory: {:?}", config.paths.data_dir);
+    info!("  Log directory: {:?}", config.paths.log_dir);
+
     // Initialize components
+    info!("Initializing log hub and process manager...");
     let log_hub = Arc::new(LogHub::new(config.clone()));
     let process_manager = Arc::new(ProcessManager::new(config.clone(), log_hub.clone()));
+    info!("Components initialized successfully");
 
     // Start servers
     let grpc_config = config.clone();
     let grpc_pm = process_manager.clone();
     let grpc_log = log_hub.clone();
 
+    info!("Starting gRPC server...");
     let grpc_handle = tokio::spawn(async move {
         if let Err(e) = self::api::grpc::start_grpc_server(grpc_config, grpc_pm, grpc_log).await {
             error!("gRPC server error: {}", e);
@@ -74,6 +83,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Handle shutdown
+    info!("Daemon is ready and waiting for connections");
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     tokio::select! {

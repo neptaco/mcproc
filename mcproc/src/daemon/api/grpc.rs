@@ -1044,10 +1044,17 @@ pub async fn start_grpc_server(
             config.paths.socket_path
         );
 
-        Server::builder()
+        let result = Server::builder()
             .add_service(ProcessManagerServer::new(service))
             .serve_with_incoming(uds_stream)
-            .await?;
+            .await;
+
+        if let Err(e) = &result {
+            error!("gRPC server failed: {}", e);
+        } else {
+            info!("gRPC server shutdown gracefully");
+        }
+        result?;
     }
 
     #[cfg(not(unix))]
