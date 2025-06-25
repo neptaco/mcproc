@@ -64,6 +64,12 @@ impl LogStreamConfig {
                     _ = status_check_interval.tick() => {
                         if !matches!(self.proxy.get_status(), ProcessStatus::Running) {
                             debug!("Process exited, stopping {} log reader", self.stream_name);
+                            // Close the log_ready channel to notify waiters about process exit
+                            if let Some(ref tx) = self.log_ready_tx {
+                                if let Ok(mut tx_guard) = tx.lock() {
+                                    tx_guard.take(); // Drop the sender to close the channel
+                                }
+                            }
                             // Close the channel if process exited
                             if let Some(ref tx_shared) = self.log_stream_tx {
                                 if let Ok(mut guard) = tx_shared.lock() {
@@ -79,6 +85,12 @@ impl LogStreamConfig {
                         // Mark timeout occurred
                         if let Ok(mut timeout_flag) = self.timeout_occurred.lock() {
                             *timeout_flag = true;
+                        }
+                        // Close the log_ready channel to notify waiters about timeout
+                        if let Some(ref tx) = self.log_ready_tx {
+                            if let Ok(mut tx_guard) = tx.lock() {
+                                tx_guard.take(); // Drop the sender to close the channel
+                            }
                         }
                         // Close the channel on timeout
                         if let Some(ref tx_shared) = self.log_stream_tx {
@@ -157,6 +169,12 @@ impl LogStreamConfig {
                             }
                             Ok(None) => {
                                 debug!("{} stream ended for process {}", self.stream_name, self.process_key);
+                                // Close the log_ready channel to notify waiters about stream end
+                                if let Some(ref tx) = self.log_ready_tx {
+                                    if let Ok(mut tx_guard) = tx.lock() {
+                                        tx_guard.take(); // Drop the sender to close the channel
+                                    }
+                                }
                                 // Close the channel when stream ends
                                 if let Some(ref tx_shared) = self.log_stream_tx {
                                     if let Ok(mut guard) = tx_shared.lock() {
@@ -167,6 +185,12 @@ impl LogStreamConfig {
                             }
                             Err(e) => {
                                 error!("Error reading {} for {}: {}", self.stream_name, self.process_key, e);
+                                // Close the log_ready channel to notify waiters about error
+                                if let Some(ref tx) = self.log_ready_tx {
+                                    if let Ok(mut tx_guard) = tx.lock() {
+                                        tx_guard.take(); // Drop the sender to close the channel
+                                    }
+                                }
                                 // Close the channel on error
                                 if let Some(ref tx_shared) = self.log_stream_tx {
                                     if let Ok(mut guard) = tx_shared.lock() {
