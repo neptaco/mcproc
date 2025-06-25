@@ -185,13 +185,27 @@ impl ProcessManager {
                     if let Ok(mut code_guard) = monitor_proxy.exit_code.lock() {
                         *code_guard = exit_code;
                     }
-                    monitor_proxy.set_status(ProcessStatus::Stopped);
+
+                    // Set exit time
+                    if let Ok(mut exit_time) = monitor_proxy.exit_time.lock() {
+                        *exit_time = Some(chrono::Utc::now());
+                    }
+
+                    // Set status based on exit code
+                    match exit_code {
+                        Some(0) => monitor_proxy.set_status(ProcessStatus::Stopped),
+                        Some(_) => monitor_proxy.set_status(ProcessStatus::Failed),
+                        None => monitor_proxy.set_status(ProcessStatus::Failed), // Terminated by signal
+                    }
 
                     let exit_msg = ExitHandler::format_exit_message(&monitor_name, exit_code);
                     info!("{}", exit_msg);
 
-                    // Log the exit with color (red for exit)
-                    let log_msg = format!("{} {}\n", "[mcproc]".red().bold(), exit_msg.red());
+                    // Log the exit with appropriate color based on exit code
+                    let log_msg = match exit_code {
+                        Some(0) => format!("{} {}\n", "[mcproc]".green().bold(), exit_msg.green()),
+                        _ => format!("{} {}\n", "[mcproc]".red().bold(), exit_msg.red()),
+                    };
                     if let Err(e) = monitor_log_hub
                         .append_log_for_key(&monitor_key, log_msg.as_bytes(), true)
                         .await
@@ -253,7 +267,7 @@ impl ProcessManager {
             match rx.await {
                 Ok(_) => {
                     debug!("Log pattern matched for process {}", name);
-                    // Pattern matched - return immediately
+                    // Pattern matched - but still need to verify process is running
                 }
                 Err(_) => {
                     // Channel closed without match (likely timeout)
@@ -261,17 +275,21 @@ impl ProcessManager {
                 }
             }
         } else {
-            // No wait_for_log pattern, but still wait a bit to collect initial logs
+            // No wait_for_log pattern, wait a bit to collect initial logs
             tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         }
 
-        // Check if process exited during startup
-        let current_status = proxy_arc.get_status();
-        if !matches!(current_status, ProcessStatus::Running) {
-            ExitHandler::check_process_exit(&proxy_arc, &name)?;
-        }
+        // Ensure we have the latest process status before returning
+        self.sync_process_status(&proxy_arc, &name).await;
 
-        info!("Started process {} with PID {:?}", name, proxy_arc.pid);
+        let status = proxy_arc.get_status();
+        match status {
+            ProcessStatus::Running => {
+                info!("Started process {} with PID {:?}", name, proxy_arc.pid)
+            }
+            ProcessStatus::Failed => info!("Process {} failed to start", name),
+            _ => info!("Process {} in status {:?}", name, status),
+        }
 
         // Always get log context (not just when pattern matched)
         let collected_log_context = log_context
@@ -437,5 +455,49 @@ impl ProcessManager {
         }
 
         Ok(results)
+    }
+
+    /// Synchronize process status with actual process state
+    /// This is critical to ensure we report accurate status to MCP
+    async fn sync_process_status(&self, proxy: &Arc<ProxyInfo>, name: &str) {
+        // Check if process monitor has already detected exit
+        if let Ok(exit_code) = proxy.exit_code.lock() {
+            if exit_code.is_some() {
+                // Process has exited - ensure status reflects this
+                let current_status = proxy.get_status();
+                if matches!(current_status, ProcessStatus::Running) {
+                    // Status hasn't been updated yet, update it now
+                    proxy.set_status(ProcessStatus::Failed);
+                    debug!(
+                        "Synchronized status for process {} from Running to Failed (exit_code: {:?})",
+                        name, exit_code
+                    );
+                }
+                return;
+            }
+        }
+
+        // Double-check process is actually running using kill -0
+        let pid = proxy.pid;
+        match tokio::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .await
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    // Process is not running
+                    proxy.set_status(ProcessStatus::Failed);
+                    debug!(
+                        "Process {} (PID {}) is not running, updating status to Failed",
+                        name, pid
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check process {} status: {}", name, e);
+            }
+        }
     }
 }

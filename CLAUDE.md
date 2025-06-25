@@ -202,6 +202,17 @@ The project uses a Cargo workspace with the following crates:
 6. If `wait_for_log` provided, wait for pattern match
 7. Return process info (ID, PID, status, log_file)
 
+#### MCP Design Philosophy
+**IMPORTANT**: For MCP tools, process startup failures (like "command not found") are considered part of normal operation and should return ProcessInfo with appropriate status, not an error. This allows LLMs to:
+- See the failed status and exit code
+- Access stderr logs to understand what went wrong  
+- Make informed decisions about next steps
+
+Only return errors for:
+- Process already exists with the same name
+- Invalid parameters (validation failures)
+- System-level failures (daemon not running, etc.)
+
 ### Security
 - **Local only**: No remote access support
 - **Unix permissions**: 0600 for all mcproc files
