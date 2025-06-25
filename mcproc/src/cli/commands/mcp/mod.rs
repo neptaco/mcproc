@@ -35,6 +35,7 @@ async fn serve_mcp(
     default_project: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::common::validation::validate_project_name;
+    use crate::common::version::VERSION;
     use mcp_rs::{ServerBuilder, StdioTransport};
     use tools::{GrepTool, LogsTool, PsTool, RestartTool, StartTool, StatusTool, StopTool};
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -58,7 +59,7 @@ async fn serve_mcp(
     // Create server with stdio transport
     let transport = Box::new(StdioTransport::new());
 
-    let mut server = ServerBuilder::new("mcproc", "0.1.0")
+    let mut server = ServerBuilder::new("mcproc", VERSION)
         .add_tool(Arc::new(StartTool::new(client.clone())))
         .add_tool(Arc::new(StopTool::new(client.clone())))
         .add_tool(Arc::new(RestartTool::new(client.clone())))
