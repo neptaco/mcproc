@@ -162,31 +162,55 @@ impl LogsCommand {
                 Ok(response) => {
                     let mut stream = response.into_inner();
 
-                    // Simple loop to receive and forward logs
-                    while let Some(response) = stream.next().await {
-                        // Check for shutdown
-                        if shutdown_flag_clone.load(Ordering::Relaxed) {
-                            break;
-                        }
-
-                        match response {
-                            Ok(logs_response) => {
-                                if let Some(content) = logs_response.content {
-                                    match content {
-                                        proto::get_logs_response::Content::LogEntry(entry) => {
-                                            if tx_clone.send(entry).await.is_err() {
-                                                break;
+                    // Use select! to handle shutdown signals immediately
+                    loop {
+                        tokio::select! {
+                            // Wait for next stream message with timeout
+                            stream_result = tokio::time::timeout(
+                                tokio::time::Duration::from_secs(30), 
+                                stream.next()
+                            ) => {
+                                match stream_result {
+                                    Ok(Some(response)) => {
+                                        match response {
+                                            Ok(logs_response) => {
+                                                if let Some(content) = logs_response.content {
+                                                    match content {
+                                                        proto::get_logs_response::Content::LogEntry(entry) => {
+                                                            if tx_clone.send(entry).await.is_err() {
+                                                                return; // Channel closed
+                                                            }
+                                                        }
+                                                        proto::get_logs_response::Content::Event(_) => {
+                                                            // Ignore events in logs command
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                eprintln!("{} Error receiving logs: {}", "✗".red(), e);
+                                                return;
                                             }
                                         }
-                                        proto::get_logs_response::Content::Event(_) => {
-                                            // Ignore events in logs command
+                                    }
+                                    Ok(None) => {
+                                        // Stream ended normally
+                                        return;
+                                    }
+                                    Err(_) => {
+                                        // Timeout occurred - check shutdown flag and continue
+                                        if shutdown_flag_clone.load(Ordering::Relaxed) {
+                                            return;
                                         }
+                                        continue;
                                     }
                                 }
                             }
-                            Err(e) => {
-                                eprintln!("{} Error receiving logs: {}", "✗".red(), e);
-                                break;
+                            // Check for shutdown signal every 100ms
+                            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                                if shutdown_flag_clone.load(Ordering::Relaxed) {
+                                    return;
+                                }
                             }
                         }
                     }
@@ -200,14 +224,26 @@ impl LogsCommand {
         // Drop original tx to ensure channel closes when task completes
         drop(tx);
 
-        // Process and display logs
-        while let Some(entry) = rx.recv().await {
-            // Check if we should shutdown
-            if shutdown_flag.load(Ordering::Relaxed) {
-                break;
+        // Process and display logs with shutdown handling
+        loop {
+            tokio::select! {
+                entry = rx.recv() => {
+                    match entry {
+                        Some(entry) => {
+                            print_log_entry(&entry, &color_opts);
+                        }
+                        None => {
+                            // Channel closed, all streams finished
+                            break;
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                    if shutdown_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
+                }
             }
-
-            print_log_entry(&entry, &color_opts);
         }
 
         // Wait for all tasks to complete
