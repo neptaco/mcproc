@@ -13,6 +13,7 @@ use colored::Colorize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
@@ -624,6 +625,111 @@ impl ProcessManager {
             }
             Err(e) => {
                 warn!("Failed to check process {} status: {}", name, e);
+            }
+        }
+    }
+
+    /// Start a background task that periodically checks and synchronizes process states
+    pub fn start_periodic_sync(&self) {
+        let registry = self.registry.clone();
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                
+                // Get all processes that should be checked
+                let processes = registry.list_processes();
+                let active_processes: Vec<_> = processes
+                    .into_iter()
+                    .filter(|p| matches!(p.get_status(), ProcessStatus::Running | ProcessStatus::Starting))
+                    .collect();
+                
+                if !active_processes.is_empty() {
+                    debug!("Periodic sync: checking {} active processes", active_processes.len());
+                    
+                    for process in active_processes {
+                        // Use the existing sync_process_status logic
+                        Self::sync_process_status_static(&process).await;
+                    }
+                }
+            }
+        });
+        
+        info!("Started periodic process state synchronization (interval: 10s)");
+    }
+
+    /// Static version of sync_process_status for use in background tasks
+    async fn sync_process_status_static(proxy: &Arc<ProxyInfo>) {
+        let name = &proxy.name;
+        debug!(
+            "sync_process_status: checking process {} (PID: {})",
+            name, proxy.pid
+        );
+        
+        // Check if process monitor has already detected exit
+        if let Ok(exit_code) = proxy.exit_code.lock() {
+            if let Some(code) = *exit_code {
+                // Process has exited - ensure status reflects this
+                let current_status = proxy.get_status();
+                if matches!(
+                    current_status,
+                    ProcessStatus::Running | ProcessStatus::Starting
+                ) {
+                    // Update status based on exit code
+                    let new_status = if code == 0 {
+                        ProcessStatus::Stopped
+                    } else {
+                        ProcessStatus::Failed
+                    };
+                    proxy.set_status(new_status);
+                    info!(
+                        "Periodic sync: updated process {} from {:?} to {:?} (exit_code: {})",
+                        name, current_status, new_status, code
+                    );
+                }
+                return;
+            }
+        }
+
+        // Double-check process is actually running using kill -0
+        let pid = proxy.pid;
+        match tokio::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .await
+        {
+            Ok(output) => {
+                if !output.status.success() {
+                    // Process is not running
+                    let current_status = proxy.get_status();
+                    if matches!(current_status, ProcessStatus::Starting) {
+                        // Process died during startup - mark as failed
+                        proxy.set_status(ProcessStatus::Failed);
+                        info!(
+                            "Periodic sync: process {} (PID {}) died during startup, marked as Failed",
+                            name, pid
+                        );
+                    } else if matches!(current_status, ProcessStatus::Running) {
+                        // Process was running but is now dead
+                        proxy.set_status(ProcessStatus::Failed);
+                        info!(
+                            "Periodic sync: process {} (PID {}) is no longer running, marked as Failed",
+                            name, pid
+                        );
+                    }
+                } else if matches!(proxy.get_status(), ProcessStatus::Starting) {
+                    // Process is alive and was starting, update to Running
+                    proxy.set_status(ProcessStatus::Running);
+                    info!(
+                        "Periodic sync: process {} (PID {}) is now running, updated status",
+                        name, pid
+                    );
+                }
+            }
+            Err(e) => {
+                warn!("Failed to check process {} status during periodic sync: {}", name, e);
             }
         }
     }
