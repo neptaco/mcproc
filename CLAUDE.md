@@ -329,6 +329,27 @@ Remaining enhancements:
 - `--project` - Specify project (defaults to current directory name)
 - Environment variable `MCPROC_DEFAULT_PROJECT` can set default project
 
+### Debugging
+For debugging process group handling or other daemon behavior:
+
+**Recommended approach using task command:**
+```bash
+# Install and restart daemon with debug logging
+task debug
+```
+
+**Manual approach:**
+```bash
+# Start daemon with debug logging for mcproc only
+RUST_LOG=mcproc=debug mcproc daemon start
+
+# Or with info level logging for mcproc only
+RUST_LOG=mcproc=info mcproc daemon start
+
+# Or restart with debug logging
+RUST_LOG=mcproc=debug mcproc daemon restart
+```
+
 ## Validation Rules
 
 ### Process Name Validation

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 /// Process lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,16 +142,31 @@ impl ProxyInfo {
 
         // Send SIGTERM or SIGKILL based on force flag
         let signal = if force { "KILL" } else { "TERM" };
+
+        // On Unix, send signal to the entire process group
+        #[cfg(unix)]
+        let pid_arg = {
+            let pg_pid = format!("-{}", self.pid); // Negative PID targets the process group
+            info!("Stopping process group {} with signal {}", pg_pid, signal);
+            pg_pid
+        };
+
+        #[cfg(not(unix))]
+        let pid_arg = self.pid.to_string();
+
         let output = tokio::process::Command::new("kill")
             .arg(format!("-{}", signal))
-            .arg(self.pid.to_string())
+            .arg(pid_arg)
             .output()
             .await
             .map_err(|e| format!("Failed to send signal: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("Failed to stop process: {}", stderr));
+            // Check if the error is "No such process" which is ok if process already exited
+            if !stderr.contains("No such process") && !stderr.contains("no such process") {
+                return Err(format!("Failed to stop process: {}", stderr));
+            }
         }
 
         self.set_status(ProcessStatus::Stopped);

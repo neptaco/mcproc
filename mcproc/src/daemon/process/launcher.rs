@@ -121,6 +121,29 @@ impl ProcessLauncher {
         // Kill on drop to ensure cleanup
         command.kill_on_drop(true);
 
+        // Create a new process group for the child process on Unix
+        #[cfg(unix)]
+        {
+            // Set the process group ID to be the same as the PID (0 means use own PID)
+            // This allows us to kill the entire process tree later
+            unsafe {
+                command.pre_exec(|| {
+                    // First try to create a new session
+                    let sid_result = libc::setsid();
+                    if sid_result == -1 {
+                        // If setsid fails (e.g., already a session leader), try setpgid as fallback
+                        let pgid_result = libc::setpgid(0, 0);
+                        if pgid_result == -1 {
+                            // Both failed - this is unusual but we'll continue anyway
+                            // The process will still run, just not in its own process group
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            debug!("Configured process group creation for {}", params.name);
+        }
+
         // Log file will be created automatically on first write
         info!(
             "Starting process {} in project {}",

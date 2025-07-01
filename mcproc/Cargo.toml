@@ -30,6 +30,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # Process management
 dashmap.workspace = true
 regex.workspace = true
+libc = "0.2"
 
 # Logging
 tracing.workspace = true
