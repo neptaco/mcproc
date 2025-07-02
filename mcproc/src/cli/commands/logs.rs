@@ -323,7 +323,7 @@ fn print_log_entry_with_process(
     content: &str,
     color_opts: &ColorOptions,
 ) {
-    let padded_name = format!("{:10}", process_name);
+    let padded_name = format!("{:15}", process_name);
 
     if color_opts.raw_color {
         println!("{} {} | {}", timestamp, padded_name, content);
