@@ -49,7 +49,7 @@ impl ToolHandler for StartTool {
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Unique identifier for this process. Use descriptive names like 'frontend-dev', 'backend-api', 'docs-server'. This name is used to reference the process in other commands." },
+                    "name": { "type": "string", "description": "Unique identifier for this process. Use descriptive names like 'frontend-dev', 'backend-api', 'docs-server'. Do NOT include the project name in the process name as processes are already organized by project. This name is used to reference the process in other commands." },
                     "cmd": { "type": "string", "description": "Shell command to execute. Use this for commands that need shell features like pipes (|), redirects (>), or environment variable expansion. Examples: 'npm run dev', 'yarn start', 'python -m http.server 8000', 'NODE_ENV=development npm start'. Choose either 'cmd' or 'args', not both." },
                     "args": { 
                         "type": "array", 

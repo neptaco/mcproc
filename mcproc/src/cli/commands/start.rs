@@ -10,7 +10,7 @@ use tonic::Request;
 
 #[derive(Debug, Args)]
 pub struct StartCommand {
-    /// Process name
+    /// Process name (do not include project name - processes are already organized by project)
     name: String,
 
     /// Command to execute (use with shell)
