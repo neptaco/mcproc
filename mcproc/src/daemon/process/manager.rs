@@ -305,16 +305,24 @@ impl ProcessManager {
             });
         }
 
-        // Wait for pattern match or initial startup time
+        // Wait for pattern match or initial startup time with timeout
         if let Some(rx) = log_ready_rx {
-            match rx.await {
-                Ok(_) => {
+            let wait_duration = tokio::time::Duration::from_secs(
+                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs) as u64 + 5, // Extra 5 seconds buffer
+            );
+            
+            match tokio::time::timeout(wait_duration, rx).await {
+                Ok(Ok(_)) => {
                     debug!("Log pattern matched for process {}", name);
                     // Pattern matched - but still need to verify process is running
                 }
-                Err(_) => {
-                    // Channel closed without match (likely timeout)
+                Ok(Err(_)) => {
+                    // Channel closed without match (likely timeout in HyperLogStreamer)
                     debug!("Pattern match channel closed for process {}", name);
+                }
+                Err(_) => {
+                    // Timeout in ProcessManager (safety net)
+                    warn!("ProcessManager timeout waiting for pattern match for process {}", name);
                 }
             }
         } else {

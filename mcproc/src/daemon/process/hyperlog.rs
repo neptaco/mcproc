@@ -129,10 +129,14 @@ impl HyperLogStreamer {
                             *timeout_flag = true;
                         }
 
-                        // Close the log_ready channel
+                        // Close the log_ready channel (only if not already closed)
                         if let Some(ref tx) = config.log_ready_tx {
                             if let Ok(mut tx_guard) = tx.lock() {
-                                tx_guard.take();
+                                if tx_guard.take().is_some() {
+                                    debug!("Timeout notification sent (channel closed)");
+                                } else {
+                                    debug!("Timeout notification already sent or channel already closed");
+                                }
                             }
                         }
 
@@ -181,10 +185,14 @@ impl HyperLogStreamer {
                                 *timeout_flag = true;
                             }
 
-                            // Close the log_ready channel
+                            // Close the log_ready channel (only if not already closed)
                             if let Some(ref tx) = config.log_ready_tx {
                                 if let Ok(mut tx_guard) = tx.lock() {
-                                    tx_guard.take();
+                                    if tx_guard.take().is_some() {
+                                        debug!("Timeout notification sent (channel closed)");
+                                    } else {
+                                        debug!("Timeout notification already sent or channel already closed");
+                                    }
                                 }
                             }
 
@@ -302,11 +310,14 @@ impl HyperLogStreamer {
                                         *matched_line = Some(line_trimmed.to_string());
                                     }
 
-                                    // Notify ready
+                                    // Notify ready (only if not already notified)
                                     if let Some(ref tx) = config.log_ready_tx {
                                         if let Ok(mut tx_guard) = tx.lock() {
                                             if let Some(sender) = tx_guard.take() {
+                                                debug!("Sending pattern match notification");
                                                 let _ = sender.send(());
+                                            } else {
+                                                debug!("Pattern match notification already sent or channel closed");
                                             }
                                         }
                                     }
