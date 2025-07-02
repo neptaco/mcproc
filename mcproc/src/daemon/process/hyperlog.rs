@@ -286,47 +286,53 @@ impl HyperLogStreamer {
 
                 // Check for pattern match on this line if needed
                 if let Some(ref pattern) = config.log_pattern {
-                    if let Ok(pattern_matched) = config.pattern_matched.lock() {
-                        if !*pattern_matched {
-                            // Convert line to string for pattern matching
-                            if let Ok(line_text) = std::str::from_utf8(&line_with_newline) {
-                                let line_trimmed = line_text.trim_end();
-                                debug!(
-                                    "Checking pattern '{}' against line: '{}'",
-                                    pattern.as_str(), line_trimmed
+                    // Check if pattern already matched first
+                    let already_matched = config.pattern_matched.lock().map(|g| *g).unwrap_or(false);
+                    
+                    if !already_matched {
+                        // Convert line to string for pattern matching
+                        if let Ok(line_text) = std::str::from_utf8(&line_with_newline) {
+                            let line_trimmed = line_text.trim_end();
+                            debug!(
+                                "Checking pattern '{}' against line: '{}'",
+                                pattern.as_str(), line_trimmed
+                            );
+                            if pattern.is_match(line_trimmed) {
+                                info!(
+                                    "Found pattern match: pattern='{}', line='{}' in {} ({})",
+                                    pattern.as_str(), line_trimmed, config.process_key, config.stream_name
                                 );
-                                if pattern.is_match(line_trimmed) {
-                                    info!(
-                                        "Found pattern match: pattern='{}', line='{}' in {} ({})",
-                                        pattern.as_str(), line_trimmed, config.process_key, config.stream_name
-                                    );
 
-                                    if let Ok(mut pattern_matched) = config.pattern_matched.lock() {
-                                        *pattern_matched = true;
-                                    }
+                                // Set pattern matched flag
+                                if let Ok(mut pattern_matched) = config.pattern_matched.lock() {
+                                    *pattern_matched = true;
+                                }
 
-                                    // Store matched line
-                                    if let Ok(mut matched_line) = config.matched_line.lock() {
-                                        *matched_line = Some(line_trimmed.to_string());
-                                    }
+                                // Store matched line
+                                if let Ok(mut matched_line) = config.matched_line.lock() {
+                                    *matched_line = Some(line_trimmed.to_string());
+                                }
 
-                                    // Notify ready (only if not already notified)
-                                    if let Some(ref tx) = config.log_ready_tx {
-                                        if let Ok(mut tx_guard) = tx.lock() {
-                                            if let Some(sender) = tx_guard.take() {
-                                                debug!("Sending pattern match notification");
-                                                let _ = sender.send(());
+                                // Notify ready (only if not already notified)
+                                if let Some(ref tx) = config.log_ready_tx {
+                                    if let Ok(mut tx_guard) = tx.lock() {
+                                        if let Some(sender) = tx_guard.take() {
+                                            debug!("Sending pattern match notification");
+                                            if let Err(_) = sender.send(()) {
+                                                debug!("Failed to send pattern match notification - receiver dropped");
                                             } else {
-                                                debug!("Pattern match notification already sent or channel closed");
+                                                debug!("Pattern match notification sent successfully");
                                             }
+                                        } else {
+                                            debug!("Pattern match notification already sent or channel closed");
                                         }
                                     }
-                                } else {
-                                    debug!(
-                                        "Pattern '{}' did not match line: '{}'",
-                                        pattern.as_str(), line_trimmed
-                                    );
                                 }
+                            } else {
+                                debug!(
+                                    "Pattern '{}' did not match line: '{}'",
+                                    pattern.as_str(), line_trimmed
+                                );
                             }
                         }
                     }

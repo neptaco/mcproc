@@ -308,7 +308,7 @@ impl ProcessManager {
         // Wait for pattern match or initial startup time with timeout
         if let Some(rx) = log_ready_rx {
             let wait_duration = tokio::time::Duration::from_secs(
-                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs) as u64 + 5, // Extra 5 seconds buffer
+                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs) as u64 + 10, // Extra 10 seconds buffer (longer than CLI timeout)
             );
             
             match tokio::time::timeout(wait_duration, rx).await {
@@ -357,13 +357,6 @@ impl ProcessManager {
 
         // Get matched line if pattern was found
         let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
-
-        // Debug log to check what we're returning
-        debug!(
-            "Process {} - matched_line: {}",
-            name,
-            collected_matched_line.is_some()
-        );
 
         Ok((
             proxy_arc,

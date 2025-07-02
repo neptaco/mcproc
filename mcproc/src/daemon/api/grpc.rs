@@ -119,36 +119,36 @@ impl ProcessManagerService for GrpcService {
                     // We no longer stream logs during startup
                     // Log context is now included in ProcessInfo
 
-                    // Debug log to verify we have log context
-                    debug!(
-                        "gRPC start_process - process: {}, log_context: {} lines, matched_line: {}",
-                        process.name,
-                        log_context.len(),
-                        matched_line.is_some()
-                    );
-
                     // Send final process info
                     let current_status = process.get_status();
-                    let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
-                        // Get exit details if process failed
-                        let code = *process.exit_code.lock().unwrap();
-                        let reason = code.map(format_exit_reason);
-                        let stderr = process.ring.lock().ok().map(|ring| {
-                            ring.iter()
-                                .take(5)
-                                .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        }).unwrap_or_default();
-                        (code, reason, Some(stderr))
-                    } else {
-                        (None, None, None)
+                    
+                    // Get exit details without blocking
+                    let (exit_code, exit_reason, stderr_tail) = match process.exit_code.try_lock() {
+                        Ok(code_guard) => {
+                            if let Some(code) = *code_guard {
+                                let reason = Some(format_exit_reason(code));
+                                let stderr = process.ring.try_lock().ok().map(|ring| {
+                                    ring.iter()
+                                        .take(5)
+                                        .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                }).unwrap_or_default();
+                                (Some(code), reason, Some(stderr))
+                            } else {
+                                (None, None, None)
+                            }
+                        }
+                        Err(_) => {
+                            // Don't block if mutex is locked
+                            (None, None, None)
+                        }
                     };
 
-                    // Get detected ports
+                    // Get detected ports (non-blocking)
                     let ports = if let Some(port) = process.port {
                         vec![port as u32]
-                    } else if let Ok(detected) = process.detected_port.lock() {
+                    } else if let Ok(detected) = process.detected_port.try_lock() {
                         detected.map(|p| vec![p as u32]).unwrap_or_default()
                     } else {
                         Vec::new()

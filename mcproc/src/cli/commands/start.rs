@@ -80,7 +80,7 @@ impl StartCommand {
             toolchain: self.toolchain,
         };
 
-        // Set timeout to wait_timeout + 5 seconds to allow for process startup
+        // Set timeout to wait_timeout + 5 seconds to allow for process startup and pattern matching
         let timeout = Duration::from_secs((self.wait_timeout + 5) as u64);
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);
