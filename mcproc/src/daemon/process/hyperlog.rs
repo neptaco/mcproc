@@ -120,7 +120,7 @@ impl HyperLogStreamer {
                     
                     tokio::select! {
                     // Pattern matching timeout
-                    _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) => {
+                    _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
                         info!("Log pattern matching timeout reached for {} ({})",
                               config.process_key, config.stream_name);
 
@@ -172,7 +172,7 @@ impl HyperLogStreamer {
                     // No batch to process, just wait for chunks
                     tokio::select! {
                         // Pattern matching timeout
-                        _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) => {
+                        _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
                             info!("Log pattern matching timeout reached for {} ({})",
                                   config.process_key, config.stream_name);
 
@@ -275,19 +275,22 @@ impl HyperLogStreamer {
                         error!("Failed to write log to file: {}", e);
                     }
                 });
-            }
 
-            // Check for pattern match if needed (now done per line during processing)
-            if let Some(ref pattern) = config.log_pattern {
-                if let Ok(pattern_matched) = config.pattern_matched.lock() {
-                    if !*pattern_matched {
-                        // Convert remaining buffer to string for pattern matching
-                        if let Ok(text) = std::str::from_utf8(line_buffer) {
-                            for line in text.lines() {
-                                if pattern.is_match(line) {
-                                    debug!(
-                                        "Found pattern match: '{}' in {} ({})",
-                                        line, config.process_key, config.stream_name
+                // Check for pattern match on this line if needed
+                if let Some(ref pattern) = config.log_pattern {
+                    if let Ok(pattern_matched) = config.pattern_matched.lock() {
+                        if !*pattern_matched {
+                            // Convert line to string for pattern matching
+                            if let Ok(line_text) = std::str::from_utf8(&line_with_newline) {
+                                let line_trimmed = line_text.trim_end();
+                                debug!(
+                                    "Checking pattern '{}' against line: '{}'",
+                                    pattern.as_str(), line_trimmed
+                                );
+                                if pattern.is_match(line_trimmed) {
+                                    info!(
+                                        "Found pattern match: pattern='{}', line='{}' in {} ({})",
+                                        pattern.as_str(), line_trimmed, config.process_key, config.stream_name
                                     );
 
                                     if let Ok(mut pattern_matched) = config.pattern_matched.lock() {
@@ -296,7 +299,7 @@ impl HyperLogStreamer {
 
                                     // Store matched line
                                     if let Ok(mut matched_line) = config.matched_line.lock() {
-                                        *matched_line = Some(line.to_string());
+                                        *matched_line = Some(line_trimmed.to_string());
                                     }
 
                                     // Notify ready
@@ -307,14 +310,19 @@ impl HyperLogStreamer {
                                             }
                                         }
                                     }
-
-                                    break;
+                                } else {
+                                    debug!(
+                                        "Pattern '{}' did not match line: '{}'",
+                                        pattern.as_str(), line_trimmed
+                                    );
                                 }
                             }
                         }
                     }
                 }
             }
+
+            // Pattern matching is now done per line above - no need for buffer checking
 
             // Clean up buffer if it gets too large (incomplete line protection)
             if line_buffer.len() > 1024 * 1024 {
