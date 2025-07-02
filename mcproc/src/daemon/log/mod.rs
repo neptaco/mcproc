@@ -66,7 +66,8 @@ impl LogHub {
 
             match OpenOptions::new()
                 .create(true)
-                .append(true)
+                .write(true)
+                .truncate(true)  // Clear file on each process start
                 .open(&log_file_path)
                 .await
             {
@@ -86,16 +87,19 @@ impl LogHub {
         // Format log line
         let now = chrono::Utc::now();
         let timestamp_str = now.format("%Y-%m-%d %H:%M:%S%.3f");
-        let log_line = format!("{} [{}] {}\n", timestamp_str, level, content_str.trim());
+        let _log_line = format!("{} [{}] {}\n", timestamp_str, level, content_str.trim());
 
-        // Write to file
-        if let Some(file) = handles.get_mut(&handle_key) {
-            file.write_all(log_line.as_bytes()).await.map_err(|e| {
-                eprintln!("Failed to write log for {}: {}", handle_key, e);
-                e
-            })?;
-            // Ensure data is flushed
-            file.flush().await?;
+        // Write to file if enabled
+        if self.config.logging.enable_file_logging {
+            if let Some(file) = handles.get_mut(&handle_key) {
+                file.write_all(_log_line.as_bytes()).await.map_err(|e| {
+                    eprintln!("Failed to write log for {}: {}", handle_key, e);
+                    e
+                })?;
+                // Don't flush on every write - let the OS buffer handle it
+                // This significantly improves performance for high-volume logging
+                // file.flush().await?;
+            }
         }
 
         // Publish log event if event hub is available
@@ -108,16 +112,17 @@ impl LogHub {
                     seconds: now.timestamp(),
                     nanos: now.timestamp_subsec_nanos() as i32,
                 }),
-                content: content_owned.clone(),
+                content: content_owned.trim_end().to_string(), // Remove trailing newlines only, preserve indentation
                 level: if is_stderr { 2 } else { 1 }, // ERROR = 2, INFO = 1
                 process_name: None,                   // Will be set by subscriber if needed
             };
 
             debug!(
-                "Publishing log event for {}/{}: {}",
+                "Publishing log event for {}/{}: {} (timestamp: {})",
                 key.project,
                 key.name,
-                content_owned.trim()
+                content_owned.trim_end(),
+                now.format("%H:%M:%S%.3f")
             );
 
             event_hub.publish(StreamEvent::Log {

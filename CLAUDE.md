@@ -159,17 +159,37 @@ The project uses a Cargo workspace with the following crates:
 ## Implementation Specifications
 
 ### Logging
-- **Log retention**: 7 days (configurable)
-- **Max file size**: 50MB per log file (configurable)
+- **File logging**: Disabled by default for performance
+- **Enable file logging**: Set `enable_file_logging = true` in config
+- **Log retention**: 7 days (configurable, not yet implemented)
+- **Max file size**: 50MB per log file (configurable, not yet implemented)
 - **Ring buffer**: 10,000 lines in memory per process
 - **Log directory**: `$XDG_STATE_HOME/mcproc/log/{project}/` (defaults to `~/.local/state/mcproc/log/{project}/`)
 - **Format**: `{process_name}.log` (organized by project directory)
 - **Daemon log**: `$XDG_STATE_HOME/mcproc/log/mcprocd.log` (only when started via `mcproc daemon start`)
 - **Features**: 
   - Real-time log streaming with follow mode
-  - Regex-based log searching with context
-  - Time-based filtering (since/until/last)
+  - Regex-based log searching with context (requires file logging)
+  - Time-based filtering (since/until/last, requires file logging)
   - Process restart detection and seamless log continuation
+
+#### Configuration
+To enable file logging, create `$XDG_CONFIG_HOME/mcproc/config.toml` with complete configuration:
+
+```toml
+[logging]
+enable_file_logging = true
+max_size_mb = 100
+max_files = 10
+ring_buffer_size = 10000
+follow_poll_interval_ms = 100
+```
+
+**Performance Impact**: Enabling file logging may reduce performance for high-volume processes like Next.js development servers. The new hyperlog implementation minimizes impact through:
+- Chunk-based processing (8KB chunks)
+- Batch writing (16 chunks or 100ms timeout)
+- Non-blocking async file writes
+- No flush() calls per write
 
 #### ANSI Color Code Handling
 - **Log Storage**: ANSI escape codes are preserved in log files and daemon memory

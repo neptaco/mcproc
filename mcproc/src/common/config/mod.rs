@@ -46,6 +46,8 @@ pub struct DaemonConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
+    /// Enable file logging (default: true)
+    pub enable_file_logging: bool,
     /// Maximum size per log file in MB (not yet implemented)
     pub max_size_mb: u64,
     /// Maximum number of log files to keep (not yet implemented)
@@ -145,6 +147,7 @@ impl Default for Config {
                 log_buffer_size: 10000,
             },
             logging: LoggingConfig {
+                enable_file_logging: true,  // Default ON
                 max_size_mb: 100,
                 max_files: 10,
                 ring_buffer_size: 10000,

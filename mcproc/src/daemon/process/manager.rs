@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, warn};
 
 pub struct ProcessManager {
@@ -87,13 +87,9 @@ impl ProcessManager {
             (None, None)
         };
 
-        // Setup log streaming channel (always needed for continuous log streaming)
-        let log_stream_tx = Arc::new(Mutex::new(None::<mpsc::Sender<Vec<u8>>>));
-
         // Pattern match tracking
         let pattern_matched = Arc::new(Mutex::new(false));
         let timeout_occurred = Arc::new(Mutex::new(false));
-        let log_context = Arc::new(Mutex::new(Vec::new()));
         let matched_line = Arc::new(Mutex::new(None::<String>));
 
         // Launch the process
@@ -164,16 +160,14 @@ impl ProcessManager {
         let stdout_config = LogStreamConfig {
             stream_name: "stdout",
             process_key: process_key.clone(),
-            log_hub: self.log_hub.clone(),
             proxy: proxy_arc.clone(),
+            log_hub: self.log_hub.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
-            log_stream_tx: Some(log_stream_tx.clone()),
             pattern_matched: pattern_matched.clone(),
             timeout_occurred: timeout_occurred.clone(),
             wait_timeout,
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
-            log_context: log_context.clone(),
             matched_line: matched_line.clone(),
         };
         stdout_config.spawn_log_reader(stdout).await;
@@ -182,16 +176,14 @@ impl ProcessManager {
         let stderr_config = LogStreamConfig {
             stream_name: "stderr",
             process_key: process_key.clone(),
-            log_hub: self.log_hub.clone(),
             proxy: proxy_arc.clone(),
+            log_hub: self.log_hub.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
-            log_stream_tx: Some(log_stream_tx.clone()),
             pattern_matched: pattern_matched.clone(),
             timeout_occurred: timeout_occurred.clone(),
             wait_timeout,
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
-            log_context: log_context.clone(),
             matched_line: matched_line.clone(),
         };
         stderr_config.spawn_log_reader(stderr).await;
@@ -355,20 +347,13 @@ impl ProcessManager {
             _ => info!("Process {} in status {:?}", name, status),
         }
 
-        // Always get log context (not just when pattern matched)
-        let collected_log_context = log_context
-            .lock()
-            .ok()
-            .map(|g| g.clone())
-            .unwrap_or_default();
-
+        // Get matched line if pattern was found
         let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
 
         // Debug log to check what we're returning
         debug!(
-            "Process {} - log_context: {} lines, matched_line: {}",
+            "Process {} - matched_line: {}",
             name,
-            collected_log_context.len(),
             collected_matched_line.is_some()
         );
 
@@ -376,7 +361,7 @@ impl ProcessManager {
             proxy_arc,
             timeout_occurred.lock().map(|g| *g).unwrap_or(false),
             pattern_matched.lock().map(|g| *g).unwrap_or(false),
-            collected_log_context,
+            Vec::new(), // TODO: log_context is not collected by HyperLogStreamer
             collected_matched_line,
         ))
     }
@@ -632,22 +617,30 @@ impl ProcessManager {
     /// Start a background task that periodically checks and synchronizes process states
     pub fn start_periodic_sync(&self) {
         let registry = self.registry.clone();
-        
+
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
-                
+
                 // Get all processes that should be checked
                 let processes = registry.list_processes();
                 let active_processes: Vec<_> = processes
                     .into_iter()
-                    .filter(|p| matches!(p.get_status(), ProcessStatus::Running | ProcessStatus::Starting))
+                    .filter(|p| {
+                        matches!(
+                            p.get_status(),
+                            ProcessStatus::Running | ProcessStatus::Starting
+                        )
+                    })
                     .collect();
-                
+
                 if !active_processes.is_empty() {
-                    debug!("Periodic sync: checking {} active processes", active_processes.len());
-                    
+                    debug!(
+                        "Periodic sync: checking {} active processes",
+                        active_processes.len()
+                    );
+
                     for process in active_processes {
                         // Use the existing sync_process_status logic
                         Self::sync_process_status_static(&process).await;
@@ -655,7 +648,7 @@ impl ProcessManager {
                 }
             }
         });
-        
+
         info!("Started periodic process state synchronization (interval: 10s)");
     }
 
@@ -666,7 +659,7 @@ impl ProcessManager {
             "sync_process_status: checking process {} (PID: {})",
             name, proxy.pid
         );
-        
+
         // Check if process monitor has already detected exit
         if let Ok(exit_code) = proxy.exit_code.lock() {
             if let Some(code) = *exit_code {
@@ -729,7 +722,10 @@ impl ProcessManager {
                 }
             }
             Err(e) => {
-                warn!("Failed to check process {} status during periodic sync: {}", name, e);
+                warn!(
+                    "Failed to check process {} status during periodic sync: {}",
+                    name, e
+                );
             }
         }
     }

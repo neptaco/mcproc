@@ -1,5 +1,6 @@
 pub mod event;
 pub mod exit_handler;
+pub mod hyperlog;
 pub mod launcher;
 pub mod log_stream;
 pub mod manager;

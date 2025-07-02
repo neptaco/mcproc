@@ -81,6 +81,8 @@ tabled = "0.18"
 async-stream = "0.3"
 prost-types.workspace = true
 strip-ansi-escapes = "0.2.1"
+crossbeam-channel.workspace = true
+bytes.workspace = true
 
 # Platform specific
 [target.'cfg(unix)'.dependencies]

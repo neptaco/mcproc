@@ -7,6 +7,15 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+/// Log entry with timestamp for ring buffer storage
+#[derive(Debug, Clone)]
+pub struct LogChunk {
+    pub data: Vec<u8>,
+    pub timestamp: DateTime<Utc>,
+    #[allow(dead_code)] // Reserved for future stdout/stderr distinction
+    pub is_stderr: bool,
+}
+
 /// Process lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u8)]
@@ -82,7 +91,7 @@ pub struct ProxyInfo {
     /// Current process status (atomic for thread-safe updates)
     pub status: Arc<AtomicU8>,
     /// Ring buffer for recent log lines (10K capacity)
-    pub ring: Arc<Mutex<HeapRb<Vec<u8>>>>,
+    pub ring: Arc<Mutex<HeapRb<LogChunk>>>,
     /// Process ID
     pub pid: u32,
     /// Configured port (if any)

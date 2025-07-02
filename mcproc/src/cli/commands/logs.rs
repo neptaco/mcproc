@@ -167,7 +167,7 @@ impl LogsCommand {
                         tokio::select! {
                             // Wait for next stream message with timeout
                             stream_result = tokio::time::timeout(
-                                tokio::time::Duration::from_secs(30), 
+                                tokio::time::Duration::from_secs(30),
                                 stream.next()
                             ) => {
                                 match stream_result {

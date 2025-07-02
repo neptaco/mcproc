@@ -74,10 +74,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         log_hub.clone(),
         event_hub.clone(),
     ));
-    
+
     // Start periodic process state synchronization
     process_manager.start_periodic_sync();
-    
+
     info!("Components initialized successfully");
 
     // Start servers

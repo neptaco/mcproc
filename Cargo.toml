@@ -69,3 +69,5 @@ mockall = "0.13"
 # Additional dependencies
 tokio-stream = "0.1"
 log = "0.4"
+crossbeam-channel = "0.5"
+bytes = "1.5"

@@ -54,19 +54,10 @@ impl ProcessLauncher {
     ) -> Result<(tokio::process::Child, ProcessKey)> {
         let process_key = ProcessKey::new(params.project.clone(), params.name.clone());
 
-        // Build command
-        // Construct the command to execute via shell
+        // Build command - always use shell execution for consistency
         let shell_command = if !params.args.is_empty() {
-            // Join args into a single command string, properly escaping each argument
-            params
-                .args
-                .iter()
-                .map(|arg| {
-                    // Simple escaping: wrap in single quotes and escape any single quotes
-                    format!("'{}'", arg.replace("'", "'\"'\"'"))
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
+            // Convert args to shell command
+            params.args.join(" ")
         } else if let Some(cmd_str) = params.cmd {
             // Use the cmd string as-is
             cmd_str
@@ -76,7 +67,7 @@ impl ProcessLauncher {
             });
         };
 
-        // Build the actual command considering toolchain
+        // Build the actual command - always via shell
         let (final_command, exec_description) = if let Some(tool_str) = params.toolchain {
             match Toolchain::parse(&tool_str) {
                 Some(toolchain) => toolchain.wrap_command(&shell_command),
@@ -94,10 +85,8 @@ impl ProcessLauncher {
             (shell_command.clone(), format!("sh -c '{}'", shell_command))
         };
 
-        // Always execute via shell for consistent behavior
         let mut command = Command::new("sh");
         command.arg("-c").arg(&final_command);
-
         debug!("Executing command via shell: {}", exec_description);
 
         // Set working directory

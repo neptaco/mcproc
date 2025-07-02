@@ -3,6 +3,7 @@ use crate::common::exit_code::format_exit_reason;
 use crate::common::version::VERSION;
 use crate::daemon::log::LogHub;
 use crate::daemon::process::{ProcessManager, ProcessStatus};
+use crate::daemon::process::proxy::LogChunk;
 use crate::daemon::stream::{SharedStreamEventHub, StreamEvent, StreamFilter};
 use chrono::Utc;
 use proto::process_manager_server::{
@@ -135,7 +136,7 @@ impl ProcessManagerService for GrpcService {
                         let stderr = process.ring.lock().ok().map(|ring| {
                             ring.iter()
                                 .take(5)
-                                .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
                                 .collect::<Vec<_>>()
                                 .join("\n")
                         }).unwrap_or_default();
@@ -298,7 +299,7 @@ impl ProcessManagerService for GrpcService {
                             .map(|ring| {
                                 ring.iter()
                                     .take(5)
-                                    .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                                    .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
                                     .collect::<Vec<_>>()
                                     .join("\n")
                             })
@@ -737,10 +738,17 @@ impl ProcessManagerService for GrpcService {
             .join(&project)
             .join(format!("{}.log", req.name));
 
-        if !log_file.exists() {
+        // Try to get process first for memory-based search
+        
+        let process = self
+            .process_manager
+            .get_process_by_name_or_id_with_project(&req.name, Some(&req.project));
+
+        // If file doesn't exist and process doesn't exist, return error
+        if !log_file.exists() && process.is_none() {
             return Err(Status::not_found(format!(
-                "Log file not found: {}",
-                log_file.display()
+                "Process '{}' not found in project '{}'",
+                req.name, req.project
             )));
         }
 
@@ -757,10 +765,22 @@ impl ProcessManagerService for GrpcService {
         let before = req.before.map(|b| b as usize).unwrap_or(context);
         let after = req.after.map(|a| a as usize).unwrap_or(context);
 
-        // Read and process log file
-        let matches = grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
-            .await
-            .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?;
+        // Read and process logs (from file or memory)
+        let matches = if log_file.exists() {
+            // Read from file
+            info!("grep_logs: Using file-based search for {}", log_file.display());
+            grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
+                .await
+                .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?
+        } else if let Some(process) = process {
+            // Read from memory (ring buffer)
+            info!("grep_logs: Using memory-based search for {}/{}", req.project, req.name);
+            grep_from_memory(&process, &pattern, before, after, since_time, until_time, &req.name)
+                .map_err(|e| Status::internal(format!("Failed to grep memory: {}", e)))?
+        } else {
+            info!("grep_logs: No file and no process found for {}/{}", req.project, req.name);
+            Vec::new()
+        };
 
         Ok(Response::new(GrepLogsResponse { matches }))
     }
@@ -1132,4 +1152,81 @@ pub async fn start_grpc_server(
     }
 
     Ok(())
+}
+
+/// Grep logs from memory (ring buffer)
+fn grep_from_memory(
+    process: &std::sync::Arc<crate::daemon::process::proxy::ProxyInfo>,
+    pattern: &regex::Regex,
+    before: usize,
+    after: usize,
+    since_time: Option<chrono::DateTime<chrono::Utc>>,
+    until_time: Option<chrono::DateTime<chrono::Utc>>,
+    process_name: &str,
+) -> Result<Vec<proto::GrepMatch>, String> {
+    let mut all_lines = Vec::new();
+
+    // Get logs from ring buffer
+    if let Ok(ring) = process.ring.lock() {
+        let chunks: Vec<LogChunk> = ring.iter().cloned().collect();
+        info!("DEBUG grep_from_memory: Found {} chunks in ring buffer for process {}", chunks.len(), process_name);
+        
+        // Convert chunks to lines with timestamps
+        for log_chunk in chunks {
+            if let Ok(text) = std::str::from_utf8(&log_chunk.data) {
+                for line in text.lines() {
+                    // Apply time filter if specified
+                    if let Some(since) = since_time {
+                        if log_chunk.timestamp < since {
+                            continue;
+                        }
+                    }
+                    if let Some(until) = until_time {
+                        if log_chunk.timestamp > until {
+                            continue;
+                        }
+                    }
+                    
+                    let log_entry = proto::LogEntry {
+                        line_number: (all_lines.len() + 1) as u32,
+                        content: line.to_string(),
+                        timestamp: Some(prost_types::Timestamp {
+                            seconds: log_chunk.timestamp.timestamp(),
+                            nanos: log_chunk.timestamp.timestamp_subsec_nanos() as i32,
+                        }),
+                        level: 1, // Default to INFO
+                        process_name: Some(process_name.to_string()),
+                    };
+                    all_lines.push(log_entry);
+                }
+            }
+        }
+    }
+
+    let mut matches = Vec::new();
+
+    // Find matches and collect context
+    for (idx, entry) in all_lines.iter().enumerate() {
+        if pattern.is_match(&entry.content) {
+            let context_before = if before > 0 && idx >= before {
+                all_lines[idx.saturating_sub(before)..idx].to_vec()
+            } else {
+                all_lines[0..idx].to_vec()
+            };
+
+            let context_after = if after > 0 && idx + 1 + after <= all_lines.len() {
+                all_lines[idx + 1..idx + 1 + after].to_vec()
+            } else {
+                all_lines[idx + 1..].to_vec()
+            };
+
+            matches.push(proto::GrepMatch {
+                matched_line: Some(entry.clone()),
+                context_before,
+                context_after,
+            });
+        }
+    }
+
+    Ok(matches)
 }
