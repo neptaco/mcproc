@@ -159,12 +159,20 @@ impl StartCommand {
                         println!("  {} Process is ready (log pattern matched)", "✓".green());
                         println!("    Matched line: {}", matched_line.dimmed());
                     } else if process.wait_timeout_occurred.unwrap_or(false) {
-                        println!("  {} Process started but pattern not found (timeout)", "⚠".yellow());
-                        println!("    Waited {} seconds for pattern: {}", 
-                                 self.wait_timeout, 
-                                 self.wait_for_log.as_deref().unwrap_or("N/A"));
+                        println!(
+                            "  {} Process started but pattern not found (timeout)",
+                            "⚠".yellow()
+                        );
+                        println!(
+                            "    Waited {} seconds for pattern: {}",
+                            self.wait_timeout,
+                            self.wait_for_log.as_deref().unwrap_or("N/A")
+                        );
                     } else {
-                        println!("  {} Process started (pattern matching in progress)", "⚠".yellow());
+                        println!(
+                            "  {} Process started (pattern matching in progress)",
+                            "⚠".yellow()
+                        );
                     }
                 }
             }

@@ -147,7 +147,7 @@ impl Default for Config {
                 log_buffer_size: 10000,
             },
             logging: LoggingConfig {
-                enable_file_logging: true,  // Default ON
+                enable_file_logging: true, // Default ON
                 max_size_mb: 100,
                 max_files: 10,
                 ring_buffer_size: 10000,

@@ -2,8 +2,8 @@ use crate::common::config::Config;
 use crate::common::exit_code::format_exit_reason;
 use crate::common::version::VERSION;
 use crate::daemon::log::LogHub;
-use crate::daemon::process::{ProcessManager, ProcessStatus};
 use crate::daemon::process::proxy::LogChunk;
+use crate::daemon::process::{ProcessManager, ProcessStatus};
 use crate::daemon::stream::{SharedStreamEventHub, StreamEvent, StreamFilter};
 use chrono::Utc;
 use proto::process_manager_server::{
@@ -121,7 +121,7 @@ impl ProcessManagerService for GrpcService {
 
                     // Send final process info
                     let current_status = process.get_status();
-                    
+
                     // Get exit details without blocking
                     let (exit_code, exit_reason, stderr_tail) = match process.exit_code.try_lock() {
                         Ok(code_guard) => {
@@ -739,7 +739,7 @@ impl ProcessManagerService for GrpcService {
             .join(format!("{}.log", req.name));
 
         // Try to get process first for memory-based search
-        
+
         let process = self
             .process_manager
             .get_process_by_name_or_id_with_project(&req.name, Some(&req.project));
@@ -768,17 +768,28 @@ impl ProcessManagerService for GrpcService {
         // Read and process logs (from file or memory)
         let matches = if log_file.exists() {
             // Read from file
-            info!("grep_logs: Using file-based search for {}", log_file.display());
+            info!(
+                "grep_logs: Using file-based search for {}",
+                log_file.display()
+            );
             grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
                 .await
                 .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?
         } else if let Some(process) = process {
             // Read from memory (ring buffer)
-            info!("grep_logs: Using memory-based search for {}/{}", req.project, req.name);
-            grep_from_memory(&process, &pattern, before, after, since_time, until_time, &req.name)
-                .map_err(|e| Status::internal(format!("Failed to grep memory: {}", e)))?
+            info!(
+                "grep_logs: Using memory-based search for {}/{}",
+                req.project, req.name
+            );
+            grep_from_memory(
+                &process, &pattern, before, after, since_time, until_time, &req.name,
+            )
+            .map_err(|e| Status::internal(format!("Failed to grep memory: {}", e)))?
         } else {
-            info!("grep_logs: No file and no process found for {}/{}", req.project, req.name);
+            info!(
+                "grep_logs: No file and no process found for {}/{}",
+                req.project, req.name
+            );
             Vec::new()
         };
 
@@ -1169,8 +1180,12 @@ fn grep_from_memory(
     // Get logs from ring buffer
     if let Ok(ring) = process.ring.lock() {
         let chunks: Vec<LogChunk> = ring.iter().cloned().collect();
-        info!("DEBUG grep_from_memory: Found {} chunks in ring buffer for process {}", chunks.len(), process_name);
-        
+        info!(
+            "DEBUG grep_from_memory: Found {} chunks in ring buffer for process {}",
+            chunks.len(),
+            process_name
+        );
+
         // Convert chunks to lines with timestamps
         for log_chunk in chunks {
             if let Ok(text) = std::str::from_utf8(&log_chunk.data) {
@@ -1186,7 +1201,7 @@ fn grep_from_memory(
                             continue;
                         }
                     }
-                    
+
                     let log_entry = proto::LogEntry {
                         line_number: (all_lines.len() + 1) as u32,
                         content: line.to_string(),

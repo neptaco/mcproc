@@ -117,61 +117,61 @@ impl HyperLogStreamer {
                         last_flush + tokio::time::Duration::from_millis(BATCH_TIMEOUT_MS),
                     );
                     tokio::pin!(batch_timeout);
-                    
+
                     tokio::select! {
-                    // Pattern matching timeout
-                    _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
-                        info!("Log pattern matching timeout reached for {} ({})",
-                              config.process_key, config.stream_name);
+                        // Pattern matching timeout
+                        _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
+                            info!("Log pattern matching timeout reached for {} ({})",
+                                  config.process_key, config.stream_name);
 
-                        // Mark timeout occurred
-                        if let Ok(mut timeout_flag) = config.timeout_occurred.lock() {
-                            *timeout_flag = true;
+                            // Mark timeout occurred
+                            if let Ok(mut timeout_flag) = config.timeout_occurred.lock() {
+                                *timeout_flag = true;
+                            }
+
+                            // Close the log_ready channel (only if not already closed)
+                            if let Some(ref tx) = config.log_ready_tx {
+                                if let Ok(mut tx_guard) = tx.lock() {
+                                    if tx_guard.take().is_some() {
+                                        debug!("Timeout notification sent (channel closed)");
+                                    } else {
+                                        debug!("Timeout notification already sent or channel already closed");
+                                    }
+                                }
+                            }
+
+                            // Continue processing to capture remaining logs
                         }
+                        chunk = chunk_rx.recv() => {
+                            match chunk {
+                                Some(chunk) => {
+                                    batch.push(chunk);
 
-                        // Close the log_ready channel (only if not already closed)
-                        if let Some(ref tx) = config.log_ready_tx {
-                            if let Ok(mut tx_guard) = tx.lock() {
-                                if tx_guard.take().is_some() {
-                                    debug!("Timeout notification sent (channel closed)");
-                                } else {
-                                    debug!("Timeout notification already sent or channel already closed");
+                                    // Process batch if full
+                                    if batch.len() >= BATCH_SIZE {
+                                        Self::process_batch(
+                                            &config,
+                                            &mut batch,
+                                            &mut line_buffer,
+                                        );
+                                        last_flush = tokio::time::Instant::now();
+                                    }
+                                }
+                                None => {
+                                    // Channel closed, process remaining batch
+                                    if !batch.is_empty() {
+                                        Self::process_batch(&config, &mut batch, &mut line_buffer);
+                                    }
+                                    break;
                                 }
                             }
                         }
-
-                        // Continue processing to capture remaining logs
-                    }
-                    chunk = chunk_rx.recv() => {
-                        match chunk {
-                            Some(chunk) => {
-                                batch.push(chunk);
-
-                                // Process batch if full
-                                if batch.len() >= BATCH_SIZE {
-                                    Self::process_batch(
-                                        &config,
-                                        &mut batch,
-                                        &mut line_buffer,
-                                    );
-                                    last_flush = tokio::time::Instant::now();
-                                }
-                            }
-                            None => {
-                                // Channel closed, process remaining batch
-                                if !batch.is_empty() {
-                                    Self::process_batch(&config, &mut batch, &mut line_buffer);
-                                }
-                                break;
-                            }
+                        _ = &mut batch_timeout => {
+                            // Timeout reached, process current batch
+                            Self::process_batch(&config, &mut batch, &mut line_buffer);
+                            last_flush = tokio::time::Instant::now();
                         }
                     }
-                    _ = &mut batch_timeout => {
-                        // Timeout reached, process current batch
-                        Self::process_batch(&config, &mut batch, &mut line_buffer);
-                        last_flush = tokio::time::Instant::now();
-                    }
-                }
                 } else {
                     // No batch to process, just wait for chunks
                     tokio::select! {
@@ -254,12 +254,12 @@ impl HyperLogStreamer {
         for chunk in batch.drain(..) {
             // Append chunk to line buffer first
             line_buffer.extend_from_slice(&chunk);
-            
+
             // Process complete lines from the buffer
             while let Some(newline_pos) = line_buffer.iter().position(|&b| b == b'\n') {
                 // Extract the complete line (including newline)
                 let line_with_newline: Vec<u8> = line_buffer.drain(..=newline_pos).collect();
-                
+
                 // Write to ring buffer for in-memory storage with timestamp
                 let log_chunk = LogChunk {
                     data: line_with_newline.clone(),
@@ -287,20 +287,25 @@ impl HyperLogStreamer {
                 // Check for pattern match on this line if needed
                 if let Some(ref pattern) = config.log_pattern {
                     // Check if pattern already matched first
-                    let already_matched = config.pattern_matched.lock().map(|g| *g).unwrap_or(false);
-                    
+                    let already_matched =
+                        config.pattern_matched.lock().map(|g| *g).unwrap_or(false);
+
                     if !already_matched {
                         // Convert line to string for pattern matching
                         if let Ok(line_text) = std::str::from_utf8(&line_with_newline) {
                             let line_trimmed = line_text.trim_end();
                             debug!(
                                 "Checking pattern '{}' against line: '{}'",
-                                pattern.as_str(), line_trimmed
+                                pattern.as_str(),
+                                line_trimmed
                             );
                             if pattern.is_match(line_trimmed) {
                                 info!(
                                     "Found pattern match: pattern='{}', line='{}' in {} ({})",
-                                    pattern.as_str(), line_trimmed, config.process_key, config.stream_name
+                                    pattern.as_str(),
+                                    line_trimmed,
+                                    config.process_key,
+                                    config.stream_name
                                 );
 
                                 // Set pattern matched flag
@@ -318,10 +323,12 @@ impl HyperLogStreamer {
                                     if let Ok(mut tx_guard) = tx.lock() {
                                         if let Some(sender) = tx_guard.take() {
                                             debug!("Sending pattern match notification");
-                                            if let Err(_) = sender.send(()) {
+                                            if sender.send(()).is_err() {
                                                 debug!("Failed to send pattern match notification - receiver dropped");
                                             } else {
-                                                debug!("Pattern match notification sent successfully");
+                                                debug!(
+                                                    "Pattern match notification sent successfully"
+                                                );
                                             }
                                         } else {
                                             debug!("Pattern match notification already sent or channel closed");
@@ -331,7 +338,8 @@ impl HyperLogStreamer {
                             } else {
                                 debug!(
                                     "Pattern '{}' did not match line: '{}'",
-                                    pattern.as_str(), line_trimmed
+                                    pattern.as_str(),
+                                    line_trimmed
                                 );
                             }
                         }

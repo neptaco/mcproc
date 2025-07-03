@@ -67,7 +67,7 @@ impl LogHub {
             match OpenOptions::new()
                 .create(true)
                 .write(true)
-                .truncate(true)  // Clear file on each process start
+                .truncate(true) // Clear file on each process start
                 .open(&log_file_path)
                 .await
             {
@@ -113,8 +113,8 @@ impl LogHub {
                     nanos: now.timestamp_subsec_nanos() as i32,
                 }),
                 content: content_owned.trim_end().to_string(), // Remove trailing newlines only, preserve indentation
-                level: if is_stderr { 2 } else { 1 }, // ERROR = 2, INFO = 1
-                process_name: None,                   // Will be set by subscriber if needed
+                level: if is_stderr { 2 } else { 1 },          // ERROR = 2, INFO = 1
+                process_name: None, // Will be set by subscriber if needed
             };
 
             debug!(

@@ -308,9 +308,11 @@ impl ProcessManager {
         // Wait for pattern match or initial startup time with timeout
         if let Some(rx) = log_ready_rx {
             let wait_duration = tokio::time::Duration::from_secs(
-                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs) as u64 + 10, // Extra 10 seconds buffer (longer than CLI timeout)
+                wait_timeout.unwrap_or(self.config.process.startup.default_wait_timeout_secs)
+                    as u64
+                    + 10, // Extra 10 seconds buffer (longer than CLI timeout)
             );
-            
+
             match tokio::time::timeout(wait_duration, rx).await {
                 Ok(Ok(_)) => {
                     debug!("Log pattern matched for process {}", name);
@@ -322,7 +324,10 @@ impl ProcessManager {
                 }
                 Err(_) => {
                     // Timeout in ProcessManager (safety net)
-                    warn!("ProcessManager timeout waiting for pattern match for process {}", name);
+                    warn!(
+                        "ProcessManager timeout waiting for pattern match for process {}",
+                        name
+                    );
                 }
             }
         } else {
