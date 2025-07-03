@@ -133,9 +133,16 @@ jobs:
           retention-days: 7
 
   build-macos:
-    name: Build aarch64-apple-darwin
+    name: Build ${{ matrix.target }}
     needs: setup
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
     
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +150,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -160,33 +167,33 @@ jobs:
         uses: actions/cache@v4
         with:
           path: target
-          key: ${{ runner.os }}-cargo-build-aarch64-apple-darwin-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-build-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-aarch64-apple-darwin-
+            ${{ runner.os }}-cargo-build-${{ matrix.target }}-
             ${{ runner.os }}-cargo-build-
 
       - name: Install protobuf compiler
         run: brew install protobuf
 
-      - name: Build for aarch64-apple-darwin
-        run: cargo build --release --target aarch64-apple-darwin
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Create release archive
         run: |
           mkdir -p releases
-          tar -czf releases/mcproc-${{ needs.setup.outputs.version }}-aarch64-apple-darwin.tar.gz \
-            -C target/aarch64-apple-darwin/release mcproc
+          tar -czf releases/mcproc-${{ needs.setup.outputs.version }}-${{ matrix.target }}.tar.gz \
+            -C target/${{ matrix.target }}/release mcproc
 
       - name: Generate checksum
         run: |
           cd releases
-          shasum -a 256 mcproc-${{ needs.setup.outputs.version }}-aarch64-apple-darwin.tar.gz > \
-            mcproc-${{ needs.setup.outputs.version }}-aarch64-apple-darwin.tar.gz.sha256
+          shasum -a 256 mcproc-${{ needs.setup.outputs.version }}-${{ matrix.target }}.tar.gz > \
+            mcproc-${{ needs.setup.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: mcproc-aarch64-apple-darwin
+          name: mcproc-${{ matrix.target }}
           path: releases/*
           retention-days: 7
 

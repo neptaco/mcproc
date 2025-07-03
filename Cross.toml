@@ -42,6 +42,16 @@ pre-build = [
 ]
 
 
+[target.x86_64-apple-darwin]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y wget unzip",
+    "wget https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip",
+    "unzip protoc-21.12-linux-x86_64.zip -d /usr/local/",
+    "chmod +x /usr/local/bin/protoc",
+    "/usr/local/bin/protoc --version"
+]
+
 [target.aarch64-apple-darwin]
 pre-build = [
     "apt-get update",
