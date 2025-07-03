@@ -29,6 +29,9 @@ mcprocは、AIエージェント開発と従来のコマンドライン作業の
 - 🛡️ **XDG準拠**: XDG Base Directory仕様に従った適切なファイル構成
 - ⚡ **ログパターン待機**: プロセスを開始し、特定のログパターンを待機して準備完了を確認
 - 🔍 **高度な検索**: ログ分析のための時間ベースのフィルタリング、コンテキスト行、正規表現サポート
+- 🧰 **ツールチェーンサポート**: バージョン管理ツール（mise、asdf、nvm、rbenvなど）を通じてコマンドを実行
+- 🧹 **クリーンコマンド**: プロジェクト内のすべてのプロセスを一度に停止
+- 🌲 **プロセスグループ**: 親プロセスを停止するときに子プロセスを自動的にクリーンアップ
 
 ## インストール
 
@@ -110,11 +113,12 @@ AIエージェントがバックグラウンドでプロセスを管理してい
 | コマンド | 説明 | フラグ | 例 |
 |---------|-------------|-------|---------|
 | 🗒️ `ps` | すべての実行中プロセスを一覧表示 | `-s, --status <STATUS>` ステータスでフィルタ | `mcproc ps --status running` |
-| 🚀 `start **<NAME>**` | 新しいプロセスを開始 | `-c, --cmd <CMD>` 実行するコマンド<br>`-d, --cwd <DIR>` 作業ディレクトリ<br>`-e, --env <KEY=VAL>` 環境変数<br>`-p, --project <NAME>` プロジェクト名<br>`--wait-for-log <PATTERN>` ログパターンを待機<br>`--wait-timeout <SECS>` 待機タイムアウト | `mcproc start web -c "npm run dev" -d ./app` |
+| 🚀 `start **<NAME>**` | 新しいプロセスを開始 | `-c, --cmd <CMD>` 実行するコマンド<br>`-d, --cwd <DIR>` 作業ディレクトリ<br>`-e, --env <KEY=VAL>` 環境変数<br>`-p, --project <NAME>` プロジェクト名<br>`--wait-for-log <PATTERN>` ログパターンを待機<br>`--wait-timeout <SECS>` 待機タイムアウト<br>`--toolchain <TOOL>` 使用するバージョン管理ツール | `mcproc start web -c "npm run dev" -d ./app` |
 | 🛑 `stop **<NAME>**` | 実行中のプロセスを停止 | `-p, --project <NAME>` プロジェクト名<br>`-f, --force` 強制終了 (SIGKILL) | `mcproc stop web -p myapp` |
 | 🔄 `restart **<NAME>**` | プロセスを再起動 | `-p, --project <NAME>` プロジェクト名 | `mcproc restart web` |
 | 📜 `logs **<NAME>**` | プロセスログを表示 | `-p, --project <NAME>` プロジェクト名<br>`-f, --follow` ログ出力を追跡<br>`-t, --tail <NUM>` 表示する行数 | `mcproc logs web -f -t 100` |
 | 🔍 `grep **<NAME>** **<PATTERN>**` | 正規表現でログを検索 | `-p, --project <NAME>` プロジェクト名<br>`-C, --context <NUM>` コンテキスト行<br>`-B, --before <NUM>` マッチ前の行<br>`-A, --after <NUM>` マッチ後の行<br>`--since <TIME>` 指定時刻以降を検索<br>`--until <TIME>` 指定時刻以前を検索<br>`--last <DURATION>` 指定期間内を検索 | `mcproc grep web "error" -C 3` |
+| 🧹 `clean` | プロジェクト内の全プロセスを停止 | `-p, --project <NAME>` プロジェクト名<br>`-f, --force` 強制終了 | `mcproc clean -p myapp` |
 | 🎛️ `daemon start` | mcprocデーモンを開始 | なし | `mcproc daemon start` |
 | 🎛️ `daemon stop` | mcprocデーモンを停止 | なし | `mcproc daemon stop` |
 | 🎛️ `daemon status` | デーモンステータスを確認 | なし | `mcproc daemon status` |
@@ -185,6 +189,16 @@ mcproc grep api "database.*connection" --since "14:30" --until "15:00"
 # 同じプロジェクト内の複数のプロセスからログを表示
 mcproc ps
 mcproc logs web --project myapp -t 100
+
+# Node.jsプロジェクトでバージョン管理ツールを使用
+mcproc start web --cmd "npm run dev" --toolchain nvm
+mcproc start api --cmd "yarn start" --toolchain mise
+
+# プロジェクト内のすべてのプロセスをクリーンアップ
+mcproc clean --project myapp
+
+# 現在のプロジェクトのすべてのプロセスを強制停止
+mcproc clean --force
 ```
 
 ## アーキテクチャ

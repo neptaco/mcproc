@@ -29,6 +29,9 @@ Simple AI agent-launched processes are stateless and can't manage long-running p
 - 🛡️ **XDG Compliant**: Follows XDG Base Directory specification for proper file organization
 - ⚡ **Wait-for-Log**: Start processes and wait for specific log patterns to ensure readiness
 - 🔍 **Advanced Search**: Time-based filtering, context lines, and regex support for log analysis
+- 🧰 **Toolchain Support**: Execute commands through version managers (mise, asdf, nvm, rbenv, etc.)
+- 🧹 **Clean Command**: Stop all processes in a project with a single command
+- 🌲 **Process Groups**: Automatic cleanup of child processes when stopping parent processes
 
 ## Installation
 
@@ -111,11 +114,12 @@ Recommended command: `mcproc logs -f`
 | Command | Description | Flags | Example |
 |---------|-------------|-------|---------|
 | 🗒️ `ps` | List all running processes | `-s, --status <STATUS>` Filter by status | `mcproc ps --status running` |
-| 🚀 `start **<NAME>**` | Start a new process | `-c, --cmd <CMD>` Command to run<br>`-d, --cwd <DIR>` Working directory<br>`-e, --env <KEY=VAL>` Environment variables<br>`-p, --project <NAME>` Project name<br>`--wait-for-log <PATTERN>` Wait for log pattern<br>`--wait-timeout <SECS>` Wait timeout | `mcproc start web -c "npm run dev" -d ./app` |
+| 🚀 `start **<NAME>**` | Start a new process | `-c, --cmd <CMD>` Command to run<br>`-d, --cwd <DIR>` Working directory<br>`-e, --env <KEY=VAL>` Environment variables<br>`-p, --project <NAME>` Project name<br>`--wait-for-log <PATTERN>` Wait for log pattern<br>`--wait-timeout <SECS>` Wait timeout<br>`--toolchain <TOOL>` Version manager to use | `mcproc start web -c "npm run dev" -d ./app` |
 | 🛑 `stop **<NAME>**` | Stop a running process | `-p, --project <NAME>` Project name<br>`-f, --force` Force kill (SIGKILL) | `mcproc stop web -p myapp` |
 | 🔄 `restart **<NAME>**` | Restart a process | `-p, --project <NAME>` Project name | `mcproc restart web` |
 | 📜 `logs **<NAME>**` | View process logs | `-p, --project <NAME>` Project name<br>`-f, --follow` Follow log output<br>`-t, --tail <NUM>` Number of lines to show | `mcproc logs web -f -t 100` |
 | 🔍 `grep **<NAME>** **<PATTERN>**` | Search logs with regex | `-p, --project <NAME>` Project name<br>`-C, --context <NUM>` Context lines<br>`-B, --before <NUM>` Lines before match<br>`-A, --after <NUM>` Lines after match<br>`--since <TIME>` Search since time<br>`--until <TIME>` Search until time<br>`--last <DURATION>` Search last duration | `mcproc grep web "error" -C 3` |
+| 🧹 `clean` | Stop all processes in project | `-p, --project <NAME>` Project name<br>`-f, --force` Force kill | `mcproc clean -p myapp` |
 | 🎛️ `daemon start` | Start mcproc daemon | None | `mcproc daemon start` |
 | 🎛️ `daemon stop` | Stop mcproc daemon | None | `mcproc daemon stop` |
 | 🎛️ `daemon status` | Check daemon status | None | `mcproc daemon status` |
@@ -186,6 +190,16 @@ mcproc grep api "database.*connection" --since "14:30" --until "15:00"
 # View logs from multiple processes in the same project
 mcproc ps
 mcproc logs web --project myapp -t 100
+
+# Use version managers for Node.js projects
+mcproc start web --cmd "npm run dev" --toolchain nvm
+mcproc start api --cmd "yarn start" --toolchain mise
+
+# Clean up all processes in a project
+mcproc clean --project myapp
+
+# Force stop all processes in current project
+mcproc clean --force
 ```
 
 ## Architecture
