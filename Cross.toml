@@ -1,0 +1,53 @@
+[build.env]
+passthrough = ["PROTOC", "SCCACHE_DIR"]
+
+[target.x86_64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y wget unzip",
+    "wget https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip",
+    "unzip protoc-21.12-linux-x86_64.zip -d /usr/local/",
+    "chmod +x /usr/local/bin/protoc",
+    "/usr/local/bin/protoc --version",
+    "wget https://github.com/mozilla/sccache/releases/download/v0.7.4/sccache-v0.7.4-x86_64-unknown-linux-musl.tar.gz",
+    "tar -xzf sccache-v0.7.4-x86_64-unknown-linux-musl.tar.gz",
+    "cp sccache-v0.7.4-x86_64-unknown-linux-musl/sccache /usr/local/bin/",
+    "chmod +x /usr/local/bin/sccache",
+    "wget https://github.com/rui314/mold/releases/download/v2.4.0/mold-2.4.0-x86_64-linux.tar.gz",
+    "tar -xzf mold-2.4.0-x86_64-linux.tar.gz",
+    "cp mold-2.4.0-x86_64-linux/bin/mold /usr/local/bin/",
+    "chmod +x /usr/local/bin/mold",
+    "echo 'export RUSTC_WRAPPER=sccache' >> /etc/environment",
+    "echo 'export RUSTFLAGS=\"-C link-arg=-fuse-ld=mold\"' >> /etc/environment"
+]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y wget unzip",
+    "wget https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip",
+    "unzip protoc-21.12-linux-x86_64.zip -d /usr/local/",
+    "chmod +x /usr/local/bin/protoc",
+    "/usr/local/bin/protoc --version",
+    "wget https://github.com/mozilla/sccache/releases/download/v0.7.4/sccache-v0.7.4-x86_64-unknown-linux-musl.tar.gz",
+    "tar -xzf sccache-v0.7.4-x86_64-unknown-linux-musl.tar.gz",
+    "cp sccache-v0.7.4-x86_64-unknown-linux-musl/sccache /usr/local/bin/",
+    "chmod +x /usr/local/bin/sccache",
+    "wget https://github.com/rui314/mold/releases/download/v2.4.0/mold-2.4.0-x86_64-linux.tar.gz",
+    "tar -xzf mold-2.4.0-x86_64-linux.tar.gz",
+    "cp mold-2.4.0-x86_64-linux/bin/mold /usr/local/bin/",
+    "chmod +x /usr/local/bin/mold",
+    "echo 'export RUSTC_WRAPPER=sccache' >> /etc/environment",
+    "echo 'export RUSTFLAGS=\"-C link-arg=-fuse-ld=mold\"' >> /etc/environment"
+]
+
+
+[target.aarch64-apple-darwin]
+pre-build = [
+    "apt-get update",
+    "apt-get install -y wget unzip",
+    "wget https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-linux-x86_64.zip",
+    "unzip protoc-21.12-linux-x86_64.zip -d /usr/local/",
+    "chmod +x /usr/local/bin/protoc",
+    "/usr/local/bin/protoc --version"
+]
