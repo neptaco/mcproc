@@ -156,10 +156,50 @@ impl ToolHandler for StatusTool {
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
-                    Err(McpError::InvalidParams(format!(
-                        "Process '{}' not found",
-                        params.name
-                    )))
+                    // Get list of existing processes to help user
+                    let list_request = proto::ListProcessesRequest {
+                        status_filter: None,
+                        project_filter: Some(project.clone()),
+                    };
+
+                    let existing_processes = match client.inner().list_processes(list_request).await
+                    {
+                        Ok(response) => {
+                            let processes: Vec<Value> = response
+                                .into_inner()
+                                .processes
+                                .into_iter()
+                                .map(|p| {
+                                    json!({
+                                        "name": p.name,
+                                        "status": format_status(p.status),
+                                        "project": p.project,
+                                    })
+                                })
+                                .collect();
+                            processes
+                        }
+                        Err(_) => Vec::new(),
+                    };
+
+                    let error_msg = if existing_processes.is_empty() {
+                        format!(
+                            "Process '{}' not found in project '{}'. No processes are currently running in this project.",
+                            params.name, project
+                        )
+                    } else {
+                        format!(
+                            "Process '{}' not found in project '{}'. Available processes in this project: {}",
+                            params.name,
+                            project,
+                            existing_processes.iter()
+                                .map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["status"].as_str().unwrap_or("")))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    };
+
+                    Err(McpError::InvalidParams(error_msg))
                 } else {
                     Err(McpError::Internal(e.message().to_string()))
                 }

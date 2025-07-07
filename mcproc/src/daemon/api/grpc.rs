@@ -128,8 +128,10 @@ impl ProcessManagerService for GrpcService {
                             if let Some(code) = *code_guard {
                                 let reason = Some(format_exit_reason(code));
                                 let stderr = process.ring.try_lock().ok().map(|ring| {
-                                    ring.iter()
-                                        .take(5)
+                                    let all_chunks: Vec<_> = ring.iter().collect();
+                                    let start_idx = all_chunks.len().saturating_sub(200);
+                                    all_chunks[start_idx..]
+                                        .iter()
                                         .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
                                         .collect::<Vec<_>>()
                                         .join("\n")
@@ -297,8 +299,10 @@ impl ProcessManagerService for GrpcService {
                             .lock()
                             .ok()
                             .map(|ring| {
-                                ring.iter()
-                                    .take(5)
+                                let all_chunks: Vec<_> = ring.iter().collect();
+                                let start_idx = all_chunks.len().saturating_sub(200);
+                                all_chunks[start_idx..]
+                                    .iter()
                                     .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
                                     .collect::<Vec<_>>()
                                     .join("\n")

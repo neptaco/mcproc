@@ -94,6 +94,19 @@ impl ToolHandler for RestartTool {
                     "ports": process.ports,
                 });
 
+                // Add exit information if process failed
+                if process.status == proto::ProcessStatus::Failed as i32 {
+                    if let Some(exit_code) = process.exit_code {
+                        response["exit_code"] = json!(exit_code);
+                    }
+                    if let Some(exit_reason) = process.exit_reason {
+                        response["exit_reason"] = json!(exit_reason);
+                    }
+                    if let Some(stderr_tail) = process.stderr_tail {
+                        response["stderr_tail"] = json!(stderr_tail);
+                    }
+                }
+
                 // Add wait pattern match info if process has wait_for_log configured (strip ANSI codes)
                 if !process.log_context.is_empty() {
                     let cleaned_context: Vec<String> = process
