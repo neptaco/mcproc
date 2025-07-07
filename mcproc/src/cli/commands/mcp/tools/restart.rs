@@ -55,7 +55,7 @@ impl ToolHandler for RestartTool {
     async fn handle(
         &self,
         params: Option<Value>,
-        _context: mcp_rs::ToolContext,
+        context: mcp_rs::ToolContext,
     ) -> McpResult<Value> {
         let params =
             params.ok_or_else(|| McpError::InvalidParams("Missing parameters".to_string()))?;
@@ -75,9 +75,32 @@ impl ToolHandler for RestartTool {
         let mut client = self.client.clone();
         match client.inner().restart_process(request).await {
             Ok(response) => {
-                let process = response
-                    .into_inner()
-                    .process
+                let mut stream = response.into_inner();
+                let mut process_info = None;
+                let mut _log_count = 0;
+
+                // Process streaming responses
+                while let Some(msg) = stream
+                    .message()
+                    .await
+                    .map_err(|e| McpError::Internal(e.to_string()))?
+                {
+                    match msg.response {
+                        Some(proto::restart_process_response::Response::LogEntry(entry)) => {
+                            // Send log entry as notification
+                            context
+                                .send_log(mcp_rs::MessageLevel::Info, entry.content.clone())
+                                .await?;
+                            _log_count += 1;
+                        }
+                        Some(proto::restart_process_response::Response::Process(info)) => {
+                            process_info = Some(info);
+                        }
+                        None => {}
+                    }
+                }
+
+                let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
                 let mut response = json!({
                     "id": process.id,

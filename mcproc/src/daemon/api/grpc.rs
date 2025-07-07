@@ -48,6 +48,9 @@ impl ProcessManagerService for GrpcService {
     type StartProcessStream =
         Pin<Box<dyn Stream<Item = Result<StartProcessResponse, Status>> + Send>>;
 
+    type RestartProcessStream =
+        Pin<Box<dyn Stream<Item = Result<RestartProcessResponse, Status>> + Send>>;
+
     async fn start_process(
         &self,
         request: Request<StartProcessRequest>,
@@ -265,96 +268,161 @@ impl ProcessManagerService for GrpcService {
     async fn restart_process(
         &self,
         request: Request<RestartProcessRequest>,
-    ) -> Result<Response<RestartProcessResponse>, Status> {
+    ) -> Result<Response<Self::RestartProcessStream>, Status> {
         let req = request.into_inner();
+        let name = req.name.clone();
+        let project = req.project.clone();
+        let wait_for_log = req.wait_for_log.clone();
+        let wait_timeout = req.wait_timeout;
 
-        match self
-            .process_manager
-            .restart_process_with_log_stream(
-                &req.name,
-                Some(req.project),
-                req.wait_for_log,
-                req.wait_timeout,
-            )
-            .await
-        {
-            Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
-                // Get detected ports
-                let ports = if let Some(port) = process.port {
-                    vec![port as u32]
-                } else if let Ok(detected) = process.detected_port.lock() {
-                    detected.map(|p| vec![p as u32]).unwrap_or_default()
-                } else {
-                    Vec::new()
-                };
+        let process_manager = self.process_manager.clone();
+        let config = self.config.clone();
+        let log_dir = config.paths.log_dir.clone();
 
-                // Check if process failed during restart
-                let current_status = process.get_status();
-                let (exit_code, exit_reason, stderr_tail) =
-                    if matches!(current_status, ProcessStatus::Failed) {
-                        let code = *process.exit_code.lock().unwrap();
-                        let reason = code.map(format_exit_reason);
-                        let stderr = process
-                            .ring
-                            .lock()
-                            .ok()
-                            .map(|ring| {
-                                let all_chunks: Vec<_> = ring.iter().collect();
-                                let start_idx = all_chunks.len().saturating_sub(200);
-                                all_chunks[start_idx..]
-                                    .iter()
-                                    .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .unwrap_or_default();
-                        (code, reason, Some(stderr))
+        let stream = async_stream::try_stream! {
+            match process_manager
+                .restart_process_with_log_stream(
+                    &name,
+                    Some(project.clone()),
+                    wait_for_log.clone(),
+                    wait_timeout,
+                )
+                .await
+            {
+                Ok((process, timeout_occurred, _pattern_matched, log_context, matched_line)) => {
+                    // Stream log context if available
+                    for (idx, log_line) in log_context.iter().enumerate() {
+                        yield RestartProcessResponse {
+                            response: Some(restart_process_response::Response::LogEntry(LogEntry {
+                                line_number: idx as u32,
+                                content: log_line.clone(),
+                                timestamp: Some(prost_types::Timestamp {
+                                    seconds: chrono::Utc::now().timestamp(),
+                                    nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                }),
+                                level: log_entry::LogLevel::Stdout as i32,
+                                process_name: Some(name.clone()),
+                            })),
+                        };
+                    }
+
+                    // Get detected ports
+                    let ports = if let Some(port) = process.port {
+                        vec![port as u32]
+                    } else if let Ok(detected) = process.detected_port.lock() {
+                        detected.map(|p| vec![p as u32]).unwrap_or_default()
                     } else {
-                        (None, None, None)
+                        Vec::new()
                     };
 
-                let info = ProcessInfo {
-                    id: process.id.clone(),
-                    name: process.name.clone(),
-                    cmd: process.cmd.clone().unwrap_or_default(),
-                    cwd: process
-                        .cwd
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_default(),
-                    status: proto::ProcessStatus::from(current_status).into(),
-                    start_time: Some(prost_types::Timestamp {
-                        seconds: process.start_time.timestamp(),
-                        nanos: process.start_time.timestamp_subsec_nanos() as i32,
-                    }),
-                    pid: Some(process.pid),
-                    log_file: self
-                        .config
-                        .paths
-                        .log_dir
-                        .join(format!("{}-{}.log", process.project, process.name))
-                        .to_string_lossy()
-                        .to_string(),
-                    project: process.project.clone(),
-                    ports,
-                    wait_timeout_occurred: if process.wait_for_log.is_some() {
-                        Some(timeout_occurred)
-                    } else {
-                        None
-                    },
-                    exit_code,
-                    exit_reason,
-                    stderr_tail,
-                    log_context,
-                    matched_line,
-                };
+                    // Check if process failed during restart
+                    let current_status = process.get_status();
+                    let (exit_code, exit_reason, stderr_tail) =
+                        if matches!(current_status, ProcessStatus::Failed) {
+                            let code = *process.exit_code.lock().unwrap();
+                            let reason = code.map(format_exit_reason);
+                            let stderr = process
+                                .ring
+                                .lock()
+                                .ok()
+                                .map(|ring| {
+                                    let all_chunks: Vec<_> = ring.iter().collect();
+                                    let start_idx = all_chunks.len().saturating_sub(200);
+                                    all_chunks[start_idx..]
+                                        .iter()
+                                        .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
+                                        .collect::<Vec<_>>()
+                                        .join("\n")
+                                })
+                                .unwrap_or_default();
+                            (code, reason, Some(stderr))
+                        } else {
+                            (None, None, None)
+                        };
 
-                Ok(Response::new(RestartProcessResponse {
-                    process: Some(info),
-                }))
+                    let info = ProcessInfo {
+                        id: process.id.clone(),
+                        name: process.name.clone(),
+                        cmd: process.cmd.clone().unwrap_or_default(),
+                        cwd: process
+                            .cwd
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        status: proto::ProcessStatus::from(current_status).into(),
+                        start_time: Some(prost_types::Timestamp {
+                            seconds: process.start_time.timestamp(),
+                            nanos: process.start_time.timestamp_subsec_nanos() as i32,
+                        }),
+                        pid: Some(process.pid),
+                        log_file: log_dir
+                            .join(format!("{}-{}.log", process.project, process.name))
+                            .to_string_lossy()
+                            .to_string(),
+                        project: process.project.clone(),
+                        ports,
+                        wait_timeout_occurred: if process.wait_for_log.is_some() {
+                            Some(timeout_occurred)
+                        } else {
+                            None
+                        },
+                        exit_code,
+                        exit_reason,
+                        stderr_tail,
+                        log_context,
+                        matched_line,
+                    };
+
+                    yield RestartProcessResponse {
+                        response: Some(restart_process_response::Response::Process(info)),
+                    };
+                }
+                Err(e) => {
+                    match &e {
+                        crate::daemon::error::McprocdError::ProcessFailedToStart { name, exit_code, exit_reason, stderr } => {
+                            error!("Process '{}' failed to restart: {} (exit code: {})", name, exit_reason, exit_code);
+
+                            // Create a failed ProcessInfo
+                            let failed_info = ProcessInfo {
+                                id: Uuid::new_v4().to_string(),
+                                name: name.clone(),
+                                cmd: String::new(),
+                                cwd: String::new(),
+                                status: proto::ProcessStatus::Failed as i32,
+                                start_time: Some(prost_types::Timestamp {
+                                    seconds: chrono::Utc::now().timestamp(),
+                                    nanos: chrono::Utc::now().timestamp_subsec_nanos() as i32,
+                                }),
+                                pid: None,
+                                log_file: log_dir
+                                    .join(&project)
+                                    .join(format!("{}.log", name.replace("/", "_")))
+                                    .to_string_lossy().to_string(),
+                                project: project.clone(),
+                                ports: vec![],
+                                wait_timeout_occurred: None,
+                                exit_code: Some(*exit_code),
+                                exit_reason: Some(exit_reason.clone()),
+                                stderr_tail: Some(stderr.clone()),
+                                log_context: vec![],
+                                matched_line: None,
+                            };
+
+                            yield RestartProcessResponse {
+                                response: Some(restart_process_response::Response::Process(failed_info)),
+                            };
+                        }
+                        _ => {
+                            // Other errors still return as status errors
+                            let status = Status::internal(e.to_string());
+                            Err(status)?;
+                        }
+                    };
+                }
             }
-            Err(e) => Err(Status::internal(e.to_string())),
-        }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn get_process(

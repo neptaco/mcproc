@@ -106,7 +106,10 @@ message StopProcessResponse {
 }
 
 message RestartProcessResponse {
-  ProcessInfo process = 1;
+  oneof response {
+    LogEntry log_entry = 1;      // Streaming log entries during wait_for_log
+    ProcessInfo process = 2;      // Final process info when ready
+  }
 }
 
 message GetProcessResponse {
@@ -206,7 +209,7 @@ message GetDaemonStatusResponse {
 service ProcessManager {
   rpc StartProcess(StartProcessRequest) returns (stream StartProcessResponse);
   rpc StopProcess(StopProcessRequest) returns (StopProcessResponse);
-  rpc RestartProcess(RestartProcessRequest) returns (RestartProcessResponse);
+  rpc RestartProcess(RestartProcessRequest) returns (stream RestartProcessResponse);
   rpc GetProcess(GetProcessRequest) returns (GetProcessResponse);
   rpc ListProcesses(ListProcessesRequest) returns (ListProcessesResponse);
   rpc GetLogs(GetLogsRequest) returns (stream GetLogsResponse);
