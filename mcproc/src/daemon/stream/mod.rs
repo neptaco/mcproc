@@ -75,19 +75,9 @@ impl StreamEventHub {
 
     /// Publish a stream event
     pub fn publish(&self, event: StreamEvent) {
-        let receiver_count = self.sender.receiver_count();
-        match self.sender.send(event) {
-            Ok(_) => {
-                if receiver_count > 0 {
-                    tracing::debug!("Published event to {} receivers", receiver_count);
-                } else {
-                    tracing::debug!("Published event but no receivers");
-                }
-            }
-            Err(_) => {
-                tracing::debug!("Failed to publish event - channel closed");
-            }
-        }
+        // Note: broadcast::send returns Err when there are no active receivers
+        // This is normal behavior and not an error condition
+        let _ = self.sender.send(event);
     }
 
     /// Subscribe to events with a filter
