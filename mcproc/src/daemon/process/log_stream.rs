@@ -3,6 +3,7 @@ use crate::daemon::log::LogHub;
 use crate::daemon::process::hyperlog::{HyperLogConfig, HyperLogStreamer};
 use crate::daemon::process::proxy::ProxyInfo;
 use regex::Regex;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
@@ -11,7 +12,6 @@ pub struct LogStreamConfig {
     pub stream_name: &'static str, // "stdout" or "stderr"
     pub process_key: ProcessKey,
     pub proxy: Arc<ProxyInfo>,
-    pub log_hub: Arc<LogHub>,
     pub log_pattern: Option<Arc<Regex>>,
     pub log_ready_tx: Option<Arc<Mutex<Option<oneshot::Sender<()>>>>>,
     pub pattern_matched: Arc<Mutex<bool>>,
@@ -19,6 +19,9 @@ pub struct LogStreamConfig {
     pub wait_timeout: Option<u32>,
     pub default_wait_timeout_secs: u32,
     pub matched_line: Arc<Mutex<Option<String>>>, // The line that matched the pattern
+    pub log_file_path: Option<PathBuf>,
+    pub enable_file_logging: bool,
+    pub log_hub: Arc<LogHub>,
 }
 
 impl LogStreamConfig {
@@ -31,7 +34,6 @@ impl LogStreamConfig {
             stream_name: self.stream_name,
             process_key: self.process_key.clone(),
             proxy: self.proxy.clone(),
-            log_hub: self.log_hub.clone(),
             log_pattern: self.log_pattern.clone(),
             log_ready_tx: self.log_ready_tx.clone(),
             pattern_matched: self.pattern_matched.clone(),
@@ -40,6 +42,9 @@ impl LogStreamConfig {
             wait_timeout: self.wait_timeout,
             default_wait_timeout_secs: self.default_wait_timeout_secs,
             is_stderr: self.stream_name == "stderr",
+            log_file_path: self.log_file_path,
+            enable_file_logging: self.enable_file_logging,
+            log_hub: self.log_hub,
         };
 
         let streamer = HyperLogStreamer::new(hyperlog_config);

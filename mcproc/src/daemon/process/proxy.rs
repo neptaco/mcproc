@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::task::JoinHandle;
 use tracing::info;
 
 /// Log entry with timestamp for ring buffer storage
@@ -104,6 +105,8 @@ pub struct ProxyInfo {
     pub exit_code: Arc<Mutex<Option<i32>>>,
     /// Time when process exited
     pub exit_time: Arc<Mutex<Option<DateTime<Utc>>>>,
+    /// Hyperlog task handles for cleanup
+    pub hyperlog_handles: Arc<Mutex<Vec<JoinHandle<()>>>>,
 }
 
 impl ProxyInfo {
@@ -130,6 +133,7 @@ impl ProxyInfo {
             port_ready: Arc::new(Mutex::new(false)),
             exit_code: Arc::new(Mutex::new(None)),
             exit_time: Arc::new(Mutex::new(None)),
+            hyperlog_handles: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -147,34 +151,113 @@ impl ProxyInfo {
     }
 
     pub async fn stop(&self, force: bool) -> Result<(), String> {
+        info!(
+            "Stopping process {} (PID: {}, force: {})",
+            self.name, self.pid, force
+        );
         self.set_status(ProcessStatus::Stopping);
 
-        // Send SIGTERM or SIGKILL based on force flag
-        let signal = if force { "KILL" } else { "TERM" };
+        // Cancel all tasks first
+        if let Ok(mut handles) = self.hyperlog_handles.lock() {
+            info!(
+                "Cancelling {} tasks for process {}",
+                handles.len(),
+                self.name
+            );
 
-        // On Unix, send signal to the entire process group
+            // Abort all tasks
+            for handle in handles.drain(..) {
+                handle.abort();
+            }
+
+            info!("All tasks abort requested for process {}", self.name);
+        }
+
+        // First attempt: Send SIGTERM (unless force is specified)
+        if !force {
+            // On Unix, send signal to the entire process group
+            #[cfg(unix)]
+            let pid_arg = format!("-{}", self.pid); // Negative PID targets the process group
+            #[cfg(not(unix))]
+            let pid_arg = self.pid.to_string();
+
+            info!(
+                "Sending SIGTERM to process group {} (PID: {})",
+                pid_arg, self.pid
+            );
+            let output = tokio::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(&pid_arg)
+                .output()
+                .await
+                .map_err(|e| format!("Failed to send SIGTERM: {}", e))?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                info!("kill -TERM {} failed: {}", pid_arg, stderr);
+                // Check if the error is "No such process" which is ok if process already exited
+                if stderr.contains("No such process") || stderr.contains("no such process") {
+                    self.set_status(ProcessStatus::Stopped);
+                    if let Ok(mut exit_time) = self.exit_time.lock() {
+                        *exit_time = Some(Utc::now());
+                    }
+                    return Ok(());
+                }
+            } else {
+                info!("SIGTERM sent successfully to {}", pid_arg);
+            }
+
+            // Wait up to 5 seconds for graceful shutdown
+            let timeout = tokio::time::Duration::from_secs(5);
+            let start = tokio::time::Instant::now();
+
+            while start.elapsed() < timeout {
+                // Check if process is still alive
+                let check_output = tokio::process::Command::new("kill")
+                    .arg("-0")
+                    .arg(&pid_arg)
+                    .output()
+                    .await;
+
+                if let Ok(output) = check_output {
+                    if !output.status.success() {
+                        info!("Process {} has stopped (kill -0 failed)", pid_arg);
+                        // Process has stopped
+                        self.set_status(ProcessStatus::Stopped);
+                        if let Ok(mut exit_time) = self.exit_time.lock() {
+                            *exit_time = Some(Utc::now());
+                        }
+                        return Ok(());
+                    }
+                } else {
+                    info!("Failed to check process status with kill -0");
+                }
+
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            info!("Process did not stop gracefully, sending SIGKILL");
+        }
+
+        // Force kill with SIGKILL
         #[cfg(unix)]
-        let pid_arg = {
-            let pg_pid = format!("-{}", self.pid); // Negative PID targets the process group
-            info!("Stopping process group {} with signal {}", pg_pid, signal);
-            pg_pid
-        };
-
+        let pid_arg = format!("-{}", self.pid);
         #[cfg(not(unix))]
         let pid_arg = self.pid.to_string();
 
+        info!("Sending SIGKILL to process group {}", pid_arg);
         let output = tokio::process::Command::new("kill")
-            .arg(format!("-{}", signal))
+            .arg("-KILL")
             .arg(pid_arg)
             .output()
             .await
-            .map_err(|e| format!("Failed to send signal: {}", e))?;
+            .map_err(|e| format!("Failed to send SIGKILL: {}", e))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Check if the error is "No such process" which is ok if process already exited
             if !stderr.contains("No such process") && !stderr.contains("no such process") {
-                return Err(format!("Failed to stop process: {}", stderr));
+                return Err(format!("Failed to kill process: {}", stderr));
             }
         }
 

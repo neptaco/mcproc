@@ -76,11 +76,13 @@ impl LogsCommand {
         // Create shutdown flag
         let shutdown_flag = Arc::new(AtomicBool::new(false));
 
-        // Set up Ctrl+C handler
+        // Set up Ctrl+C handler with immediate response
         let shutdown_flag_ctrl_c = shutdown_flag.clone();
         tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
             shutdown_flag_ctrl_c.store(true, Ordering::Relaxed);
+            // Force immediate exit to prevent hanging
+            std::process::exit(0);
         });
 
         // Determine log target

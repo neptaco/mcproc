@@ -67,10 +67,14 @@ impl ProcessLauncher {
             });
         };
 
-        // Build the actual command - always via shell
+        // Build the actual command - always via shell with exec
         let (final_command, exec_description) = if let Some(tool_str) = params.toolchain {
             match Toolchain::parse(&tool_str) {
-                Some(toolchain) => toolchain.wrap_command(&shell_command),
+                Some(toolchain) => {
+                    let (wrapped_cmd, desc) = toolchain.wrap_command(&shell_command);
+                    // Ensure exec is used for proper signal handling
+                    (format!("exec {}", wrapped_cmd), desc)
+                }
                 None => {
                     return Err(McprocdError::InvalidCommand {
                         message: format!(
@@ -82,7 +86,24 @@ impl ProcessLauncher {
                 }
             }
         } else {
-            (shell_command.clone(), format!("sh -c '{}'", shell_command))
+            // Check if the command contains shell operators
+            // Always use trap for signal handling, but combine with exec for simple commands
+            let needs_shell = shell_command.contains('|')
+                || shell_command.contains('>')
+                || shell_command.contains('<')
+                || shell_command.contains('&')
+                || shell_command.contains(';')
+                || shell_command.contains('$')
+                || shell_command.contains('`');
+
+            // Set up signal trap to ensure proper cleanup
+            // For simple commands, also use exec to replace the shell process
+            let wrapped_cmd = if needs_shell {
+                format!("trap 'kill -TERM 0' TERM; {}", shell_command)
+            } else {
+                format!("trap 'kill -TERM 0' TERM; exec {}", shell_command)
+            };
+            (wrapped_cmd.clone(), wrapped_cmd)
         };
 
         let mut command = Command::new("sh");
@@ -120,9 +141,17 @@ impl ProcessLauncher {
                     // First try to create a new session
                     let sid_result = libc::setsid();
                     if sid_result == -1 {
+                        eprintln!(
+                            "setsid failed with errno: {}",
+                            std::io::Error::last_os_error()
+                        );
                         // If setsid fails (e.g., already a session leader), try setpgid as fallback
                         let pgid_result = libc::setpgid(0, 0);
                         if pgid_result == -1 {
+                            eprintln!(
+                                "setpgid failed with errno: {}",
+                                std::io::Error::last_os_error()
+                            );
                             // Both failed - this is unusual but we'll continue anyway
                             // The process will still run, just not in its own process group
                         }

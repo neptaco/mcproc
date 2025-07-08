@@ -137,31 +137,20 @@ impl ProcessManager {
             project: project.clone(),
         });
 
-        // Log the start event with color (green for starting)
-        let start_msg = format!(
-            "{} Starting process '{}' (PID: {})\n",
-            "[mcproc]".green().bold(),
-            name.green(),
-            pid.to_string().green()
-        );
-        if let Err(e) = self
-            .log_hub
-            .append_log_for_key(&process_key, start_msg.as_bytes(), true)
-            .await
-        {
-            error!("Failed to write start log: {}", e);
-        }
+        // The start event is already logged via LogHub publish in launcher.rs
 
         // Setup stdout/stderr capture
         let stdout = child.stdout.take().expect("stdout should be captured");
         let stderr = child.stderr.take().expect("stderr should be captured");
+
+        // Get log file path
+        let log_file_path = self.log_hub.get_log_file_path_for_key(&process_key);
 
         // Spawn stdout reader
         let stdout_config = LogStreamConfig {
             stream_name: "stdout",
             process_key: process_key.clone(),
             proxy: proxy_arc.clone(),
-            log_hub: self.log_hub.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
             pattern_matched: pattern_matched.clone(),
@@ -169,15 +158,22 @@ impl ProcessManager {
             wait_timeout,
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
             matched_line: matched_line.clone(),
+            log_file_path: Some(log_file_path.clone()),
+            enable_file_logging: self.config.logging.enable_file_logging,
+            log_hub: self.log_hub.clone(),
         };
-        stdout_config.spawn_log_reader(stdout).await;
+        let stdout_handle = stdout_config.spawn_log_reader(stdout).await;
+
+        // Store the handle
+        if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
+            handles.push(stdout_handle);
+        }
 
         // Spawn stderr reader
         let stderr_config = LogStreamConfig {
             stream_name: "stderr",
             process_key: process_key.clone(),
             proxy: proxy_arc.clone(),
-            log_hub: self.log_hub.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
             pattern_matched: pattern_matched.clone(),
@@ -185,19 +181,27 @@ impl ProcessManager {
             wait_timeout,
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
             matched_line: matched_line.clone(),
+            log_file_path: Some(log_file_path),
+            enable_file_logging: self.config.logging.enable_file_logging,
+            log_hub: self.log_hub.clone(),
         };
-        stderr_config.spawn_log_reader(stderr).await;
+        let stderr_handle = stderr_config.spawn_log_reader(stderr).await;
+
+        // Store the handle
+        if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
+            handles.push(stderr_handle);
+        }
 
         // Spawn process monitor
         let monitor_proxy = proxy_arc.clone();
         let monitor_name = name.clone();
         let monitor_key = process_key.clone();
         let monitor_log_hub = self.log_hub.clone();
-        let monitor_registry = self.registry.clone();
+        let _monitor_registry = self.registry.clone();
         let monitor_event_hub = self.event_hub.clone();
         let monitor_project = project.clone();
 
-        tokio::spawn(async move {
+        let monitor_handle = tokio::spawn(async move {
             match child.wait().await {
                 Ok(status) => {
                     let exit_code = status.code();
@@ -237,12 +241,7 @@ impl ProcessManager {
                         Some(0) => format!("{} {}\n", "[mcproc]".green().bold(), exit_msg.green()),
                         _ => format!("{} {}\n", "[mcproc]".red().bold(), exit_msg.red()),
                     };
-                    if let Err(e) = monitor_log_hub
-                        .append_log_for_key(&monitor_key, log_msg.as_bytes(), true)
-                        .await
-                    {
-                        error!("Failed to write exit log: {}", e);
-                    }
+                    monitor_log_hub.publish_log_event(&monitor_key, &log_msg, true);
                 }
                 Err(e) => {
                     error!("Failed to wait for process {}: {}", monitor_name, e);
@@ -262,16 +261,21 @@ impl ProcessManager {
                 }
             }
 
-            // Clean up: close log file and remove from registry
-            let _ = monitor_log_hub.close_log_for_key(&monitor_key).await;
-            monitor_registry.remove_process(&monitor_proxy.id);
+            // Clean up: close log file
+            // Log file is now managed by BatchLogWriter, no need to close here
+            // Note: Don't remove from registry here - it's handled in stop_process
         });
+
+        // Store the monitor handle
+        if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
+            handles.push(monitor_handle);
+        }
 
         // Spawn port detector
         if let Some(configured_port) = proxy_arc.port {
             let port_proxy = proxy_arc.clone();
             let port_name = name.clone();
-            tokio::spawn(async move {
+            let port_handle = tokio::spawn(async move {
                 if let Err(e) = port_detector::wait_for_port(configured_port, 30).await {
                     warn!(
                         "Port {} not available for process {}: {}",
@@ -285,11 +289,16 @@ impl ProcessManager {
                     port_proxy.mark_port_ready();
                 }
             });
+
+            // Store the port handle
+            if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
+                handles.push(port_handle);
+            }
         } else {
             let detect_proxy = proxy_arc.clone();
             let detect_name = name.clone();
             let detect_pid = pid;
-            tokio::spawn(async move {
+            let detect_handle = tokio::spawn(async move {
                 match port_detector::detect_port_for_pid(detect_pid).await {
                     Ok(Some(port)) => {
                         info!("Detected port {} for process {}", port, detect_name);
@@ -303,6 +312,11 @@ impl ProcessManager {
                     }
                 }
             });
+
+            // Store the detect handle
+            if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
+                handles.push(detect_handle);
+            }
         }
 
         // Wait for pattern match or initial startup time with timeout
@@ -378,6 +392,11 @@ impl ProcessManager {
         project: Option<&str>,
         force: bool,
     ) -> Result<()> {
+        info!(
+            "ProcessManager::stop_process called for {}/{}",
+            project.unwrap_or("default"),
+            name_or_id
+        );
         let process = self
             .registry
             .get_process_by_name_or_id_with_project(name_or_id, project)
@@ -391,6 +410,8 @@ impl ProcessManager {
 
         info!("Stopping process {} in project {}", name, project);
 
+        // Log files are now managed by BatchLogWriter, no need to close here
+
         // Publish Stopping event
         self.publish_process_event(crate::daemon::process::event::ProcessEvent::Stopping {
             process_id: process.id.clone(),
@@ -398,41 +419,50 @@ impl ProcessManager {
             project: project.clone(),
         });
 
-        // Log the stop event with color (yellow for stopping)
+        // Stop the process with a timeout
+        let stop_timeout = tokio::time::Duration::from_secs(10);
+        match tokio::time::timeout(stop_timeout, process.stop(force)).await {
+            Ok(Ok(())) => {
+                info!("Process {} stopped successfully", name);
+            }
+            Ok(Err(e)) => {
+                error!("Failed to stop process {}: {}", name, e);
+                return Err(McprocdError::StopError(e));
+            }
+            Err(_) => {
+                error!("Timeout stopping process {} - forcing kill", name);
+                // Try force kill as last resort
+                if !force {
+                    match tokio::time::timeout(
+                        tokio::time::Duration::from_secs(2),
+                        process.stop(true),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => info!("Process {} force killed", name),
+                        _ => error!("Failed to force kill process {}", name),
+                    }
+                }
+            }
+        }
+
+        // Remove from registry
+        info!("Removing process {} from registry", process.id);
+        if let Some(removed) = self.registry.remove_process(&process.id) {
+            // Drop the removed Arc to potentially trigger cleanup
+            drop(removed);
+        } else {
+            warn!("Process {} was not found in registry", process.id);
+        }
+
+        // Log stopping event via event hub
         let log_msg = format!(
-            "{} Stopping process {}\n",
+            "{} Stopping process {}",
             "[mcproc]".yellow().bold(),
             name.yellow()
         );
-        if let Err(e) = self
-            .log_hub
-            .append_log_for_key(&process_key, log_msg.as_bytes(), true)
-            .await
-        {
-            error!("Failed to write stop log: {}", e);
-        }
-
-        process.stop(force).await.map_err(McprocdError::StopError)?;
-
-        // Remove from registry
-        self.registry.remove_process(&process.id);
-
-        // Close log file to ensure all data is flushed
-        if let Err(e) = self.log_hub.close_log_for_key(&process_key).await {
-            error!("Failed to close log file for {}/{}: {}", project, name, e);
-        }
-
-        // Log the stopped event with color (red for stopped)
-        let log_msg = format!("{} Process stopped\n", "[mcproc]".red().bold());
-        // Write to a new log entry after reopening (if process restarts)
-        if let Err(e) = self
-            .log_hub
-            .append_log_for_key(&process_key, log_msg.as_bytes(), true)
-            .await
-        {
-            // This is expected if the file was closed, so just log at debug level
-            debug!("Could not write final stop log (expected): {}", e);
-        }
+        self.log_hub
+            .publish_log_event(&process_key, &log_msg, false);
 
         // Wait a bit for graceful shutdown and log flushing
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;

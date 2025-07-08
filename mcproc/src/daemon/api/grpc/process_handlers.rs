@@ -131,25 +131,39 @@ impl GrpcService {
         request: Request<StopProcessRequest>,
     ) -> Result<Response<StopProcessResponse>, Status> {
         let req = request.into_inner();
+        let process_manager = self.process_manager.clone();
+        let name = req.name.clone();
+        let project = req.project.clone();
+        let force = req.force.unwrap_or(false);
 
-        match self
-            .process_manager
-            .stop_process(
-                &req.name,
-                Some(req.project.as_str()),
-                req.force.unwrap_or(false),
-            )
-            .await
+        // Check if process exists
+        if process_manager
+            .get_process_by_name_or_id_with_project(&name, Some(&project))
+            .is_none()
         {
-            Ok(()) => Ok(Response::new(StopProcessResponse {
-                success: true,
-                message: None,
-            })),
-            Err(e) => Ok(Response::new(StopProcessResponse {
+            return Ok(Response::new(StopProcessResponse {
                 success: false,
-                message: Some(e.to_string()),
-            })),
+                message: Some(format!("Process '{}' not found", name)),
+            }));
         }
+
+        // Fire-and-forget: spawn stop process in background
+        tokio::spawn(async move {
+            if let Err(e) = process_manager
+                .stop_process(&name, Some(project.as_str()), force)
+                .await
+            {
+                tracing::error!("Background stop failed for process {}: {}", name, e);
+            } else {
+                tracing::info!("Background stop completed for process {}", name);
+            }
+        });
+
+        // Return immediately - the stop operation is now running in background
+        Ok(Response::new(StopProcessResponse {
+            success: true,
+            message: Some("Stop command accepted, process will be terminated".to_string()),
+        }))
     }
 
     pub(super) async fn restart_process_impl(

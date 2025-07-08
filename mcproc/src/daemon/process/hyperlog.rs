@@ -1,24 +1,25 @@
 use crate::common::process_key::ProcessKey;
+use crate::daemon::log::batch_writer::{BatchLogWriter, LogEntry as BatchLogEntry};
 use crate::daemon::log::LogHub;
-use crate::daemon::process::proxy::{LogChunk, ProxyInfo};
+use crate::daemon::process::proxy::{LogChunk, ProcessStatus, ProxyInfo};
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
 use regex::Regex;
 use ringbuf::traits::RingBuffer;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info};
 
 const CHUNK_SIZE: usize = 8192; // 8KB chunks
-const BATCH_SIZE: usize = 16; // Process 16 chunks at a time
-const BATCH_TIMEOUT_MS: u64 = 100; // Process after 100ms regardless of batch size
+const BATCH_SIZE: usize = 4; // Process 4 chunks at a time for better responsiveness
+const BATCH_TIMEOUT_MS: u64 = 50; // Process after 50ms for better responsiveness
 
 pub struct HyperLogConfig {
     pub stream_name: &'static str,
     pub process_key: ProcessKey,
     pub proxy: Arc<ProxyInfo>,
-    pub log_hub: Arc<LogHub>,
     pub log_pattern: Option<Arc<Regex>>,
     pub log_ready_tx: Option<Arc<Mutex<Option<oneshot::Sender<()>>>>>,
     pub pattern_matched: Arc<Mutex<bool>>,
@@ -27,6 +28,9 @@ pub struct HyperLogConfig {
     pub wait_timeout: Option<u32>,
     pub default_wait_timeout_secs: u32,
     pub is_stderr: bool,
+    pub log_file_path: Option<PathBuf>,
+    pub enable_file_logging: bool,
+    pub log_hub: Arc<LogHub>,
 }
 
 pub struct HyperLogStreamer {
@@ -94,6 +98,34 @@ impl HyperLogStreamer {
             let mut line_buffer = Vec::new();
             let mut last_flush = tokio::time::Instant::now();
 
+            // Create batch writer if file logging is enabled
+            let batch_writer = if config.enable_file_logging && config.log_file_path.is_some() {
+                match BatchLogWriter::new(
+                    config.process_key.clone(),
+                    config.log_file_path.clone().unwrap(),
+                )
+                .await
+                {
+                    Ok(writer) => {
+                        info!(
+                            "Batch file logging enabled for {} ({})",
+                            config.process_key, config.stream_name
+                        );
+                        Some(writer)
+                    }
+                    Err(e) => {
+                        error!("Failed to create batch log writer: {}", e);
+                        None
+                    }
+                }
+            } else {
+                debug!(
+                    "File logging disabled for {} ({})",
+                    config.process_key, config.stream_name
+                );
+                None
+            };
+
             // Set up pattern matching timeout if needed
             let timeout_duration = if has_pattern {
                 tokio::time::Duration::from_secs(
@@ -145,6 +177,13 @@ impl HyperLogStreamer {
                         chunk = chunk_rx.recv() => {
                             match chunk {
                                 Some(chunk) => {
+                                    // Check if process is stopping/stopped
+                                    let status = config.proxy.get_status();
+                                    if status == ProcessStatus::Stopping || status == ProcessStatus::Stopped || status == ProcessStatus::Failed {
+                                        debug!("Process {} is {:?}, stopping log processor", config.process_key, status);
+                                        break;
+                                    }
+
                                     batch.push(chunk);
 
                                     // Process batch if full
@@ -153,14 +192,15 @@ impl HyperLogStreamer {
                                             &config,
                                             &mut batch,
                                             &mut line_buffer,
-                                        );
+                                            &batch_writer,
+                                        ).await;
                                         last_flush = tokio::time::Instant::now();
                                     }
                                 }
                                 None => {
                                     // Channel closed, process remaining batch
                                     if !batch.is_empty() {
-                                        Self::process_batch(&config, &mut batch, &mut line_buffer);
+                                        Self::process_batch(&config, &mut batch, &mut line_buffer, &batch_writer).await;
                                     }
                                     break;
                                 }
@@ -168,7 +208,7 @@ impl HyperLogStreamer {
                         }
                         _ = &mut batch_timeout => {
                             // Timeout reached, process current batch
-                            Self::process_batch(&config, &mut batch, &mut line_buffer);
+                            Self::process_batch(&config, &mut batch, &mut line_buffer, &batch_writer).await;
                             last_flush = tokio::time::Instant::now();
                         }
                     }
@@ -201,6 +241,13 @@ impl HyperLogStreamer {
                         chunk = chunk_rx.recv() => {
                             match chunk {
                                 Some(chunk) => {
+                                    // Check if process is stopping/stopped
+                                    let status = config.proxy.get_status();
+                                    if status == ProcessStatus::Stopping || status == ProcessStatus::Stopped || status == ProcessStatus::Failed {
+                                        debug!("Process {} is {:?}, stopping log processor", config.process_key, status);
+                                        break;
+                                    }
+
                                     batch.push(chunk);
 
                                     // Process batch if full
@@ -209,14 +256,15 @@ impl HyperLogStreamer {
                                             &config,
                                             &mut batch,
                                             &mut line_buffer,
-                                        );
+                                            &batch_writer,
+                                        ).await;
                                         last_flush = tokio::time::Instant::now();
                                     }
                                 }
                                 None => {
                                     // Channel closed, process remaining batch
                                     if !batch.is_empty() {
-                                        Self::process_batch(&config, &mut batch, &mut line_buffer);
+                                        Self::process_batch(&config, &mut batch, &mut line_buffer, &batch_writer).await;
                                     }
                                     break;
                                 }
@@ -241,7 +289,12 @@ impl HyperLogStreamer {
     }
 
     /// Process a batch of chunks
-    fn process_batch(config: &HyperLogConfig, batch: &mut Vec<Bytes>, line_buffer: &mut Vec<u8>) {
+    async fn process_batch(
+        config: &HyperLogConfig,
+        batch: &mut Vec<Bytes>,
+        line_buffer: &mut Vec<u8>,
+        batch_writer: &Option<BatchLogWriter>,
+    ) {
         // Metrics
         let total_bytes: usize = batch.iter().map(|b| b.len()).sum();
         debug!(
@@ -249,6 +302,9 @@ impl HyperLogStreamer {
             batch.len(),
             total_bytes
         );
+
+        // Collect lines for batch publishing to event hub
+        let mut lines_to_publish = Vec::new();
 
         // Process all chunks in the batch
         for chunk in batch.drain(..) {
@@ -260,31 +316,7 @@ impl HyperLogStreamer {
                 // Extract the complete line (including newline)
                 let line_with_newline: Vec<u8> = line_buffer.drain(..=newline_pos).collect();
 
-                // Write to ring buffer for in-memory storage with timestamp
-                let log_chunk = LogChunk {
-                    data: line_with_newline.clone(),
-                    timestamp: Utc::now(),
-                    is_stderr: config.is_stderr,
-                };
-                if let Ok(mut ring) = config.proxy.ring.lock() {
-                    ring.push_overwrite(log_chunk);
-                }
-
-                // Write to log file if enabled (use spawn but maintain order via timestamps)
-                let log_hub = config.log_hub.clone();
-                let process_key = config.process_key.clone();
-                let line_clone = line_with_newline.clone();
-                let is_stderr = config.is_stderr;
-                tokio::spawn(async move {
-                    if let Err(e) = log_hub
-                        .append_log_for_key(&process_key, &line_clone, is_stderr)
-                        .await
-                    {
-                        error!("Failed to write log to file: {}", e);
-                    }
-                });
-
-                // Check for pattern match on this line if needed
+                // Check for pattern match on this line if needed (before moving to ring buffer)
                 if let Some(ref pattern) = config.log_pattern {
                     // Check if pattern already matched first
                     let already_matched =
@@ -344,6 +376,39 @@ impl HyperLogStreamer {
                             }
                         }
                     }
+                };
+
+                // Capture timestamp once
+                let timestamp = Utc::now();
+
+                // Convert to Bytes once for efficient sharing
+                let line_bytes = Bytes::from(line_with_newline);
+
+                // Write to ring buffer for in-memory storage with timestamp
+                let log_chunk = LogChunk {
+                    data: line_bytes.to_vec(),
+                    timestamp,
+                    is_stderr: config.is_stderr,
+                };
+                if let Ok(mut ring) = config.proxy.ring.lock() {
+                    ring.push_overwrite(log_chunk);
+                }
+
+                // Write to batch file writer if available
+                if let Some(writer) = batch_writer {
+                    let log_entry = BatchLogEntry {
+                        timestamp,
+                        content: line_bytes.clone(),
+                        is_stderr: config.is_stderr,
+                    };
+                    if let Err(e) = writer.write(log_entry).await {
+                        error!("Failed to write log to batch writer: {}", e);
+                    }
+                }
+
+                // Collect line for batch publishing
+                if let Ok(line_str) = std::str::from_utf8(&line_bytes) {
+                    lines_to_publish.push(line_str.trim_end().to_string());
                 }
             }
 
@@ -353,6 +418,31 @@ impl HyperLogStreamer {
             if line_buffer.len() > 1024 * 1024 {
                 line_buffer.clear();
             }
+        }
+
+        // Publish collected lines to event hub
+        // Reduce batch size for more responsive streaming
+        const MAX_LINES_PER_PUBLISH: usize = 10;
+
+        // Check if process is still running before publishing
+        let status = config.proxy.get_status();
+        if status != ProcessStatus::Stopping
+            && status != ProcessStatus::Stopped
+            && status != ProcessStatus::Failed
+        {
+            // Publish in smaller batches for better real-time responsiveness
+            for chunk in lines_to_publish.chunks(MAX_LINES_PER_PUBLISH) {
+                for line in chunk {
+                    config
+                        .log_hub
+                        .publish_log_event(&config.process_key, line, config.is_stderr);
+                }
+            }
+        } else {
+            debug!(
+                "Skipping log event publish for stopped/stopping process {} (status: {:?})",
+                config.process_key, status
+            );
         }
     }
 }

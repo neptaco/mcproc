@@ -548,22 +548,20 @@ fn grep_from_memory(
     until_time: Option<chrono::DateTime<chrono::Utc>>,
     process_name: &str,
 ) -> Result<Vec<proto::GrepMatch>, String> {
-    use crate::daemon::process::proxy::LogChunk;
-    use ringbuf::traits::Consumer;
+    use ringbuf::traits::{Consumer, Observer};
 
     let mut all_lines = Vec::new();
 
     // Get logs from ring buffer
     if let Ok(ring) = process.ring.lock() {
-        let chunks: Vec<LogChunk> = ring.iter().cloned().collect();
+        let chunk_count = ring.occupied_len();
         info!(
             "DEBUG grep_from_memory: Found {} chunks in ring buffer for process {}",
-            chunks.len(),
-            process_name
+            chunk_count, process_name
         );
 
-        // Convert chunks to lines with timestamps
-        for log_chunk in chunks {
+        // Convert chunks to lines with timestamps (without cloning)
+        for log_chunk in ring.iter() {
             if let Ok(text) = std::str::from_utf8(&log_chunk.data) {
                 for line in text.lines() {
                     // Apply time filter if specified
