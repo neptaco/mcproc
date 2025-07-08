@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2025-07-08
+
+### Added
+- **Streaming support for restart command** - Real-time log output during process restart with progress visibility
+
+### Improved
+- **Enhanced error reporting for process failures** - Display exit code, failure reason, and stderr output when processes fail to start
+- **Better MCP tool error handling** - Process startup failures now return ProcessInfo with failed status instead of errors, allowing LLMs to better understand and respond to failures
+
 ## [0.1.1] - 2025-07-03
 
 ### Added
