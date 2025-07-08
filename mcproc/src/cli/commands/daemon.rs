@@ -274,7 +274,8 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)
-        .append(true)
+        .write(true)
+        .truncate(true)
         .open(config.daemon_log_file())?;
 
     let mut cmd = std::process::Command::new(&mcproc_path);
