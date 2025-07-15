@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2025-07-15
+
+### Added
+- **Batch log writer for improved performance** - High-volume log processing now uses 8KB chunk-based processing with 50ms timeout for efficient file I/O
+- **Enhanced daemon startup reliability** - Added robust retry logic for client connections during daemon startup with version compatibility checking
+
+### Fixed
+- **Timestamp format standardization** - Log files now use RFC 3339 format (e.g., 2025-01-15T03:28:47.739Z) with proper timezone parsing
+- **Misleading error messages** - Removed "channel closed" errors during normal operation when broadcast channels have no subscribers
+- **Daemon log file initialization** - Fixed issue where mcprocd.log would grow indefinitely by properly initializing on daemon startup
+
 ## [0.1.2] - 2025-07-08
 
 ### Added
@@ -54,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process status tracking and port detection
 - Regex-based log searching with time filters
 
-[Unreleased]: https://github.com/neptaco/mcproc/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/neptaco/mcproc/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/neptaco/mcproc/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/neptaco/mcproc/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/neptaco/mcproc/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/neptaco/mcproc/releases/tag/v0.1.0
