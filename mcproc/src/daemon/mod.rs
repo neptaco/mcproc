@@ -7,7 +7,7 @@ pub mod stream;
 use self::{log::LogHub, process::ProcessManager, stream::StreamEventHub};
 use crate::common::config::Config;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
@@ -120,21 +120,64 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Stop all managed processes
     info!("Stopping all managed processes...");
     let processes = process_manager.list_processes();
-    for process in processes {
-        if matches!(
-            process.get_status(),
-            crate::daemon::process::ProcessStatus::Running
-                | crate::daemon::process::ProcessStatus::Starting
-        ) {
-            info!("Stopping process {}/{}", process.project, process.name);
-            if let Err(e) = process_manager
-                .stop_process(&process.name, Some(&process.project), false)
-                .await
-            {
-                error!(
-                    "Failed to stop process {}/{}: {}",
-                    process.project, process.name, e
-                );
+    let running_processes: Vec<_> = processes
+        .into_iter()
+        .filter(|p| {
+            matches!(
+                p.get_status(),
+                crate::daemon::process::ProcessStatus::Running
+                    | crate::daemon::process::ProcessStatus::Starting
+            )
+        })
+        .collect();
+
+    let process_count = running_processes.len();
+    if process_count > 0 {
+        info!("Found {} running process(es) to stop", process_count);
+
+        // Stop all processes in parallel for faster shutdown
+        let mut stop_tasks = Vec::new();
+        for process in running_processes {
+            let pm = process_manager.clone();
+            let name = process.name.clone();
+            let project = process.project.clone();
+
+            let task = tokio::spawn(async move {
+                info!("Stopping process {}/{}", project, name);
+                if let Err(e) = pm.stop_process(&name, Some(&project), false).await {
+                    error!("Failed to stop process {}/{}: {}", project, name, e);
+                    (project, name, false)
+                } else {
+                    (project, name, true)
+                }
+            });
+            stop_tasks.push(task);
+        }
+
+        // Wait for all stop tasks to complete
+        let mut results = Vec::new();
+        for task in stop_tasks {
+            results.push(task.await);
+        }
+
+        // Check if any processes failed to stop gracefully
+        let mut failed_processes = Vec::new();
+        for (project, name, success) in results.into_iter().flatten() {
+            if !success {
+                failed_processes.push((project, name));
+            }
+        }
+
+        // If any processes failed to stop gracefully, try force killing them
+        if !failed_processes.is_empty() {
+            warn!("Some processes failed to stop gracefully, attempting force kill...");
+            for (project, name) in failed_processes {
+                if let Err(e) = process_manager
+                    .stop_process(&name, Some(&project), true)
+                    .await
+                {
+                    error!("Failed to force kill process {}/{}: {}", project, name, e);
+                }
             }
         }
     }
