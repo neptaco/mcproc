@@ -1,6 +1,6 @@
 [package]
 name = "mcp-rs"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 authors = ["mcproc contributors"]
 license = "MIT OR Apache-2.0"
