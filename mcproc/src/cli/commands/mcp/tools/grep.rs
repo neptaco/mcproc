@@ -2,6 +2,7 @@
 
 use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
+use crate::common::timestamp::format_timestamp_local;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
@@ -95,19 +96,7 @@ impl ToolHandler for GrepTool {
                     }));
                 }
 
-                // Format timestamp helper
-                let format_timestamp = |timestamp: Option<&prost_types::Timestamp>| -> String {
-                    timestamp
-                        .map(|t| {
-                            let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                                t.seconds,
-                                t.nanos as u32,
-                            )
-                            .unwrap_or_else(chrono::Utc::now);
-                            ts.format("%Y-%m-%d %H:%M:%S").to_string()
-                        })
-                        .unwrap_or_default()
-                };
+                // Format timestamp helper uses the common local time formatter
 
                 let mut matches = Vec::new();
 
@@ -121,7 +110,7 @@ impl ToolHandler for GrepTool {
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,
-                            format_timestamp(entry.timestamp.as_ref()),
+                            format_timestamp_local(entry.timestamp.as_ref()),
                             content
                         ));
                     }
@@ -134,13 +123,13 @@ impl ToolHandler for GrepTool {
                         lines.push(format!(
                             "{:>6}: {} {} <<< MATCH",
                             matched_line.line_number,
-                            format_timestamp(matched_line.timestamp.as_ref()),
+                            format_timestamp_local(matched_line.timestamp.as_ref()),
                             content
                         ));
 
                         Some(json!({
                             "line_number": matched_line.line_number,
-                            "timestamp": format_timestamp(matched_line.timestamp.as_ref()),
+                            "timestamp": format_timestamp_local(matched_line.timestamp.as_ref()),
                             "content": content
                         }))
                     } else {
@@ -154,7 +143,7 @@ impl ToolHandler for GrepTool {
                         lines.push(format!(
                             "{:>6}: {} {}",
                             entry.line_number,
-                            format_timestamp(entry.timestamp.as_ref()),
+                            format_timestamp_local(entry.timestamp.as_ref()),
                             content
                         ));
                     }

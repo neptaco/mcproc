@@ -227,19 +227,16 @@ impl GrpcService {
 
 // Helper function to parse log lines
 fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::LogLevel, String) {
-    // Expected format: "2025-06-16 12:30:45.123 [INFO] Log message"
-    // or: "2025-06-16 12:30:45.123 [ERROR] Error message"
+    // Expected format: "2025-07-15T03:13:12.375+00:00 [INFO] Log message"
+    // Find the first space (after the timestamp)
 
-    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+    if let Some(space_pos) = line.find(' ') {
+        let timestamp_str = &line[..space_pos];
+        let rest = &line[space_pos + 1..];
 
-    if parts.len() >= 3 {
-        // Try to parse timestamp
-        let timestamp = if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(
-            &format!("{} {}", parts[0], parts[1]),
-            "%Y-%m-%d %H:%M:%S%.3f",
-        ) {
-            let dt_utc =
-                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
+        // Parse RFC 3339 timestamp directly
+        let timestamp = if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
+            let dt_utc = dt.with_timezone(&chrono::Utc);
             Some(prost_types::Timestamp {
                 seconds: dt_utc.timestamp(),
                 nanos: dt_utc.timestamp_subsec_nanos() as i32,
@@ -249,25 +246,18 @@ fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::Log
         };
 
         // Parse level and content
-        if let Some(rest) = parts.get(2) {
-            if let Some(content) = rest.strip_prefix("[ERROR]") {
-                return (
-                    timestamp,
-                    log_entry::LogLevel::Stderr,
-                    content.trim().to_string(),
-                );
-            } else if let Some(content) = rest.strip_prefix("[INFO]") {
-                return (
-                    timestamp,
-                    log_entry::LogLevel::Stdout,
-                    content.trim().to_string(),
-                );
-            }
+        if let Some(content) = rest.strip_prefix("[ERROR] ") {
+            return (timestamp, log_entry::LogLevel::Stderr, content.to_string());
+        } else if let Some(content) = rest.strip_prefix("[INFO] ") {
+            return (timestamp, log_entry::LogLevel::Stdout, content.to_string());
         }
-    }
 
-    // Fallback: treat entire line as content
-    (None, log_entry::LogLevel::Stdout, line.to_string())
+        // If we have a timestamp but no recognized level, return with default level
+        (timestamp, log_entry::LogLevel::Stdout, rest.to_string())
+    } else {
+        // No space found, treat entire line as content
+        (None, log_entry::LogLevel::Stdout, line.to_string())
+    }
 }
 
 impl GrpcService {

@@ -2,6 +2,7 @@
 
 use crate::cli::utils::resolve_mcp_project_name;
 use crate::client::DaemonClient;
+use crate::common::timestamp::format_timestamp_local;
 use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
@@ -85,18 +86,7 @@ impl ToolHandler for LogsTool {
                         match content {
                             proto::get_logs_response::Content::LogEntry(entry) => {
                                 // Format log entry similar to the CLI output
-                                let timestamp = entry
-                                    .timestamp
-                                    .as_ref()
-                                    .map(|ts| {
-                                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                                            ts.seconds,
-                                            ts.nanos as u32,
-                                        )
-                                        .unwrap_or_else(chrono::Utc::now);
-                                        dt.format("%Y-%m-%d %H:%M:%S").to_string()
-                                    })
-                                    .unwrap_or_else(|| "".to_string());
+                                let timestamp = format_timestamp_local(entry.timestamp.as_ref());
 
                                 let level = match entry.level {
                                     2 => "E",

@@ -1,4 +1,5 @@
 use crate::common::process_key::ProcessKey;
+use crate::common::timestamp::format_datetime_utc_with_tz;
 use bytes::Bytes;
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
@@ -134,10 +135,10 @@ impl BatchLogWriter {
 
         for entry in batch.drain(..) {
             let level = if entry.is_stderr { "ERROR" } else { "INFO" };
-            let timestamp_str = entry.timestamp.format("%Y-%m-%d %H:%M:%S%.3f");
+            let timestamp_str = format_datetime_utc_with_tz(entry.timestamp);
 
             // Format: TIMESTAMP [LEVEL] CONTENT
-            buffer.extend_from_slice(timestamp_str.to_string().as_bytes());
+            buffer.extend_from_slice(timestamp_str.as_bytes());
             buffer.extend_from_slice(b" [");
             buffer.extend_from_slice(level.as_bytes());
             buffer.extend_from_slice(b"] ");

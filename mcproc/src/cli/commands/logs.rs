@@ -276,7 +276,10 @@ fn print_log_entry(entry: &proto::LogEntry, color_opts: &ColorOptions) {
             let local_dt: chrono::DateTime<chrono::Local> = dt.into();
             local_dt.format("%H:%M:%S").to_string()
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            // If no timestamp, return empty string
+            String::new()
+        });
 
     let content = if color_opts.no_color {
         strip_ansi_escapes_str(&entry.content)

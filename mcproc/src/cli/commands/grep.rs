@@ -1,6 +1,6 @@
 use crate::cli::utils::resolve_project_name;
 use crate::client::DaemonClient;
-use chrono;
+use crate::common::timestamp::format_timestamp_local;
 use clap::Args;
 use colored::*;
 use proto::GrepLogsRequest;
@@ -112,15 +112,7 @@ impl GrepCommand {
 }
 
 fn print_log_entry(entry: &proto::LogEntry, is_match: bool) {
-    let timestamp = entry
-        .timestamp
-        .as_ref()
-        .map(|ts| {
-            let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
-                .unwrap_or_else(chrono::Utc::now);
-            dt.format("%Y-%m-%d %H:%M:%S").to_string()
-        })
-        .unwrap_or_default();
+    let timestamp = format_timestamp_local(entry.timestamp.as_ref());
 
     let level_indicator = match entry.level {
         2 => "E".red().bold(),
