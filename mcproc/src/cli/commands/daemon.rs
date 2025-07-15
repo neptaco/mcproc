@@ -33,9 +33,20 @@ impl DaemonCommand {
         match self.command {
             DaemonSubcommands::Start => {
                 // Check if already running
-                if is_daemon_running(&config.paths.pid_file) {
+                let (is_running, pid_opt) = is_daemon_running_with_details(&config);
+                if is_running {
                     println!("mcprocd daemon is already running");
                     return Ok(());
+                }
+
+                // Clean up stale files if daemon is not running
+                if let Some(pid) = pid_opt {
+                    eprintln!("Cleaning up stale PID file for process {}", pid);
+                    let _ = std::fs::remove_file(&config.paths.pid_file);
+                }
+                if config.paths.socket_path.exists() {
+                    eprintln!("Cleaning up stale socket file");
+                    let _ = std::fs::remove_file(&config.paths.socket_path);
                 }
 
                 start_daemon()?;
@@ -44,8 +55,16 @@ impl DaemonCommand {
             }
 
             DaemonSubcommands::Stop => {
-                if !is_daemon_running(&config.paths.pid_file) {
+                let (is_running, pid_opt) = is_daemon_running_with_details(&config);
+                if !is_running {
                     println!("mcprocd daemon is not running");
+                    // Clean up stale files
+                    if pid_opt.is_some() {
+                        let _ = std::fs::remove_file(&config.paths.pid_file);
+                    }
+                    if config.paths.socket_path.exists() {
+                        let _ = std::fs::remove_file(&config.paths.socket_path);
+                    }
                     return Ok(());
                 }
 
@@ -65,7 +84,7 @@ impl DaemonCommand {
                 for _ in 0..max_wait_iterations {
                     tokio::time::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms))
                         .await;
-                    if !is_daemon_running(&config.paths.pid_file) {
+                    if !is_daemon_running(&config) {
                         println!("Stopped mcprocd daemon");
                         return Ok(());
                     }
@@ -86,7 +105,8 @@ impl DaemonCommand {
 
             DaemonSubcommands::Restart => {
                 // Stop if running
-                if is_daemon_running(&config.paths.pid_file) {
+                let (is_running, _) = is_daemon_running_with_details(&config);
+                if is_running {
                     println!("Stopping mcprocd daemon...");
 
                     let pid = std::fs::read_to_string(&config.paths.pid_file)?
@@ -107,7 +127,7 @@ impl DaemonCommand {
                             config.daemon.stop_check_interval_ms,
                         ))
                         .await;
-                        if !is_daemon_running(&config.paths.pid_file) {
+                        if !is_daemon_running(&config) {
                             stopped = true;
                             break;
                         }
@@ -125,6 +145,11 @@ impl DaemonCommand {
                         // Clean up PID file
                         let _ = std::fs::remove_file(&config.paths.pid_file);
                     }
+
+                    // Also clean up socket file
+                    if config.paths.socket_path.exists() {
+                        let _ = std::fs::remove_file(&config.paths.socket_path);
+                    }
                 }
 
                 // Start new daemon
@@ -134,15 +159,19 @@ impl DaemonCommand {
             }
 
             DaemonSubcommands::Status => {
-                if !config.paths.pid_file.exists() {
-                    println!("mcprocd daemon is not running (no PID file)");
-                    return Ok(());
-                }
+                let (is_running, pid_opt) = is_daemon_running_with_details(&config);
 
-                if !is_daemon_running(&config.paths.pid_file) {
-                    println!("mcprocd daemon is not running (stale PID file)");
-                    // Clean up stale PID file
-                    let _ = std::fs::remove_file(&config.paths.pid_file);
+                if !is_running {
+                    if pid_opt.is_some() {
+                        println!("mcprocd daemon is not running (stale PID file)");
+                        // Clean up stale files
+                        let _ = std::fs::remove_file(&config.paths.pid_file);
+                        if config.paths.socket_path.exists() {
+                            let _ = std::fs::remove_file(&config.paths.socket_path);
+                        }
+                    } else {
+                        println!("mcprocd daemon is not running");
+                    }
                     return Ok(());
                 }
 
@@ -207,8 +236,33 @@ fn format_uptime(seconds: u64) -> String {
     }
 }
 
-fn is_daemon_running(pid_file: &std::path::Path) -> bool {
-    if let Ok(pid_str) = std::fs::read_to_string(pid_file) {
+/// Check if daemon is running by verifying both PID and socket
+fn is_daemon_running(config: &Config) -> bool {
+    is_daemon_running_with_details(config).0
+}
+
+/// Check if daemon is running and return details (is_running, pid_option)
+fn is_daemon_running_with_details(config: &Config) -> (bool, Option<i32>) {
+    // First check if socket exists and is connectable
+    let socket_path = &config.paths.socket_path;
+    if socket_path.exists() {
+        // Try to connect to the socket
+        if let Ok(_stream) = std::os::unix::net::UnixStream::connect(socket_path) {
+            // Socket is active, daemon is likely running
+            // Now verify with PID file
+            if let Ok(pid_str) = std::fs::read_to_string(&config.paths.pid_file) {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    return (true, Some(pid));
+                }
+            }
+            // Socket exists but no valid PID file - suspicious state
+            eprintln!("Warning: Socket exists but PID file is invalid");
+            return (true, None);
+        }
+    }
+
+    // Socket doesn't exist or can't connect, check PID file
+    if let Ok(pid_str) = std::fs::read_to_string(&config.paths.pid_file) {
         if let Ok(pid) = pid_str.trim().parse::<i32>() {
             // Check if process is actually running
             if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
@@ -223,7 +277,7 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
                         if let Ok(stat) = std::str::from_utf8(&output.stdout) {
                             // On macOS, zombie processes have 'Z' in their state
                             if stat.trim().contains('Z') {
-                                return false;
+                                return (false, Some(pid));
                             }
                         }
                     }
@@ -242,24 +296,57 @@ fn is_daemon_running(pid_file: &std::path::Path) -> bool {
                                 // State is the first field after the command
                                 // 'Z' indicates zombie process
                                 if fields[0] == "Z" {
-                                    return false;
+                                    return (false, Some(pid));
                                 }
                             }
                         }
                     }
                 }
 
-                // Process exists and is not a zombie
-                true
+                // Process exists and is not a zombie but socket is not working
+                eprintln!(
+                    "Warning: Process {} exists but socket is not accessible",
+                    pid
+                );
+                return (true, Some(pid));
             } else {
-                false
+                // PID file exists but process is not running
+                return (false, Some(pid));
             }
-        } else {
-            false
         }
-    } else {
-        false
     }
+
+    (false, None)
+}
+
+/// Find all running mcproc daemon processes
+fn find_mcproc_daemons() -> Vec<i32> {
+    let mut pids = Vec::new();
+
+    #[cfg(unix)]
+    {
+        // Use ps to find all mcproc --daemon processes
+        if let Ok(output) = std::process::Command::new("ps").args(["aux"]).output() {
+            if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                for line in stdout.lines() {
+                    if line.contains("mcproc")
+                        && line.contains("--daemon")
+                        && !line.contains("grep")
+                    {
+                        // Parse PID from the line
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        if fields.len() > 1 {
+                            if let Ok(pid) = fields[1].parse::<i32>() {
+                                pids.push(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pids
 }
 
 fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
@@ -271,6 +358,17 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
     // Get config and create directories
     let config = Config::for_client();
     config.ensure_directories()?;
+
+    // Check for any existing mcproc daemons
+    let existing_daemons = find_mcproc_daemons();
+    if !existing_daemons.is_empty() {
+        eprintln!(
+            "Warning: Found {} existing mcproc daemon process(es): {:?}",
+            existing_daemons.len(),
+            existing_daemons
+        );
+        eprintln!("Consider running 'mcproc daemon stop' first to clean up");
+    }
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)

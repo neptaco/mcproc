@@ -131,35 +131,42 @@ impl ProcessLauncher {
         // Kill on drop to ensure cleanup
         command.kill_on_drop(true);
 
-        // Create a new process group for the child process on Unix
+        // Create a new process group for the child process on Unix (if configured)
         #[cfg(unix)]
         {
-            // Set the process group ID to be the same as the PID (0 means use own PID)
-            // This allows us to kill the entire process tree later
-            unsafe {
-                command.pre_exec(|| {
-                    // First try to create a new session
-                    let sid_result = libc::setsid();
-                    if sid_result == -1 {
-                        eprintln!(
-                            "setsid failed with errno: {}",
-                            std::io::Error::last_os_error()
-                        );
-                        // If setsid fails (e.g., already a session leader), try setpgid as fallback
-                        let pgid_result = libc::setpgid(0, 0);
-                        if pgid_result == -1 {
+            if self.config.process.independent_process_groups {
+                // Set the process group ID to be the same as the PID (0 means use own PID)
+                // This allows us to kill the entire process tree later
+                unsafe {
+                    command.pre_exec(|| {
+                        // First try to create a new session
+                        let sid_result = libc::setsid();
+                        if sid_result == -1 {
                             eprintln!(
-                                "setpgid failed with errno: {}",
+                                "setsid failed with errno: {}",
                                 std::io::Error::last_os_error()
                             );
-                            // Both failed - this is unusual but we'll continue anyway
-                            // The process will still run, just not in its own process group
+                            // If setsid fails (e.g., already a session leader), try setpgid as fallback
+                            let pgid_result = libc::setpgid(0, 0);
+                            if pgid_result == -1 {
+                                eprintln!(
+                                    "setpgid failed with errno: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                                // Both failed - this is unusual but we'll continue anyway
+                                // The process will still run, just not in its own process group
+                            }
                         }
-                    }
-                    Ok(())
-                });
+                        Ok(())
+                    });
+                }
+                debug!("Configured independent process group for {}", params.name);
+            } else {
+                debug!(
+                    "Process {} will stay in daemon's process group",
+                    params.name
+                );
             }
-            debug!("Configured process group creation for {}", params.name);
         }
 
         // Log file will be created automatically on first write

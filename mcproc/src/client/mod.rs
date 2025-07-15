@@ -70,9 +70,31 @@ impl DaemonClient {
                 Ok(_) => {
                     eprintln!("Started mcprocd daemon");
                     eprintln!("Daemon logs: {}", config.daemon_log_file().display());
-                    // Wait a bit for daemon to start
-                    tokio::time::sleep(Duration::from_millis(config.daemon.client_startup_wait_ms))
-                        .await;
+
+                    // Wait for daemon to be ready by checking socket existence
+                    let max_attempts = 10;
+                    let check_interval = Duration::from_millis(100);
+                    let mut socket_ready = false;
+
+                    for i in 0..max_attempts {
+                        if socket_path.exists() {
+                            // Give it a tiny bit more time for the socket to be fully ready
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            socket_ready = true;
+                            break;
+                        }
+                        tokio::time::sleep(check_interval).await;
+                        if i == max_attempts / 2 {
+                            eprintln!("Waiting for daemon to start...");
+                        }
+                    }
+
+                    if !socket_ready {
+                        eprintln!(
+                            "Warning: Daemon socket not found after {} attempts",
+                            max_attempts
+                        );
+                    }
                 }
                 Err(e) => {
                     return Err(format!(
@@ -84,13 +106,76 @@ impl DaemonClient {
             }
         }
 
-        // Connect to Unix socket
+        // Connect to Unix socket with retry logic
         #[cfg(unix)]
         {
             use hyper_util::rt::tokio::TokioIo;
             use tokio::net::UnixStream;
 
-            // Check if socket exists
+            // If we just started the daemon, wait for socket with retries
+            if !daemon_running {
+                let max_connection_attempts = 20; // 2 seconds total
+                let retry_interval = Duration::from_millis(100);
+                let connected = false;
+
+                for attempt in 0..max_connection_attempts {
+                    if socket_path.exists() {
+                        // Try to connect
+                        const DUMMY_URI_FOR_UNIX_SOCKET: &str = "http://[::]:50051";
+                        let socket_path_for_connector = socket_path.clone();
+
+                        match Endpoint::try_from(DUMMY_URI_FOR_UNIX_SOCKET)?
+                            .connect_timeout(Duration::from_secs(1))
+                            .connect_with_connector(service_fn(move |_: Uri| {
+                                let socket_path = socket_path_for_connector.clone();
+                                async move {
+                                    let stream = UnixStream::connect(&socket_path).await?;
+                                    Ok::<_, std::io::Error>(TokioIo::new(stream))
+                                }
+                            }))
+                            .await
+                        {
+                            Ok(ch) => {
+                                let channel = ch;
+                                let client = ProcessManagerClient::new(channel);
+                                let mut daemon_client = Self { client };
+
+                                // Check daemon version
+                                if let Err(e) = Self::check_and_restart_if_needed(
+                                    &mut daemon_client,
+                                    &socket_path,
+                                )
+                                .await
+                                {
+                                    warn!("Version check failed: {}", e);
+                                }
+
+                                return Ok(daemon_client);
+                            }
+                            Err(_) if attempt < max_connection_attempts - 1 => {
+                                // Retry
+                                tokio::time::sleep(retry_interval).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                return Err(format!(
+                                    "Failed to connect to daemon after {} attempts: {}",
+                                    max_connection_attempts, e
+                                )
+                                .into());
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(retry_interval).await;
+                }
+
+                if !connected {
+                    return Err("Failed to connect to daemon: socket not available".into());
+                }
+            }
+
+            // Normal connection attempt (daemon was already running)
             if !socket_path.exists() {
                 return Err(format!(
                     "Unix socket not found at {:?}. Is mcprocd running?",
@@ -99,11 +184,7 @@ impl DaemonClient {
                 .into());
             }
 
-            // Create a channel using Unix socket transport
-            // The URI here is a dummy value - it's required by the tonic API but ignored
-            // when using Unix sockets. The actual connection is made via the socket_path.
             const DUMMY_URI_FOR_UNIX_SOCKET: &str = "http://[::]:50051";
-
             let socket_path_for_connector = socket_path.clone();
             let channel = Endpoint::try_from(DUMMY_URI_FOR_UNIX_SOCKET)?
                 .connect_timeout(Duration::from_secs(

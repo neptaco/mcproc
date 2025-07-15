@@ -41,6 +41,7 @@ pub struct DaemonConfig {
     /// Timeout for client connecting to daemon (seconds)
     pub client_connection_timeout_secs: u64,
     /// Time to wait after starting daemon before attempting connection (milliseconds)
+    /// Note: This is now used as a maximum wait time with multiple checks
     pub client_startup_wait_ms: u64,
 }
 
@@ -76,6 +77,10 @@ pub struct ProcessConfig {
     pub port_detection: PortDetectionConfig,
     /// Log buffer size (number of lines)
     pub log_buffer_size: usize,
+    /// Whether to create independent process groups for managed processes
+    /// - true: Processes survive daemon crashes but may become orphaned (default)
+    /// - false: Processes are terminated when daemon stops (safer cleanup)
+    pub independent_process_groups: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -127,7 +132,7 @@ impl Default for Config {
                 shutdown_grace_period_ms: 500,
                 stop_check_interval_ms: 100,
                 client_connection_timeout_secs: 5,
-                client_startup_wait_ms: 500,
+                client_startup_wait_ms: 1000, // Max wait time with multiple checks
             },
             process: ProcessConfig {
                 startup: ProcessStartupConfig {
@@ -145,6 +150,7 @@ impl Default for Config {
                     max_attempts: 30,
                 },
                 log_buffer_size: 10000,
+                independent_process_groups: false, // Default to safer cleanup
             },
             logging: LoggingConfig {
                 enable_file_logging: true, // Default ON
