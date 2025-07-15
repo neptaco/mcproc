@@ -59,6 +59,10 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write(&config.paths.pid_file, pid.to_string())?;
     info!("Written PID {} to {:?}", pid, config.paths.pid_file);
 
+    // Note: Orphaned process detection is no longer needed
+    // With parent-child process management, all child processes
+    // are automatically terminated when the daemon stops
+
     // Log configuration paths
     info!("Configuration paths:");
     info!("  Socket: {:?}", config.paths.socket_path);
