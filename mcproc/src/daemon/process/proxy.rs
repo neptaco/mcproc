@@ -5,8 +5,15 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+use sysinfo::{Pid as SysPid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
 use tracing::info;
+
+#[cfg(unix)]
+use nix::{
+    sys::signal::{self, Signal},
+    unistd::Pid,
+};
 
 /// Log entry with timestamp for ring buffer storage
 #[derive(Debug, Clone)]
@@ -187,58 +194,46 @@ impl ProxyInfo {
 
         // First attempt: Send SIGTERM (unless force is specified)
         if !force {
-            let pid_arg = self.pid.to_string();
-
             info!(
                 "Sending SIGTERM to process {} (PID: {})",
                 self.name, self.pid
             );
-            let output = tokio::process::Command::new("kill")
-                .arg("-TERM")
-                .arg(&pid_arg)
-                .output()
-                .await
-                .map_err(|e| format!("Failed to send SIGTERM: {}", e))?;
 
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                info!("kill -TERM {} failed: {}", pid_arg, stderr);
-                // Check if the error is "No such process" which is ok if process already exited
-                if stderr.contains("No such process") || stderr.contains("no such process") {
-                    self.set_status(ProcessStatus::Stopped);
-                    if let Ok(mut exit_time) = self.exit_time.lock() {
-                        *exit_time = Some(Utc::now());
+            #[cfg(unix)]
+            {
+                match Self::send_signal(self.pid, Signal::SIGTERM) {
+                    Ok(()) => {
+                        info!("SIGTERM sent successfully to PID {}", self.pid);
                     }
-                    return Ok(());
+                    Err(e) => {
+                        info!("Failed to send SIGTERM to PID {}: {}", self.pid, e);
+                        // If process doesn't exist, mark as stopped
+                        if !Self::is_process_alive(self.pid) {
+                            self.set_status(ProcessStatus::Stopped);
+                            if let Ok(mut exit_time) = self.exit_time.lock() {
+                                *exit_time = Some(Utc::now());
+                            }
+                            return Ok(());
+                        }
+                    }
                 }
-            } else {
-                info!("SIGTERM sent successfully to {}", pid_arg);
-            }
 
-            // Also send SIGTERM to all child processes directly
-            for child_pid in &child_pids {
-                let _ = tokio::process::Command::new("kill")
-                    .arg("-TERM")
-                    .arg(child_pid.to_string())
-                    .output()
-                    .await;
+                // Also send SIGTERM to all child processes directly
+                for child_pid in &child_pids {
+                    let _ = Self::send_signal(*child_pid, Signal::SIGTERM);
+                }
             }
 
             // Wait up to 5 seconds for graceful shutdown
             let timeout = tokio::time::Duration::from_secs(5);
             let start = tokio::time::Instant::now();
 
-            while start.elapsed() < timeout {
-                // Check if process is still alive
-                let check_output = tokio::process::Command::new("kill")
-                    .arg("-0")
-                    .arg(&pid_arg)
-                    .output()
-                    .await;
-
-                if let Ok(output) = check_output {
-                    if !output.status.success() {
-                        info!("Process {} has stopped (kill -0 failed)", self.name);
+            #[cfg(unix)]
+            {
+                while start.elapsed() < timeout {
+                    // Check if process is still alive
+                    if !Self::is_process_alive(self.pid) {
+                        info!("Process {} has stopped", self.name);
                         // Process has stopped
                         self.set_status(ProcessStatus::Stopped);
                         if let Ok(mut exit_time) = self.exit_time.lock() {
@@ -246,40 +241,42 @@ impl ProxyInfo {
                         }
                         return Ok(());
                     }
-                } else {
-                    info!("Failed to check process status with kill -0");
-                }
 
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
             }
 
             info!("Process did not stop gracefully, sending SIGKILL");
         }
 
         // Force kill with SIGKILL
-        let pid_arg = self.pid.to_string();
-
         info!("Sending SIGKILL to process {}", self.name);
-        let output = tokio::process::Command::new("kill")
-            .arg("-KILL")
-            .arg(pid_arg)
-            .output()
-            .await
-            .map_err(|e| format!("Failed to send SIGKILL: {}", e))?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            // Check if the error is "No such process" which is ok if process already exited
-            if !stderr.contains("No such process") && !stderr.contains("no such process") {
-                // Process group kill failed, try to kill child processes directly
-                info!("Process group kill failed, killing child processes directly");
-                for child_pid in &child_pids {
-                    let _ = tokio::process::Command::new("kill")
-                        .arg("-KILL")
-                        .arg(child_pid.to_string())
-                        .output()
-                        .await;
+        #[cfg(unix)]
+        {
+            match Self::send_signal(self.pid, Signal::SIGKILL) {
+                Ok(()) => {
+                    info!("SIGKILL sent successfully to PID {}", self.pid);
                 }
+                Err(e) => {
+                    info!("Failed to send SIGKILL to PID {}: {}", self.pid, e);
+                    // If process doesn't exist, that's OK
+                    if !Self::is_process_alive(self.pid) {
+                        info!("Process {} already terminated", self.name);
+                    } else {
+                        // Process still exists but we couldn't kill it
+                        // Try to kill child processes directly
+                        info!("Killing child processes directly");
+                        for child_pid in &child_pids {
+                            let _ = Self::send_signal(*child_pid, Signal::SIGKILL);
+                        }
+                    }
+                }
+            }
+
+            // Also kill all child processes to ensure cleanup
+            for child_pid in &child_pids {
+                let _ = Self::send_signal(*child_pid, Signal::SIGKILL);
             }
         }
 
@@ -303,66 +300,51 @@ impl ProxyInfo {
         }
     }
 
-    /// Find all child processes of a given PID
+    /// Send a signal to a process using nix crate
+    #[cfg(unix)]
+    fn send_signal(pid: u32, sig: Signal) -> Result<(), String> {
+        match signal::kill(Pid::from_raw(pid as i32), sig) {
+            Ok(()) => Ok(()),
+            Err(nix::Error::ESRCH) => {
+                // Process doesn't exist - this is OK
+                Ok(())
+            }
+            Err(e) => Err(format!("Failed to send signal: {}", e)),
+        }
+    }
+
+    /// Check if a process is alive using nix crate
+    #[cfg(unix)]
+    fn is_process_alive(pid: u32) -> bool {
+        // Send signal 0 to check if process exists
+        match signal::kill(Pid::from_raw(pid as i32), None) {
+            Ok(()) => true,
+            Err(nix::Error::ESRCH) => false,
+            Err(_) => true, // Other errors mean process exists but we may lack permissions
+        }
+    }
+
+    /// Find all child processes of a given PID using sysinfo
     async fn find_child_processes(&self, parent_pid: u32) -> Vec<u32> {
+        let mut system = System::new_all();
+        system.refresh_processes(ProcessesToUpdate::All, true);
+
         let mut child_pids = Vec::new();
+        let parent_pid = SysPid::from(parent_pid as usize);
 
-        #[cfg(target_os = "macos")]
-        {
-            // Use ps command to find child processes on macOS
-            if let Ok(output) = tokio::process::Command::new("pgrep")
-                .arg("-P")
-                .arg(parent_pid.to_string())
-                .output()
-                .await
-            {
-                if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
-                    for line in stdout.lines() {
-                        if let Ok(pid) = line.trim().parse::<u32>() {
-                            child_pids.push(pid);
-                            // Recursively find children of children
-                            let grandchildren = Box::pin(self.find_child_processes(pid)).await;
-                            child_pids.extend(grandchildren);
-                        }
-                    }
+        // Helper function to recursively find all descendants
+        fn find_descendants(system: &System, parent_pid: SysPid, result: &mut Vec<u32>) {
+            for (pid, process) in system.processes() {
+                if process.parent() == Some(parent_pid) {
+                    let child_pid = pid.as_u32();
+                    result.push(child_pid);
+                    // Recursively find children of this child
+                    find_descendants(system, *pid, result);
                 }
             }
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            // Use /proc to find child processes on Linux
-            if let Ok(entries) = std::fs::read_dir("/proc") {
-                for entry in entries.flatten() {
-                    if let Ok(name) = entry.file_name().into_string() {
-                        if let Ok(pid) = name.parse::<u32>() {
-                            // Read the stat file to get parent PID
-                            if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid))
-                            {
-                                // Parse parent PID from stat file
-                                // Format: pid (comm) state ppid ...
-                                if let Some(end) = stat.rfind(')') {
-                                    let fields: Vec<&str> =
-                                        stat[end + 1..].split_whitespace().collect();
-                                    if fields.len() > 2 {
-                                        if let Ok(ppid) = fields[1].parse::<u32>() {
-                                            if ppid == parent_pid {
-                                                child_pids.push(pid);
-                                                // Recursively find children of children
-                                                let grandchildren =
-                                                    Box::pin(self.find_child_processes(pid)).await;
-                                                child_pids.extend(grandchildren);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
+        find_descendants(&system, parent_pid, &mut child_pids);
         child_pids
     }
 }
