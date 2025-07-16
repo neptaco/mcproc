@@ -77,10 +77,6 @@ pub struct ProcessConfig {
     pub port_detection: PortDetectionConfig,
     /// Log buffer size (number of lines)
     pub log_buffer_size: usize,
-    /// Whether to create independent process groups for managed processes
-    /// - true: Processes survive daemon crashes but may become orphaned (default)
-    /// - false: Processes are terminated when daemon stops (safer cleanup)
-    pub independent_process_groups: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,7 +146,6 @@ impl Default for Config {
                     max_attempts: 30,
                 },
                 log_buffer_size: 10000,
-                independent_process_groups: false, // Default to safer cleanup
             },
             logging: LoggingConfig {
                 enable_file_logging: true, // Default ON
