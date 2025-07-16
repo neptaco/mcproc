@@ -83,6 +83,9 @@ strip-ansi-escapes = "0.2.1"
 crossbeam-channel.workspace = true
 bytes.workspace = true
 
+# Process info
+sysinfo = "0.32"
+
 # Platform specific
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.29", features = ["signal", "process"] }
