@@ -41,6 +41,40 @@ impl ProcessManager {
         }
     }
 
+    /// Wait for a process to be completely removed from the registry
+    pub async fn wait_for_process_removal(&self, name: &str, project: Option<&str>) {
+        let start_wait = tokio::time::Instant::now();
+        let max_wait = Duration::from_millis(self.config.process.restart.shutdown_timeout_ms);
+
+        loop {
+            // Check if process still exists in registry
+            if self
+                .registry
+                .get_process_by_name_or_id_with_project(name, project)
+                .is_none()
+            {
+                // Process removed from registry, wait a bit more for cleanup
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                break;
+            }
+
+            // Check timeout
+            if start_wait.elapsed() > max_wait {
+                warn!(
+                    "Timeout waiting for process {} to stop, proceeding anyway",
+                    name
+                );
+                break;
+            }
+
+            // Wait a bit before next check
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Additional delay to ensure ports are released
+        tokio::time::sleep(Duration::from_millis(self.config.process.restart.delay_ms)).await;
+    }
+
     /// Publish a process event to the event hub
     fn publish_process_event(&self, event: crate::daemon::process::event::ProcessEvent) {
         if let Some(ref event_hub) = self.event_hub {
@@ -512,11 +546,8 @@ impl ProcessManager {
             // Use force=true to ensure all child processes are terminated
             self.stop_process(name_or_id, Some(&project), true).await?;
 
-            // Wait a bit for process to stop and clean up
-            tokio::time::sleep(tokio::time::Duration::from_millis(
-                self.config.process.restart.delay_ms,
-            ))
-            .await;
+            // Wait for process to be completely removed
+            self.wait_for_process_removal(&name, Some(&project)).await;
 
             self.start_process_with_log_stream(
                 name,

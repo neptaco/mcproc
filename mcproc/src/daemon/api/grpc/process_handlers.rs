@@ -4,7 +4,6 @@ use super::helpers::{
 use super::service::GrpcService;
 use proto::process_manager_server::ProcessManager as ProcessManagerService;
 use proto::*;
-use std::time::Duration;
 use tonic::{Request, Response, Status};
 use tracing::error;
 
@@ -50,11 +49,13 @@ impl GrpcService {
             {
                 // Stop existing process
                 let _ = process_manager
-                    .stop_process(&existing.id, Some(project.as_str()), false)
+                    .stop_process(&existing.id, Some(project.as_str()), true) // Use force=true
                     .await;
 
-                // Wait a bit for process to stop
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Wait for process to be completely removed
+                process_manager
+                    .wait_for_process_removal(&name, Some(project.as_str()))
+                    .await;
             }
         }
 
