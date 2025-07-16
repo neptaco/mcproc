@@ -71,8 +71,22 @@ impl ProcessManager {
 
         // Check if process already exists
         if let Some(existing) = self.registry.get_process_by_name(&name) {
-            if matches!(existing.get_status(), ProcessStatus::Running) {
-                return Err(McprocdError::ProcessAlreadyExists(name));
+            match existing.get_status() {
+                ProcessStatus::Running => {
+                    return Err(McprocdError::ProcessAlreadyExists(name));
+                }
+                ProcessStatus::Failed | ProcessStatus::Stopped => {
+                    // Remove failed/stopped process from registry to allow reuse of the name
+                    info!(
+                        "Removing {:?} process '{}' from registry to allow restart",
+                        existing.get_status(),
+                        name
+                    );
+                    self.registry.remove_process(&existing.id);
+                }
+                _ => {
+                    // Starting or Stopping states should be kept
+                }
             }
         }
 
