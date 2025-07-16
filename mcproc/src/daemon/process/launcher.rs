@@ -98,10 +98,18 @@ impl ProcessLauncher {
 
             // Set up proper signal handling and process cleanup
             // Use a subshell with proper signal propagation
+            // Note: macOS doesn't support xargs -r, so we handle empty input differently
             let wrapped_cmd = format!(
                 r#"
 # Ensure all child processes are killed when the shell exits
-trap 'jobs -p | xargs -r kill -TERM 2>/dev/null; wait; exit' TERM INT EXIT
+cleanup() {{
+    local pids=$(jobs -p)
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill -TERM 2>/dev/null || true
+        wait
+    fi
+}}
+trap 'cleanup; exit' TERM INT EXIT
 
 # For simple commands, use exec to replace the shell
 {}
