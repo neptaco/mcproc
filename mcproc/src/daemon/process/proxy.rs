@@ -173,17 +173,25 @@ impl ProxyInfo {
             info!("All tasks abort requested for process {}", self.name);
         }
 
+        // Find all child processes of this PID
+        let child_pids = self.find_child_processes(self.pid).await;
+        if !child_pids.is_empty() {
+            info!(
+                "Found {} child process(es) for {} (PID: {}): {:?}",
+                child_pids.len(),
+                self.name,
+                self.pid,
+                child_pids
+            );
+        }
+
         // First attempt: Send SIGTERM (unless force is specified)
         if !force {
-            // On Unix, send signal to the entire process group
-            #[cfg(unix)]
-            let pid_arg = format!("-{}", self.pid); // Negative PID targets the process group
-            #[cfg(not(unix))]
             let pid_arg = self.pid.to_string();
 
             info!(
-                "Sending SIGTERM to process group {} (PID: {})",
-                pid_arg, self.pid
+                "Sending SIGTERM to process {} (PID: {})",
+                self.name, self.pid
             );
             let output = tokio::process::Command::new("kill")
                 .arg("-TERM")
@@ -207,6 +215,15 @@ impl ProxyInfo {
                 info!("SIGTERM sent successfully to {}", pid_arg);
             }
 
+            // Also send SIGTERM to all child processes directly
+            for child_pid in &child_pids {
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-TERM")
+                    .arg(child_pid.to_string())
+                    .output()
+                    .await;
+            }
+
             // Wait up to 5 seconds for graceful shutdown
             let timeout = tokio::time::Duration::from_secs(5);
             let start = tokio::time::Instant::now();
@@ -221,7 +238,7 @@ impl ProxyInfo {
 
                 if let Ok(output) = check_output {
                     if !output.status.success() {
-                        info!("Process {} has stopped (kill -0 failed)", pid_arg);
+                        info!("Process {} has stopped (kill -0 failed)", self.name);
                         // Process has stopped
                         self.set_status(ProcessStatus::Stopped);
                         if let Ok(mut exit_time) = self.exit_time.lock() {
@@ -240,12 +257,9 @@ impl ProxyInfo {
         }
 
         // Force kill with SIGKILL
-        #[cfg(unix)]
-        let pid_arg = format!("-{}", self.pid);
-        #[cfg(not(unix))]
         let pid_arg = self.pid.to_string();
 
-        info!("Sending SIGKILL to process group {}", pid_arg);
+        info!("Sending SIGKILL to process {}", self.name);
         let output = tokio::process::Command::new("kill")
             .arg("-KILL")
             .arg(pid_arg)
@@ -257,7 +271,15 @@ impl ProxyInfo {
             let stderr = String::from_utf8_lossy(&output.stderr);
             // Check if the error is "No such process" which is ok if process already exited
             if !stderr.contains("No such process") && !stderr.contains("no such process") {
-                return Err(format!("Failed to kill process: {}", stderr));
+                // Process group kill failed, try to kill child processes directly
+                info!("Process group kill failed, killing child processes directly");
+                for child_pid in &child_pids {
+                    let _ = tokio::process::Command::new("kill")
+                        .arg("-KILL")
+                        .arg(child_pid.to_string())
+                        .output()
+                        .await;
+                }
             }
         }
 
@@ -279,5 +301,68 @@ impl ProxyInfo {
         if let Ok(mut detected) = self.detected_port.lock() {
             *detected = Some(port);
         }
+    }
+
+    /// Find all child processes of a given PID
+    async fn find_child_processes(&self, parent_pid: u32) -> Vec<u32> {
+        let mut child_pids = Vec::new();
+
+        #[cfg(target_os = "macos")]
+        {
+            // Use ps command to find child processes on macOS
+            if let Ok(output) = tokio::process::Command::new("pgrep")
+                .arg("-P")
+                .arg(parent_pid.to_string())
+                .output()
+                .await
+            {
+                if let Ok(stdout) = std::str::from_utf8(&output.stdout) {
+                    for line in stdout.lines() {
+                        if let Ok(pid) = line.trim().parse::<u32>() {
+                            child_pids.push(pid);
+                            // Recursively find children of children
+                            let grandchildren = Box::pin(self.find_child_processes(pid)).await;
+                            child_pids.extend(grandchildren);
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            // Use /proc to find child processes on Linux
+            if let Ok(entries) = std::fs::read_dir("/proc") {
+                for entry in entries.flatten() {
+                    if let Ok(name) = entry.file_name().into_string() {
+                        if let Ok(pid) = name.parse::<u32>() {
+                            // Read the stat file to get parent PID
+                            if let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid))
+                            {
+                                // Parse parent PID from stat file
+                                // Format: pid (comm) state ppid ...
+                                if let Some(end) = stat.rfind(')') {
+                                    let fields: Vec<&str> =
+                                        stat[end + 1..].split_whitespace().collect();
+                                    if fields.len() > 2 {
+                                        if let Ok(ppid) = fields[1].parse::<u32>() {
+                                            if ppid == parent_pid {
+                                                child_pids.push(pid);
+                                                // Recursively find children of children
+                                                let grandchildren =
+                                                    Box::pin(self.find_child_processes(pid)).await;
+                                                child_pids.extend(grandchildren);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        child_pids
     }
 }
