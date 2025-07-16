@@ -96,13 +96,22 @@ impl ProcessLauncher {
                 || shell_command.contains('$')
                 || shell_command.contains('`');
 
-            // Set up signal trap to ensure proper cleanup
-            // For simple commands, also use exec to replace the shell process
-            let wrapped_cmd = if needs_shell {
-                format!("trap 'kill -TERM 0' TERM; {}", shell_command)
-            } else {
-                format!("trap 'kill -TERM 0' TERM; exec {}", shell_command)
-            };
+            // Set up proper signal handling and process cleanup
+            // Use a subshell with proper signal propagation
+            let wrapped_cmd = format!(
+                r#"
+# Ensure all child processes are killed when the shell exits
+trap 'jobs -p | xargs -r kill -TERM 2>/dev/null; wait; exit' TERM INT EXIT
+
+# For simple commands, use exec to replace the shell
+{}
+"#,
+                if needs_shell {
+                    shell_command
+                } else {
+                    format!("exec {}", shell_command)
+                }
+            );
             (wrapped_cmd.clone(), wrapped_cmd)
         };
 
@@ -131,42 +140,24 @@ impl ProcessLauncher {
         // Kill on drop to ensure cleanup
         command.kill_on_drop(true);
 
-        // Create a new process group for the child process on Unix (if configured)
-        #[cfg(unix)]
+        // Set up process death signal on Linux
+        // This ensures child processes receive SIGTERM when the parent dies
+        #[cfg(target_os = "linux")]
         {
-            if self.config.process.independent_process_groups {
-                // Set the process group ID to be the same as the PID (0 means use own PID)
-                // This allows us to kill the entire process tree later
-                unsafe {
-                    command.pre_exec(|| {
-                        // First try to create a new session
-                        let sid_result = libc::setsid();
-                        if sid_result == -1 {
-                            eprintln!(
-                                "setsid failed with errno: {}",
-                                std::io::Error::last_os_error()
-                            );
-                            // If setsid fails (e.g., already a session leader), try setpgid as fallback
-                            let pgid_result = libc::setpgid(0, 0);
-                            if pgid_result == -1 {
-                                eprintln!(
-                                    "setpgid failed with errno: {}",
-                                    std::io::Error::last_os_error()
-                                );
-                                // Both failed - this is unusual but we'll continue anyway
-                                // The process will still run, just not in its own process group
-                            }
-                        }
-                        Ok(())
-                    });
-                }
-                debug!("Configured independent process group for {}", params.name);
-            } else {
-                debug!(
-                    "Process {} will stay in daemon's process group",
-                    params.name
-                );
+            unsafe {
+                command.pre_exec(|| {
+                    // PR_SET_PDEATHSIG = 1
+                    let result = libc::prctl(1, libc::SIGTERM);
+                    if result == -1 {
+                        eprintln!(
+                            "prctl(PR_SET_PDEATHSIG) failed with errno: {}",
+                            std::io::Error::last_os_error()
+                        );
+                    }
+                    Ok(())
+                });
             }
+            debug!("Configured PR_SET_PDEATHSIG for {}", params.name);
         }
 
         // Log file will be created automatically on first write
