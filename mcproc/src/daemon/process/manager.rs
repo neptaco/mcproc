@@ -509,9 +509,10 @@ impl ProcessManager {
             let toolchain = process.toolchain.clone();
             drop(process);
 
-            self.stop_process(name_or_id, Some(&project), false).await?;
+            // Use force=true to ensure all child processes are terminated
+            self.stop_process(name_or_id, Some(&project), true).await?;
 
-            // Wait a bit for process to stop
+            // Wait a bit for process to stop and clean up
             tokio::time::sleep(tokio::time::Duration::from_millis(
                 self.config.process.restart.delay_ms,
             ))
