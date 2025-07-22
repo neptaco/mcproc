@@ -88,38 +88,30 @@ impl ProcessLauncher {
         } else {
             // Check if the command contains shell operators
             // Always use trap for signal handling, but combine with exec for simple commands
+            // Note: We don't include space ' ' here because many commands have arguments
+            // and we want to use exec to replace the shell process when possible
             let needs_shell = shell_command.contains('|')
                 || shell_command.contains('>')
                 || shell_command.contains('<')
                 || shell_command.contains('&')
                 || shell_command.contains(';')
                 || shell_command.contains('$')
-                || shell_command.contains('`');
+                || shell_command.contains('`')
+                || shell_command.contains('*')
+                || shell_command.contains('?')
+                || shell_command.contains('[')
+                || shell_command.contains('~');
 
             // Set up proper signal handling and process cleanup
             // Use a subshell with proper signal propagation
             // Note: macOS doesn't support xargs -r, so we handle empty input differently
-            let wrapped_cmd = format!(
-                r#"
-# Ensure all child processes are killed when the shell exits
-cleanup() {{
-    local pids=$(jobs -p)
-    if [ -n "$pids" ]; then
-        echo "$pids" | xargs kill -TERM 2>/dev/null || true
-        wait
-    fi
-}}
-trap 'cleanup; exit' TERM INT EXIT
-
-# For simple commands, use exec to replace the shell
-{}
-"#,
-                if needs_shell {
-                    shell_command
-                } else {
-                    format!("exec {}", shell_command)
-                }
-            );
+            let wrapped_cmd = if needs_shell {
+                // Commands that require shell features - run directly
+                shell_command.clone()
+            } else {
+                // Simple commands - use exec to replace the shell process
+                format!("exec {}", shell_command)
+            };
             (wrapped_cmd.clone(), wrapped_cmd)
         };
 
@@ -145,8 +137,10 @@ trap 'cleanup; exit' TERM INT EXIT
         command.stderr(Stdio::piped());
         command.stdin(Stdio::null());
 
-        // Kill on drop to ensure cleanup
-        command.kill_on_drop(true);
+        // IMPORTANT: Do NOT use kill_on_drop(true) as it sends SIGKILL immediately
+        // and prevents graceful shutdown. We handle process termination manually
+        // in ProxyInfo::stop() with proper SIGTERM -> wait -> SIGKILL sequence.
+        command.kill_on_drop(false);
 
         // Set up process death signal on Linux
         // This ensures child processes receive SIGTERM when the parent dies

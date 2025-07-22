@@ -161,21 +161,9 @@ impl ProxyInfo {
         );
         self.set_status(ProcessStatus::Stopping);
 
-        // Cancel all tasks first
-        if let Ok(mut handles) = self.hyperlog_handles.lock() {
-            info!(
-                "Cancelling {} tasks for process {}",
-                handles.len(),
-                self.name
-            );
-
-            // Abort all tasks
-            for handle in handles.drain(..) {
-                handle.abort();
-            }
-
-            info!("All tasks abort requested for process {}", self.name);
-        }
+        // NOTE: We do NOT cancel tasks here anymore. Cancelling the monitor task
+        // would drop the Child object, closing stdout/stderr pipes and causing
+        // the child to receive SIGPIPE instead of our SIGTERM signal.
 
         // Find all child processes of this PID
         let child_pids = self.find_child_processes(self.pid).await;
@@ -281,6 +269,12 @@ impl ProxyInfo {
         if let Ok(mut exit_time) = self.exit_time.lock() {
             *exit_time = Some(Utc::now());
         }
+
+        // NOTE: We intentionally do NOT cancel monitoring tasks here.
+        // The monitor task holds the Child object, and cancelling it would drop the Child,
+        // which closes the stdout/stderr pipes and causes the child process to receive
+        // SIGPIPE instead of SIGTERM. The monitor task will exit naturally when the
+        // process dies, and will be cleaned up when ProxyInfo is dropped.
 
         Ok(())
     }
