@@ -1,5 +1,4 @@
 use std::process::Command;
-use tokio::time::{sleep, Duration};
 use tracing::{debug, warn};
 
 /// Detect listening ports for a given PID using lsof
@@ -158,42 +157,6 @@ pub fn detect_ports_netstat(pid: u32) -> Vec<u32> {
     }
 
     ports
-}
-
-/// Wait for a port to become available
-pub async fn wait_for_port(port: u16, timeout_secs: u64) -> Result<(), String> {
-    let start = tokio::time::Instant::now();
-    let timeout = Duration::from_secs(timeout_secs);
-
-    while start.elapsed() < timeout {
-        match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
-            Ok(_) => {
-                debug!("Port {} is now available", port);
-                return Ok(());
-            }
-            Err(_) => {
-                sleep(Duration::from_millis(100)).await;
-            }
-        }
-    }
-
-    Err(format!(
-        "Port {} did not become available within {} seconds",
-        port, timeout_secs
-    ))
-}
-
-/// Detect port for a specific PID
-pub async fn detect_port_for_pid(pid: u32) -> Result<Option<u16>, String> {
-    // Give the process some time to bind to a port
-    sleep(Duration::from_millis(500)).await;
-
-    let ports = detect_ports(pid);
-    if ports.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(ports[0] as u16))
-    }
 }
 
 #[cfg(test)]

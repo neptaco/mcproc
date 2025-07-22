@@ -319,54 +319,6 @@ impl ProcessManager {
             handles.push(monitor_handle);
         }
 
-        // Spawn port detector
-        if let Some(configured_port) = proxy_arc.port {
-            let port_proxy = proxy_arc.clone();
-            let port_name = name.clone();
-            let port_handle = tokio::spawn(async move {
-                if let Err(e) = port_detector::wait_for_port(configured_port, 30).await {
-                    warn!(
-                        "Port {} not available for process {}: {}",
-                        configured_port, port_name, e
-                    );
-                } else {
-                    info!(
-                        "Port {} is now available for process {}",
-                        configured_port, port_name
-                    );
-                    port_proxy.mark_port_ready();
-                }
-            });
-
-            // Store the port handle
-            if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
-                handles.push(port_handle);
-            }
-        } else {
-            let detect_proxy = proxy_arc.clone();
-            let detect_name = name.clone();
-            let detect_pid = pid;
-            let detect_handle = tokio::spawn(async move {
-                match port_detector::detect_port_for_pid(detect_pid).await {
-                    Ok(Some(port)) => {
-                        info!("Detected port {} for process {}", port, detect_name);
-                        detect_proxy.set_detected_port(port);
-                    }
-                    Ok(None) => {
-                        debug!("No port detected for process {}", detect_name);
-                    }
-                    Err(e) => {
-                        debug!("Error detecting port for process {}: {}", detect_name, e);
-                    }
-                }
-            });
-
-            // Store the detect handle
-            if let Ok(mut handles) = proxy_arc.hyperlog_handles.lock() {
-                handles.push(detect_handle);
-            }
-        }
-
         // Wait for pattern match or initial startup time with timeout
         if let Some(rx) = log_ready_rx {
             let wait_duration = tokio::time::Duration::from_secs(
@@ -424,6 +376,17 @@ impl ProcessManager {
 
         // Get matched line if pattern was found
         let collected_matched_line = matched_line.lock().ok().and_then(|g| g.clone());
+
+        // Detect ports before returning process info
+        if matches!(proxy_arc.get_status(), ProcessStatus::Running) {
+            let ports = port_detector::detect_ports(proxy_arc.pid);
+            if !ports.is_empty() {
+                debug!("Detected ports for process {}: {:?}", name, ports);
+                if let Some(first_port) = ports.first() {
+                    proxy_arc.set_detected_port(*first_port as u16);
+                }
+            }
+        }
 
         Ok((
             proxy_arc,
@@ -573,8 +536,22 @@ impl ProcessManager {
         name_or_id: &str,
         project: Option<&str>,
     ) -> Option<Arc<ProxyInfo>> {
-        self.registry
-            .get_process_by_name_or_id_with_project(name_or_id, project)
+        let process = self
+            .registry
+            .get_process_by_name_or_id_with_project(name_or_id, project)?;
+
+        // Detect ports for running process
+        if matches!(process.get_status(), ProcessStatus::Running) {
+            let ports = port_detector::detect_ports(process.pid);
+            if !ports.is_empty() {
+                debug!("Detected ports for process {}: {:?}", process.name, ports);
+                if let Some(first_port) = ports.first() {
+                    process.set_detected_port(*first_port as u16);
+                }
+            }
+        }
+
+        Some(process)
     }
 
     pub fn get_all_processes(&self) -> Vec<Arc<ProxyInfo>> {
@@ -582,7 +559,22 @@ impl ProcessManager {
     }
 
     pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
-        self.registry.list_processes()
+        let processes = self.registry.list_processes();
+
+        // Detect ports for all running processes
+        for process in &processes {
+            if matches!(process.get_status(), ProcessStatus::Running) {
+                let ports = port_detector::detect_ports(process.pid);
+                if !ports.is_empty() {
+                    debug!("Detected ports for process {}: {:?}", process.name, ports);
+                    if let Some(first_port) = ports.first() {
+                        process.set_detected_port(*first_port as u16);
+                    }
+                }
+            }
+        }
+
+        processes
     }
 
     pub async fn clean_project(&self, project: &str, force: bool) -> Result<Vec<String>> {

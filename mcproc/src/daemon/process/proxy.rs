@@ -106,8 +106,6 @@ pub struct ProxyInfo {
     pub port: Option<u16>,
     /// Detected port from process output
     pub detected_port: Arc<Mutex<Option<u16>>>,
-    /// Flag indicating if port detection is complete
-    pub port_ready: Arc<Mutex<bool>>,
     /// Exit code when process terminates
     pub exit_code: Arc<Mutex<Option<i32>>>,
     /// Time when process exited
@@ -137,7 +135,6 @@ impl ProxyInfo {
             pid: params.pid,
             port: None,
             detected_port: Arc::new(Mutex::new(None)),
-            port_ready: Arc::new(Mutex::new(false)),
             exit_code: Arc::new(Mutex::new(None)),
             exit_time: Arc::new(Mutex::new(None)),
             hyperlog_handles: Arc::new(Mutex::new(Vec::new())),
@@ -286,12 +283,6 @@ impl ProxyInfo {
         }
 
         Ok(())
-    }
-
-    pub fn mark_port_ready(&self) {
-        if let Ok(mut ready) = self.port_ready.lock() {
-            *ready = true;
-        }
     }
 
     pub fn set_detected_port(&self, port: u16) {
