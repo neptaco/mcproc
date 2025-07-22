@@ -148,23 +148,26 @@ impl GrpcService {
             }));
         }
 
-        // Fire-and-forget: spawn stop process in background
-        tokio::spawn(async move {
-            if let Err(e) = process_manager
-                .stop_process(&name, Some(project.as_str()), force)
-                .await
-            {
-                tracing::error!("Background stop failed for process {}: {}", name, e);
-            } else {
-                tracing::info!("Background stop completed for process {}", name);
+        // Execute stop process synchronously to ensure graceful shutdown completes
+        match process_manager
+            .stop_process(&name, Some(project.as_str()), force)
+            .await
+        {
+            Ok(()) => {
+                tracing::info!("Process {} stopped successfully", name);
+                Ok(Response::new(StopProcessResponse {
+                    success: true,
+                    message: Some(format!("Process '{}' stopped successfully", name)),
+                }))
             }
-        });
-
-        // Return immediately - the stop operation is now running in background
-        Ok(Response::new(StopProcessResponse {
-            success: true,
-            message: Some("Stop command accepted, process will be terminated".to_string()),
-        }))
+            Err(e) => {
+                tracing::error!("Failed to stop process {}: {}", name, e);
+                Ok(Response::new(StopProcessResponse {
+                    success: false,
+                    message: Some(format!("Failed to stop process '{}': {}", name, e)),
+                }))
+            }
+        }
     }
 
     pub(super) async fn restart_process_impl(
