@@ -27,8 +27,14 @@ impl RestartCommand {
 
         println!("Restarting process '{}'...", self.name);
 
-        // Set a reasonable timeout
-        let timeout = Duration::from_secs(35);
+        // Load config to get timeout settings
+        let config = crate::common::config::Config::load()?;
+        // Set timeout based on config: process_stop_timeout + grpc_request_buffer
+        // Restart needs more time: stop + start
+        let timeout = Duration::from_millis(
+            (config.process.restart.process_stop_timeout_ms * 2)
+                + config.api.grpc_request_buffer_secs * 1000,
+        );
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);
 
