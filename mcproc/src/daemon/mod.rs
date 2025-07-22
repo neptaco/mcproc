@@ -7,7 +7,7 @@ pub mod stream;
 use self::{log::LogHub, process::ProcessManager, stream::StreamEventHub};
 use crate::common::config::Config;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
@@ -144,6 +144,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
             let task = tokio::spawn(async move {
                 info!("Stopping process {}/{}", project, name);
+                // Try graceful shutdown first during daemon shutdown
                 if let Err(e) = pm.stop_process(&name, Some(&project), false).await {
                     error!("Failed to stop process {}/{}: {}", project, name, e);
                     (project, name, false)
@@ -160,31 +161,21 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
             results.push(task.await);
         }
 
-        // Check if any processes failed to stop gracefully
-        let mut failed_processes = Vec::new();
-        for (project, name, success) in results.into_iter().flatten() {
-            if !success {
-                failed_processes.push((project, name));
-            }
-        }
+        // Log any failed processes
+        let failed_count = results
+            .into_iter()
+            .flatten()
+            .filter(|(_, _, success)| !success)
+            .count();
 
-        // If any processes failed to stop gracefully, try force killing them
-        if !failed_processes.is_empty() {
-            warn!("Some processes failed to stop gracefully, attempting force kill...");
-            for (project, name) in failed_processes {
-                if let Err(e) = process_manager
-                    .stop_process(&name, Some(&project), true)
-                    .await
-                {
-                    error!("Failed to force kill process {}/{}: {}", project, name, e);
-                }
-            }
+        if failed_count > 0 {
+            error!("{} process(es) failed to stop", failed_count);
         }
     }
 
     // Give processes time to shut down gracefully
     tokio::time::sleep(tokio::time::Duration::from_millis(
-        config.daemon.shutdown_grace_period_ms,
+        config.daemon.daemon_shutdown_timeout_ms,
     ))
     .await;
 

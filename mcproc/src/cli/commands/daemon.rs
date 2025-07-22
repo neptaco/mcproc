@@ -80,13 +80,25 @@ impl DaemonCommand {
 
                 // Wait for daemon to stop
                 let max_wait_iterations =
-                    config.daemon.shutdown_grace_period_ms / config.daemon.stop_check_interval_ms;
+                    config.daemon.daemon_shutdown_timeout_ms / config.daemon.stop_check_interval_ms;
+                let mut elapsed = 0;
                 for _ in 0..max_wait_iterations {
                     tokio::time::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms))
                         .await;
+                    elapsed += config.daemon.stop_check_interval_ms;
+
                     if !is_daemon_running(&config) {
                         println!("Stopped mcprocd daemon");
                         return Ok(());
+                    }
+
+                    // Show progress every 5 seconds
+                    if elapsed % 5000 == 0 {
+                        println!(
+                            "Waiting for daemon to stop gracefully... ({}/{}s)",
+                            elapsed / 1000,
+                            config.daemon.daemon_shutdown_timeout_ms / 1000
+                        );
                     }
                 }
 
@@ -119,17 +131,29 @@ impl DaemonCommand {
                     )?;
 
                     // Wait for stop
-                    let max_wait_iterations = config.daemon.shutdown_grace_period_ms
+                    let max_wait_iterations = config.daemon.daemon_shutdown_timeout_ms
                         / config.daemon.stop_check_interval_ms;
                     let mut stopped = false;
+                    let mut elapsed = 0;
                     for _ in 0..max_wait_iterations {
                         tokio::time::sleep(Duration::from_millis(
                             config.daemon.stop_check_interval_ms,
                         ))
                         .await;
+                        elapsed += config.daemon.stop_check_interval_ms;
+
                         if !is_daemon_running(&config) {
                             stopped = true;
                             break;
+                        }
+
+                        // Show progress every 5 seconds
+                        if elapsed % 5000 == 0 {
+                            println!(
+                                "Waiting for daemon to stop gracefully... ({}/{}s)",
+                                elapsed / 1000,
+                                config.daemon.daemon_shutdown_timeout_ms / 1000
+                            );
                         }
                     }
 

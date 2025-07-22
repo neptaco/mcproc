@@ -63,7 +63,7 @@ pub struct Config {
 - ❌ `log.ring_buffer_size` - Ring buffer size is hardcoded in ProxyInfo
 - ❌ `api.grpc_port` - Using Unix sockets instead of TCP
 - ❌ `process.max_restart_attempts` - Auto-restart not implemented
-- ❌ `process.shutdown_timeout_ms` - Graceful shutdown timeout not implemented
+- ❌ `process.process_stop_timeout_ms` - Graceful shutdown timeout not implemented
 
 ## Recommendations
 

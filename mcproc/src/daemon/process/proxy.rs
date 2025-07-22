@@ -154,7 +154,7 @@ impl ProxyInfo {
         &self.key
     }
 
-    pub async fn stop(&self, force: bool) -> Result<(), String> {
+    pub async fn stop(&self, force: bool, process_stop_timeout_ms: u64) -> Result<(), String> {
         info!(
             "Stopping process {} (PID: {}, force: {})",
             self.name, self.pid, force
@@ -221,8 +221,8 @@ impl ProxyInfo {
                 }
             }
 
-            // Wait up to 5 seconds for graceful shutdown
-            let timeout = tokio::time::Duration::from_secs(5);
+            // Wait for graceful shutdown
+            let timeout = tokio::time::Duration::from_millis(process_stop_timeout_ms);
             let start = tokio::time::Instant::now();
 
             #[cfg(unix)]

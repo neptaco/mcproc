@@ -44,7 +44,7 @@ impl ProcessManager {
     /// Wait for a process to be completely removed from the registry
     pub async fn wait_for_process_removal(&self, name: &str, project: Option<&str>) {
         let start_wait = tokio::time::Instant::now();
-        let max_wait = Duration::from_millis(self.config.process.restart.shutdown_timeout_ms);
+        let max_wait = Duration::from_millis(self.config.process.restart.process_stop_timeout_ms);
 
         loop {
             // Check if process still exists in registry
@@ -430,9 +430,16 @@ impl ProcessManager {
             project: project.clone(),
         });
 
-        // Stop the process with a timeout
-        let stop_timeout = tokio::time::Duration::from_secs(10);
-        match tokio::time::timeout(stop_timeout, process.stop(force)).await {
+        // Stop the process with a timeout (add 5 seconds buffer to shutdown_timeout)
+        let stop_timeout = tokio::time::Duration::from_millis(
+            self.config.process.restart.process_stop_timeout_ms + 5000,
+        );
+        match tokio::time::timeout(
+            stop_timeout,
+            process.stop(force, self.config.process.restart.process_stop_timeout_ms),
+        )
+        .await
+        {
             Ok(Ok(())) => {
                 info!("Process {} stopped successfully", name);
             }
@@ -446,7 +453,7 @@ impl ProcessManager {
                 if !force {
                     match tokio::time::timeout(
                         tokio::time::Duration::from_secs(2),
-                        process.stop(true),
+                        process.stop(true, self.config.process.restart.process_stop_timeout_ms),
                     )
                     .await
                     {
@@ -506,8 +513,8 @@ impl ProcessManager {
             let toolchain = process.toolchain.clone();
             drop(process);
 
-            // Use force=true to ensure all child processes are terminated
-            self.stop_process(name_or_id, Some(&project), true).await?;
+            // Use graceful shutdown for restart
+            self.stop_process(name_or_id, Some(&project), false).await?;
 
             // Wait for process to be completely removed
             self.wait_for_process_removal(&name, Some(&project)).await;
@@ -561,16 +568,39 @@ impl ProcessManager {
     pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
         let processes = self.registry.list_processes();
 
-        // Detect ports for all running processes
-        for process in &processes {
-            if matches!(process.get_status(), ProcessStatus::Running) {
-                let ports = port_detector::detect_ports(process.pid);
-                if !ports.is_empty() {
-                    debug!("Detected ports for process {}: {:?}", process.name, ports);
-                    if let Some(first_port) = ports.first() {
-                        process.set_detected_port(*first_port as u16);
-                    }
-                }
+        // Detect ports for all running processes in parallel
+        let running_processes: Vec<_> = processes
+            .iter()
+            .filter(|p| matches!(p.get_status(), ProcessStatus::Running))
+            .cloned()
+            .collect();
+
+        if !running_processes.is_empty() {
+            debug!(
+                "Detecting ports for {} running processes",
+                running_processes.len()
+            );
+
+            // Create a thread pool for parallel port detection
+            use std::thread;
+            let handles: Vec<_> = running_processes
+                .into_iter()
+                .map(|process| {
+                    thread::spawn(move || {
+                        let ports = port_detector::detect_ports(process.pid);
+                        if !ports.is_empty() {
+                            debug!("Detected ports for process {}: {:?}", process.name, ports);
+                            if let Some(first_port) = ports.first() {
+                                process.set_detected_port(*first_port as u16);
+                            }
+                        }
+                    })
+                })
+                .collect();
+
+            // Wait for all threads to complete
+            for handle in handles {
+                let _ = handle.join();
             }
         }
 

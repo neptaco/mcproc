@@ -34,8 +34,8 @@ pub struct PathConfig {
 pub struct DaemonConfig {
     /// Maximum time to wait for daemon startup (milliseconds)
     pub startup_timeout_ms: u64,
-    /// Grace period for processes to shut down during daemon shutdown (milliseconds)
-    pub shutdown_grace_period_ms: u64,
+    /// Total timeout for daemon shutdown to stop all processes (milliseconds)
+    pub daemon_shutdown_timeout_ms: u64,
     /// Interval for checking daemon stop status (milliseconds)
     pub stop_check_interval_ms: u64,
     /// Timeout for client connecting to daemon (seconds)
@@ -93,8 +93,8 @@ pub struct ProcessRestartConfig {
     pub max_attempts: u32,
     /// Delay between stop and start during restart (milliseconds)
     pub delay_ms: u64,
-    /// Timeout for graceful process shutdown (milliseconds, not yet implemented)
-    pub shutdown_timeout_ms: u64,
+    /// Timeout for graceful shutdown of a single process (milliseconds)
+    pub process_stop_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,7 +125,7 @@ impl Default for Config {
             },
             daemon: DaemonConfig {
                 startup_timeout_ms: 2000,
-                shutdown_grace_period_ms: 500,
+                daemon_shutdown_timeout_ms: 30000, // 30 seconds total for daemon shutdown
                 stop_check_interval_ms: 100,
                 client_connection_timeout_secs: 5,
                 client_startup_wait_ms: 1000, // Max wait time with multiple checks
@@ -138,7 +138,7 @@ impl Default for Config {
                 restart: ProcessRestartConfig {
                     max_attempts: 3,
                     delay_ms: 1000,
-                    shutdown_timeout_ms: 5000,
+                    process_stop_timeout_ms: 30000, // 30 seconds per process
                 },
                 port_detection: PortDetectionConfig {
                     initial_delay_secs: 3,
