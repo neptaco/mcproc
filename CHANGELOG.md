@@ -5,16 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.3] - 2025-07-15
+## [Unreleased]
 
 ### Added
-- **Batch log writer for improved performance** - High-volume log processing now uses 8KB chunk-based processing with 50ms timeout for efficient file I/O
-- **Enhanced daemon startup reliability** - Added robust retry logic for client connections during daemon startup with version compatibility checking
+- **Configurable gRPC timeouts** - Stop and restart command timeouts now properly account for graceful shutdown duration
+- **Recursive child process termination** - All child processes are properly terminated when stopping a parent process (supports both macOS and Linux)
+- **Improved process lifecycle management** - Enhanced signal handling for clean process termination
 
 ### Fixed
-- **Timestamp format standardization** - Log files now use RFC 3339 format (e.g., 2025-01-15T03:28:47.739Z) with proper timezone parsing
-- **Misleading error messages** - Removed "channel closed" errors during normal operation when broadcast channels have no subscribers
-- **Daemon log file initialization** - Fixed issue where mcprocd.log would grow indefinitely by properly initializing on daemon startup
+- **Graceful shutdown reliability** - Processes now properly complete graceful shutdown before termination
+- **Port detection timing** - Improved timing for more reliable port detection
+- **Process restart reliability** - Ensures processes are fully stopped before restarting
+- **macOS compatibility** - Fixed shell trap handler for better cross-platform support
 
 ## [0.1.2] - 2025-07-08
 
