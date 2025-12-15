@@ -7,7 +7,9 @@ use tokio::sync::mpsc;
 
 /// Stdio transport for MCP communication
 pub struct StdioTransport {
-    tx: mpsc::Sender<JsonRpcMessage>,
+    /// Sender for incoming messages. Wrapped in Option so we can take ownership
+    /// and move it into the spawned task, ensuring EOF properly closes the channel.
+    tx: Option<mpsc::Sender<JsonRpcMessage>>,
     rx: mpsc::Receiver<JsonRpcMessage>,
     shutdown_tx: mpsc::Sender<()>,
 }
@@ -18,7 +20,7 @@ impl StdioTransport {
         let (shutdown_tx, _) = mpsc::channel(1);
 
         Self {
-            tx,
+            tx: Some(tx),
             rx,
             shutdown_tx,
         }
@@ -34,7 +36,12 @@ impl Default for StdioTransport {
 #[async_trait]
 impl Transport for StdioTransport {
     async fn start(&mut self) -> Result<()> {
-        let tx = self.tx.clone();
+        // Take ownership of tx so it's the only sender.
+        // When the spawned task exits (on EOF), tx is dropped and rx.recv() returns None.
+        let tx = self.tx.take().ok_or_else(|| {
+            crate::error::Error::Internal("Transport already started".to_string())
+        })?;
+
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = shutdown_tx;
 
@@ -56,12 +63,13 @@ impl Transport for StdioTransport {
                                     }
                                 }
                             }
-                            Ok(None) => break, // EOF
+                            Ok(None) => break, // EOF - tx will be dropped, causing rx.recv() to return None
                             Err(_) => break,
                         }
                     }
                 }
             }
+            // tx is dropped here, which closes the channel
         });
 
         Ok(())

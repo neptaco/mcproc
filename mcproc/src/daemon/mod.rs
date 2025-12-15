@@ -6,6 +6,8 @@ pub mod stream;
 
 use self::{log::LogHub, process::ProcessManager, stream::StreamEventHub};
 use crate::common::config::Config;
+use fs2::FileExt;
+use std::fs::File;
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -27,37 +29,50 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(Config::load()?);
     config.ensure_directories()?;
 
-    // Check if daemon is already running
-    if let Ok(pid) = std::fs::read_to_string(&config.paths.pid_file) {
-        if let Ok(pid) = pid.trim().parse::<i32>() {
-            // Check if process is actually running
-            if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok() {
-                // Process exists, check if it's a zombie
-                let is_zombie = check_if_zombie(pid);
+    // Acquire exclusive lock on PID file to prevent multiple daemon instances
+    // The lock is held for the entire lifetime of the daemon process
+    let pid_file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&config.paths.pid_file)?;
 
-                if is_zombie {
-                    info!("Found zombie process with PID {}, cleaning up", pid);
-                    // Remove stale PID file
-                    let _ = std::fs::remove_file(&config.paths.pid_file);
-                } else {
-                    error!("mcprocd is already running with PID {}", pid);
-                    return Err("Daemon already running".into());
+    // Try to acquire exclusive lock (non-blocking)
+    match pid_file.try_lock_exclusive() {
+        Ok(()) => {
+            info!("Acquired exclusive lock on PID file");
+        }
+        Err(e) => {
+            // Another daemon is holding the lock
+            error!("Failed to acquire lock on PID file: {}", e);
+            error!("Another mcprocd daemon is likely running");
+
+            // Try to read the existing PID for informational purposes
+            if let Ok(existing_pid) = std::fs::read_to_string(&config.paths.pid_file) {
+                if let Ok(pid) = existing_pid.trim().parse::<i32>() {
+                    error!("Existing daemon PID: {}", pid);
                 }
-            } else {
-                // Process doesn't exist, remove stale PID file
-                info!("Removing stale PID file for non-existent process {}", pid);
-                let _ = std::fs::remove_file(&config.paths.pid_file);
             }
-        } else {
-            // Invalid PID in file, remove it
-            let _ = std::fs::remove_file(&config.paths.pid_file);
+
+            return Err("Daemon already running (lock held)".into());
         }
     }
 
-    // Write PID file
+    // Write our PID to the file
     let pid = std::process::id();
-    std::fs::write(&config.paths.pid_file, pid.to_string())?;
+    use std::io::Write;
+    let mut pid_file_write = &pid_file;
+    pid_file_write.set_len(0)?; // Truncate
+    use std::io::Seek;
+    pid_file_write.seek(std::io::SeekFrom::Start(0))?;
+    write!(pid_file_write, "{}", pid)?;
+    pid_file_write.flush()?;
     info!("Written PID {} to {:?}", pid, config.paths.pid_file);
+
+    // Keep the file handle alive to maintain the lock
+    // It will be automatically released when the process exits
+    let _pid_file_lock = pid_file;
 
     // Note: Orphaned process detection is no longer needed
     // With parent-child process management, all child processes
@@ -185,43 +200,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Port file is no longer used (using Unix sockets instead)
+    // Note: PID file lock is automatically released when _pid_file_lock is dropped
 
     Ok(())
-}
-
-fn check_if_zombie(pid: i32) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        // Use ps command to check process state on macOS
-        if let Ok(output) = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "stat="])
-            .output()
-        {
-            if let Ok(stat) = std::str::from_utf8(&output.stdout) {
-                // On macOS, zombie processes have 'Z' in their state
-                return stat.trim().contains('Z');
-            }
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        // Check /proc/{pid}/stat on Linux
-        if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
-            // Parse the stat file to check process state
-            // The state is the third field after the command name in parentheses
-            if let Some(end) = status.rfind(')') {
-                let after_cmd = &status[end + 1..];
-                let fields: Vec<&str> = after_cmd.split_whitespace().collect();
-                if !fields.is_empty() {
-                    // State is the first field after the command
-                    // 'Z' indicates zombie process
-                    return fields[0] == "Z";
-                }
-            }
-        }
-    }
-
-    // Default to false on other platforms
-    false
 }
