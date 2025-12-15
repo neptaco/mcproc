@@ -2,10 +2,24 @@ use super::helpers::{
     create_failed_process_info, create_process_info, create_timestamp, FailedProcessParams,
 };
 use super::service::GrpcService;
+use crate::daemon::error::McprocdError;
 use proto::process_manager_server::ProcessManager as ProcessManagerService;
 use proto::*;
 use tonic::{Request, Response, Status};
 use tracing::error;
+
+/// Convert McprocdError to appropriate gRPC Status
+fn mcprocd_error_to_status(e: &McprocdError) -> Status {
+    match e {
+        McprocdError::ProcessNotFound { .. } => Status::not_found(e.to_string()),
+        McprocdError::ProcessAlreadyExists(_) => Status::already_exists(e.to_string()),
+        McprocdError::InvalidRequest(_) => Status::invalid_argument(e.to_string()),
+        McprocdError::InvalidCommand { .. } => Status::invalid_argument(e.to_string()),
+        McprocdError::InvalidRegex { .. } => Status::invalid_argument(e.to_string()),
+        // All other errors are internal
+        _ => Status::internal(e.to_string()),
+    }
+}
 
 impl GrpcService {
     pub(super) async fn start_process_impl(
@@ -115,9 +129,8 @@ impl GrpcService {
                             };
                         }
                         _ => {
-                            // Other errors still return as status errors
-                            let status = Status::internal(e.to_string());
-                            Err(status)?;
+                            // Map error to appropriate gRPC status
+                            Err(mcprocd_error_to_status(&e))?;
                         }
                     };
                 }
@@ -242,9 +255,8 @@ impl GrpcService {
                             };
                         }
                         _ => {
-                            // Other errors still return as status errors
-                            let status = Status::internal(e.to_string());
-                            Err(status)?;
+                            // Map error to appropriate gRPC status
+                            Err(mcprocd_error_to_status(&e))?;
                         }
                     };
                 }
