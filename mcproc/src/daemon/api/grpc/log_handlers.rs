@@ -448,6 +448,15 @@ fn parse_time_string(time_str: &str) -> Result<chrono::DateTime<chrono::Utc>, St
     Err(format!("Could not parse time: {}", time_str))
 }
 
+/// Parsed log line with original content preserved for pattern matching
+struct ParsedLogLine {
+    line_number: u32,
+    original: String, // Original line for pattern matching
+    timestamp: Option<prost_types::Timestamp>,
+    level: log_entry::LogLevel,
+    content: String, // Parsed content (without timestamp and level prefix)
+}
+
 // Helper function to grep log file
 async fn grep_log_file(
     log_file: &std::path::Path,
@@ -464,7 +473,7 @@ async fn grep_log_file(
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
-    let mut all_lines = Vec::new();
+    let mut all_lines: Vec<ParsedLogLine> = Vec::new();
     let mut line_num = 0u32;
 
     // Read all lines and parse them
@@ -491,34 +500,50 @@ async fn grep_log_file(
             }
         }
 
-        all_lines.push(LogEntry {
+        all_lines.push(ParsedLogLine {
             line_number: line_num,
-            content,
+            original: line,
             timestamp,
-            level: level as i32,
-            process_name: None,
+            level,
+            content,
         });
     }
 
     let mut matches = Vec::new();
 
     // Find matches and collect context
-    for (idx, entry) in all_lines.iter().enumerate() {
-        if pattern.is_match(&entry.content) {
-            let context_before = if before > 0 && idx >= before {
-                all_lines[idx.saturating_sub(before)..idx].to_vec()
+    // Helper to convert ParsedLogLine to LogEntry
+    let to_log_entry = |p: &ParsedLogLine| LogEntry {
+        line_number: p.line_number,
+        content: p.content.clone(),
+        timestamp: p.timestamp,
+        level: p.level as i32,
+        process_name: None,
+    };
+
+    // Pattern matching is done against the original line (including timestamp and [ERROR]/[INFO])
+    for (idx, parsed) in all_lines.iter().enumerate() {
+        if pattern.is_match(&parsed.original) {
+            let context_before: Vec<LogEntry> = if before > 0 && idx >= before {
+                all_lines[idx.saturating_sub(before)..idx]
+                    .iter()
+                    .map(&to_log_entry)
+                    .collect()
             } else {
-                all_lines[0..idx].to_vec()
+                all_lines[0..idx].iter().map(&to_log_entry).collect()
             };
 
-            let context_after = if after > 0 && idx + 1 + after <= all_lines.len() {
-                all_lines[idx + 1..idx + 1 + after].to_vec()
+            let context_after: Vec<LogEntry> = if after > 0 && idx + 1 + after <= all_lines.len() {
+                all_lines[idx + 1..idx + 1 + after]
+                    .iter()
+                    .map(&to_log_entry)
+                    .collect()
             } else {
-                all_lines[idx + 1..].to_vec()
+                all_lines[idx + 1..].iter().map(&to_log_entry).collect()
             };
 
             matches.push(GrepMatch {
-                matched_line: Some(entry.clone()),
+                matched_line: Some(to_log_entry(parsed)),
                 context_before,
                 context_after,
             });
