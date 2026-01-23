@@ -1,7 +1,7 @@
 use crate::common::process_key::ProcessKey;
 use crate::daemon::log::batch_writer::{BatchLogWriter, LogEntry as BatchLogEntry};
 use crate::daemon::log::LogHub;
-use crate::daemon::process::proxy::{LogChunk, ProcessStatus, ProxyInfo};
+use crate::daemon::process::proxy::{LogChunk, ProxyInfo};
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
 use regex::Regex;
@@ -46,6 +46,30 @@ impl HyperLogStreamer {
             config,
             chunk_tx,
             chunk_rx,
+        }
+    }
+
+    /// Handle pattern matching timeout by marking the timeout flag and closing the ready channel
+    fn handle_pattern_match_timeout(config: &HyperLogConfig) {
+        info!(
+            "Log pattern matching timeout reached for {} ({})",
+            config.process_key, config.stream_name
+        );
+
+        // Mark timeout occurred
+        if let Ok(mut timeout_flag) = config.timeout_occurred.lock() {
+            *timeout_flag = true;
+        }
+
+        // Close the log_ready channel (only if not already closed)
+        if let Some(ref tx) = config.log_ready_tx {
+            if let Ok(mut tx_guard) = tx.lock() {
+                if tx_guard.take().is_some() {
+                    debug!("Timeout notification sent (channel closed)");
+                } else {
+                    debug!("Timeout notification already sent or channel already closed");
+                }
+            }
         }
     }
 
@@ -153,37 +177,14 @@ impl HyperLogStreamer {
                     tokio::select! {
                         // Pattern matching timeout
                         _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
-                            info!("Log pattern matching timeout reached for {} ({})",
-                                  config.process_key, config.stream_name);
-
-                            // Mark timeout occurred
-                            if let Ok(mut timeout_flag) = config.timeout_occurred.lock() {
-                                *timeout_flag = true;
-                            }
-
-                            // Close the log_ready channel (only if not already closed)
-                            if let Some(ref tx) = config.log_ready_tx {
-                                if let Ok(mut tx_guard) = tx.lock() {
-                                    if tx_guard.take().is_some() {
-                                        debug!("Timeout notification sent (channel closed)");
-                                    } else {
-                                        debug!("Timeout notification already sent or channel already closed");
-                                    }
-                                }
-                            }
-
+                            Self::handle_pattern_match_timeout(&config);
                             // Continue processing to capture remaining logs
                         }
                         chunk = chunk_rx.recv() => {
                             match chunk {
                                 Some(chunk) => {
-                                    // Check if process is stopping/stopped
-                                    let status = config.proxy.get_status();
-                                    if status == ProcessStatus::Stopping || status == ProcessStatus::Stopped || status == ProcessStatus::Failed {
-                                        debug!("Process {} is {:?}, stopping log processor", config.process_key, status);
-                                        break;
-                                    }
-
+                                    // Continue capturing logs even during graceful shutdown
+                                    // Log capture stops naturally when stdout/stderr streams close (EOF)
                                     batch.push(chunk);
 
                                     // Process batch if full
@@ -217,37 +218,14 @@ impl HyperLogStreamer {
                     tokio::select! {
                         // Pattern matching timeout
                         _ = &mut pattern_timeout, if has_pattern && !config.pattern_matched.lock().map(|g| *g).unwrap_or(false) && !config.timeout_occurred.lock().map(|g| *g).unwrap_or(false) => {
-                            info!("Log pattern matching timeout reached for {} ({})",
-                                  config.process_key, config.stream_name);
-
-                            // Mark timeout occurred
-                            if let Ok(mut timeout_flag) = config.timeout_occurred.lock() {
-                                *timeout_flag = true;
-                            }
-
-                            // Close the log_ready channel (only if not already closed)
-                            if let Some(ref tx) = config.log_ready_tx {
-                                if let Ok(mut tx_guard) = tx.lock() {
-                                    if tx_guard.take().is_some() {
-                                        debug!("Timeout notification sent (channel closed)");
-                                    } else {
-                                        debug!("Timeout notification already sent or channel already closed");
-                                    }
-                                }
-                            }
-
+                            Self::handle_pattern_match_timeout(&config);
                             // Continue processing to capture remaining logs
                         }
                         chunk = chunk_rx.recv() => {
                             match chunk {
                                 Some(chunk) => {
-                                    // Check if process is stopping/stopped
-                                    let status = config.proxy.get_status();
-                                    if status == ProcessStatus::Stopping || status == ProcessStatus::Stopped || status == ProcessStatus::Failed {
-                                        debug!("Process {} is {:?}, stopping log processor", config.process_key, status);
-                                        break;
-                                    }
-
+                                    // Continue capturing logs even during graceful shutdown
+                                    // Log capture stops naturally when stdout/stderr streams close (EOF)
                                     batch.push(chunk);
 
                                     // Process batch if full
@@ -424,25 +402,14 @@ impl HyperLogStreamer {
         // Reduce batch size for more responsive streaming
         const MAX_LINES_PER_PUBLISH: usize = 10;
 
-        // Check if process is still running before publishing
-        let status = config.proxy.get_status();
-        if status != ProcessStatus::Stopping
-            && status != ProcessStatus::Stopped
-            && status != ProcessStatus::Failed
-        {
-            // Publish in smaller batches for better real-time responsiveness
-            for chunk in lines_to_publish.chunks(MAX_LINES_PER_PUBLISH) {
-                for line in chunk {
-                    config
-                        .log_hub
-                        .publish_log_event(&config.process_key, line, config.is_stderr);
-                }
+        // Always publish logs, including during graceful shutdown
+        // This ensures logs emitted after SIGTERM are captured
+        for chunk in lines_to_publish.chunks(MAX_LINES_PER_PUBLISH) {
+            for line in chunk {
+                config
+                    .log_hub
+                    .publish_log_event(&config.process_key, line, config.is_stderr);
             }
-        } else {
-            debug!(
-                "Skipping log event publish for stopped/stopping process {} (status: {:?})",
-                config.process_key, status
-            );
         }
     }
 }
