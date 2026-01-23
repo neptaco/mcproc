@@ -1,12 +1,9 @@
 use crate::common::exit_code::format_exit_reason;
-use crate::daemon::process::proxy::{LogChunk, ProxyInfo};
+use crate::daemon::process::proxy::ProxyInfo;
 use crate::daemon::process::ProcessStatus;
 use chrono::{DateTime, Utc};
 use proto::ProcessInfo;
-use ringbuf::traits::Consumer;
-use ringbuf::HeapRb;
 use std::path::Path;
-use std::sync::Mutex;
 use tracing::debug;
 
 /// Extract port information from a process
@@ -29,12 +26,15 @@ pub fn create_timestamp(datetime: DateTime<Utc>) -> Option<prost_types::Timestam
 }
 
 /// Extract exit details from a process (exit code, reason, stderr tail)
-pub fn extract_exit_details(process: &ProxyInfo) -> (Option<i32>, Option<String>, Option<String>) {
+pub fn extract_exit_details(
+    process: &ProxyInfo,
+    log_file_path: &Path,
+) -> (Option<i32>, Option<String>, Option<String>) {
     match process.exit_code.try_lock() {
         Ok(code_guard) => {
             if let Some(code) = *code_guard {
                 let reason = Some(format_exit_reason(code));
-                let stderr = extract_stderr_tail(&process.ring);
+                let stderr = extract_stderr_tail(log_file_path);
                 (Some(code), reason, Some(stderr))
             } else {
                 (None, None, None)
@@ -44,20 +44,33 @@ pub fn extract_exit_details(process: &ProxyInfo) -> (Option<i32>, Option<String>
     }
 }
 
-/// Extract the last 200 lines from stderr ring buffer
-pub fn extract_stderr_tail(ring: &Mutex<HeapRb<LogChunk>>) -> String {
-    ring.try_lock()
-        .ok()
-        .map(|ring| {
-            let all_chunks: Vec<_> = ring.iter().collect();
-            let start_idx = all_chunks.len().saturating_sub(200);
-            all_chunks[start_idx..]
-                .iter()
-                .map(|chunk| String::from_utf8_lossy(&chunk.data).to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
+/// Extract the last 200 lines from log file (stderr entries)
+pub fn extract_stderr_tail(log_file_path: &Path) -> String {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    if !log_file_path.exists() {
+        return String::new();
+    }
+
+    match File::open(log_file_path) {
+        Ok(file) => {
+            let reader = BufReader::new(file);
+            let mut all_lines: Vec<String> = Vec::new();
+
+            for line in reader.lines().map_while(Result::ok) {
+                // Only collect stderr lines (marked with [ERROR])
+                if line.contains("[ERROR]") {
+                    all_lines.push(line);
+                }
+            }
+
+            // Get the last 200 lines
+            let start_idx = all_lines.len().saturating_sub(200);
+            all_lines[start_idx..].join("\n")
+        }
+        Err(_) => String::new(),
+    }
 }
 
 /// Convert ProcessStatus to proto representation
@@ -80,11 +93,17 @@ pub fn create_process_info(
     matched_line: Option<String>,
 ) -> ProcessInfo {
     let current_status = process.get_status();
+    let log_file_path = log_dir
+        .join(&process.project)
+        .join(format!("{}.log", process.name.replace('/', "_")));
+
     let (exit_code, exit_reason, stderr_tail) = if matches!(current_status, ProcessStatus::Failed) {
-        extract_exit_details(process)
+        extract_exit_details(process, &log_file_path)
     } else {
         (None, None, None)
     };
+
+    debug!("Generated log file path: {:?}", log_file_path);
 
     ProcessInfo {
         id: process.id.clone(),
@@ -98,13 +117,7 @@ pub fn create_process_info(
         status: convert_process_status(current_status),
         start_time: create_timestamp(process.start_time),
         pid: Some(process.pid),
-        log_file: {
-            let path = log_dir
-                .join(&process.project)
-                .join(format!("{}.log", process.name.replace('/', "_")));
-            debug!("Generated log file path: {:?}", path);
-            path.to_string_lossy().to_string()
-        },
+        log_file: log_file_path.to_string_lossy().to_string(),
         project: process.project.clone(),
         ports: extract_ports(process),
         wait_timeout_occurred: if process.wait_for_log.is_some() {

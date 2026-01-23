@@ -36,9 +36,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 flexi_logger.workspace = true
 
-# Ring buffer
-ringbuf.workspace = true
-
 # CLI
 clap.workspace = true
 

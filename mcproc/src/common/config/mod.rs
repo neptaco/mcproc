@@ -47,14 +47,10 @@ pub struct DaemonConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoggingConfig {
-    /// Enable file logging (default: true)
-    pub enable_file_logging: bool,
     /// Maximum size per log file in MB (not yet implemented)
     pub max_size_mb: u64,
     /// Maximum number of log files to keep (not yet implemented)
     pub max_files: u32,
-    /// Size of in-memory ring buffer for each process
-    pub ring_buffer_size: usize,
     /// Polling interval for log file following (milliseconds)
     pub follow_poll_interval_ms: u64,
 }
@@ -75,8 +71,6 @@ pub struct ProcessConfig {
     pub restart: ProcessRestartConfig,
     /// Port detection configuration
     pub port_detection: PortDetectionConfig,
-    /// Log buffer size (number of lines)
-    pub log_buffer_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +107,8 @@ impl Default for Config {
         let data_dir = xdg::get_data_dir();
         let state_dir = xdg::get_state_dir();
         let runtime_dir = xdg::get_runtime_dir();
-        let log_dir = state_dir.join("log");
+        // Use runtime directory for logs (temporary, deleted on reboot)
+        let log_dir = runtime_dir.join("log");
 
         Self {
             paths: PathConfig {
@@ -121,7 +116,8 @@ impl Default for Config {
                 log_dir: log_dir.clone(),
                 pid_file: runtime_dir.join("mcprocd.pid"),
                 socket_path: runtime_dir.join("mcprocd.sock"),
-                daemon_log_file: log_dir.join("mcprocd.log"),
+                // Daemon log still goes to state dir for persistence
+                daemon_log_file: state_dir.join("log").join("mcprocd.log"),
             },
             daemon: DaemonConfig {
                 startup_timeout_ms: 2000,
@@ -145,13 +141,10 @@ impl Default for Config {
                     interval_secs: 3,
                     max_attempts: 30,
                 },
-                log_buffer_size: 10000,
             },
             logging: LoggingConfig {
-                enable_file_logging: true, // Default ON
                 max_size_mb: 100,
                 max_files: 10,
-                ring_buffer_size: 10000,
                 follow_poll_interval_ms: 100,
             },
             api: ApiConfig {

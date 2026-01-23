@@ -1,11 +1,9 @@
 use crate::common::process_key::ProcessKey;
 use crate::daemon::log::batch_writer::{BatchLogWriter, LogEntry as BatchLogEntry};
 use crate::daemon::log::LogHub;
-use crate::daemon::process::proxy::{LogChunk, ProxyInfo};
 use bytes::{Bytes, BytesMut};
 use chrono::Utc;
 use regex::Regex;
-use ringbuf::traits::RingBuffer;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -19,7 +17,6 @@ const BATCH_TIMEOUT_MS: u64 = 50; // Process after 50ms for better responsivenes
 pub struct HyperLogConfig {
     pub stream_name: &'static str,
     pub process_key: ProcessKey,
-    pub proxy: Arc<ProxyInfo>,
     pub log_pattern: Option<Arc<Regex>>,
     pub log_ready_tx: Option<Arc<Mutex<Option<oneshot::Sender<()>>>>>,
     pub pattern_matched: Arc<Mutex<bool>>,
@@ -29,7 +26,6 @@ pub struct HyperLogConfig {
     pub default_wait_timeout_secs: u32,
     pub is_stderr: bool,
     pub log_file_path: Option<PathBuf>,
-    pub enable_file_logging: bool,
     pub log_hub: Arc<LogHub>,
 }
 
@@ -122,14 +118,9 @@ impl HyperLogStreamer {
             let mut line_buffer = Vec::new();
             let mut last_flush = tokio::time::Instant::now();
 
-            // Create batch writer if file logging is enabled
-            let batch_writer = if config.enable_file_logging && config.log_file_path.is_some() {
-                match BatchLogWriter::new(
-                    config.process_key.clone(),
-                    config.log_file_path.clone().unwrap(),
-                )
-                .await
-                {
+            // Create batch writer (always enabled)
+            let batch_writer = if let Some(log_file_path) = config.log_file_path.clone() {
+                match BatchLogWriter::new(config.process_key.clone(), log_file_path).await {
                     Ok(writer) => {
                         info!(
                             "Batch file logging enabled for {} ({})",
@@ -144,7 +135,7 @@ impl HyperLogStreamer {
                 }
             } else {
                 debug!(
-                    "File logging disabled for {} ({})",
+                    "No log file path provided for {} ({})",
                     config.process_key, config.stream_name
                 );
                 None
@@ -361,16 +352,6 @@ impl HyperLogStreamer {
 
                 // Convert to Bytes once for efficient sharing
                 let line_bytes = Bytes::from(line_with_newline);
-
-                // Write to ring buffer for in-memory storage with timestamp
-                let log_chunk = LogChunk {
-                    data: line_bytes.to_vec(),
-                    timestamp,
-                    is_stderr: config.is_stderr,
-                };
-                if let Ok(mut ring) = config.proxy.ring.lock() {
-                    ring.push_overwrite(log_chunk);
-                }
 
                 // Write to batch file writer if available
                 if let Some(writer) = batch_writer {

@@ -1,4 +1,3 @@
-use crate::common::config::Config;
 use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
 use crate::daemon::process::proxy::ProxyInfo;
@@ -38,13 +37,12 @@ pub struct CreateProxyInfoParams {
     pub pid: u32,
 }
 
-pub struct ProcessLauncher {
-    config: Arc<Config>,
-}
+#[derive(Default)]
+pub struct ProcessLauncher;
 
 impl ProcessLauncher {
-    pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+    pub fn new() -> Self {
+        Self
     }
 
     /// Build and spawn a process with the given configuration
@@ -207,7 +205,6 @@ impl ProcessLauncher {
             wait_timeout: params.wait_timeout,
             toolchain: params.toolchain,
             pid: params.pid,
-            ring_buffer_size: self.config.process.log_buffer_size,
         });
         proxy.port = port;
         Arc::new(proxy)

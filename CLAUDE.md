@@ -41,7 +41,7 @@ Claude / Other LLMs
 ### Core Components
 - **mcproc daemon**: The main daemon process (runs as `mcproc --daemon`)
   - Process Manager for spawning/managing child processes
-  - Log Hub with ring buffer (10K lines) and file persistence
+  - Log Hub with file-based logging (temporary, deleted on system reboot)
   - API Layer using tonic (gRPC via Unix Domain Socket)
   - Port detection and monitoring
   - Process state tracking (Starting, Running, Stopping, Stopped, Failed)
@@ -159,40 +159,37 @@ The project uses a Cargo workspace with the following crates:
 ## Implementation Specifications
 
 ### Logging
-- **File logging**: Disabled by default for performance
-- **Enable file logging**: Set `enable_file_logging = true` in config
-- **Log retention**: 7 days (configurable, not yet implemented)
-- **Max file size**: 50MB per log file (configurable, not yet implemented)
-- **Ring buffer**: 10,000 lines in memory per process
-- **Log directory**: `$XDG_STATE_HOME/mcproc/log/{project}/` (defaults to `~/.local/state/mcproc/log/{project}/`)
+- **File logging**: Always enabled (no configuration required)
+- **Log retention**: Temporary (logs are automatically deleted on system reboot)
+- **Max file size**: 100MB per log file (configurable, not yet implemented)
+- **Log directory**: `$XDG_RUNTIME_DIR/mcproc/log/{project}/` (temporary, deleted on reboot)
 - **Format**: `{process_name}.log` (organized by project directory)
-- **Daemon log**: `$XDG_STATE_HOME/mcproc/log/mcprocd.log` (only when started via `mcproc daemon start`)
-- **Features**: 
+- **Daemon log**: `$XDG_STATE_HOME/mcproc/log/mcprocd.log` (persistent, only when started via `mcproc daemon start`)
+- **Features**:
   - Real-time log streaming with follow mode
-  - Regex-based log searching with context (requires file logging)
-  - Time-based filtering (since/until/last, requires file logging)
+  - Regex-based log searching with context
+  - Time-based filtering (since/until/last)
+  - Memory-efficient streaming grep (constant memory usage)
   - Process restart detection and seamless log continuation
 
-#### Configuration
-To enable file logging, create `$XDG_CONFIG_HOME/mcproc/config.toml` with complete configuration:
+#### Configuration (Optional)
+Create `$XDG_CONFIG_HOME/mcproc/config.toml` to customize logging:
 
 ```toml
 [logging]
-enable_file_logging = true
 max_size_mb = 100
 max_files = 10
-ring_buffer_size = 10000
 follow_poll_interval_ms = 100
 ```
 
-**Performance Impact**: Enabling file logging may reduce performance for high-volume processes like Next.js development servers. The new hyperlog implementation minimizes impact through:
+**Performance**: The hyperlog implementation is optimized for high-volume logging:
 - Chunk-based processing (8KB chunks)
-- Batch writing (16 chunks or 100ms timeout)
+- Batch writing (4 chunks or 50ms timeout)
 - Non-blocking async file writes
 - No flush() calls per write
 
 #### ANSI Color Code Handling
-- **Log Storage**: ANSI escape codes are preserved in log files and daemon memory
+- **Log Storage**: ANSI escape codes are preserved in log files
 - **CLI Display**: Colors are shown by default, can be disabled with `--no-color` flag
 - **MCP Tools**: ANSI codes are automatically stripped from all log output to ensure clean text for LLMs (for context saving and preventing misinterpretation)
   - Affected tools: `start_process`, `restart_process`, `get_process_logs`, `search_process_logs`
@@ -220,7 +217,7 @@ follow_poll_interval_ms = 100
 4. Spawn process:
    - If `cmd`: Execute via shell (`sh -c` on Unix)
    - If `args`: Direct execution without shell
-5. Pipe stdout/stderr → ring buffer + log file
+5. Pipe stdout/stderr → log file + event hub
 6. If `wait_for_log` provided, wait for pattern match
 7. Return process info (ID, PID, status, log_file)
 
@@ -249,7 +246,8 @@ mcproc follows the XDG Base Directory specification:
 
 File locations:
 - Config file: `$XDG_CONFIG_HOME/mcproc/config.toml`
-- Log files: `$XDG_STATE_HOME/mcproc/log/`
+- Process log files: `$XDG_RUNTIME_DIR/mcproc/log/{project}/` (temporary, deleted on reboot)
+- Daemon log file: `$XDG_STATE_HOME/mcproc/log/mcprocd.log` (persistent)
 - Socket file: `$XDG_RUNTIME_DIR/mcproc/mcprocd.sock`
 - PID file: `$XDG_RUNTIME_DIR/mcproc/mcprocd.pid`
 

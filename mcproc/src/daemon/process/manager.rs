@@ -31,7 +31,7 @@ impl ProcessManager {
         log_hub: Arc<LogHub>,
         event_hub: SharedStreamEventHub,
     ) -> Self {
-        let launcher = ProcessLauncher::new(config.clone());
+        let launcher = ProcessLauncher::new();
         Self {
             registry: ProcessRegistry::new(),
             config,
@@ -198,7 +198,6 @@ impl ProcessManager {
         let stdout_config = LogStreamConfig {
             stream_name: "stdout",
             process_key: process_key.clone(),
-            proxy: proxy_arc.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
             pattern_matched: pattern_matched.clone(),
@@ -207,7 +206,6 @@ impl ProcessManager {
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
             matched_line: matched_line.clone(),
             log_file_path: Some(log_file_path.clone()),
-            enable_file_logging: self.config.logging.enable_file_logging,
             log_hub: self.log_hub.clone(),
         };
         let stdout_handle = stdout_config.spawn_log_reader(stdout).await;
@@ -221,7 +219,6 @@ impl ProcessManager {
         let stderr_config = LogStreamConfig {
             stream_name: "stderr",
             process_key: process_key.clone(),
-            proxy: proxy_arc.clone(),
             log_pattern: log_pattern.clone(),
             log_ready_tx: log_ready_tx.clone(),
             pattern_matched: pattern_matched.clone(),
@@ -230,7 +227,6 @@ impl ProcessManager {
             default_wait_timeout_secs: self.config.process.startup.default_wait_timeout_secs,
             matched_line: matched_line.clone(),
             log_file_path: Some(log_file_path),
-            enable_file_logging: self.config.logging.enable_file_logging,
             log_hub: self.log_hub.clone(),
         };
         let stderr_handle = stderr_config.spawn_log_reader(stderr).await;

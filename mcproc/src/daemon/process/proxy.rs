@@ -1,6 +1,5 @@
 use crate::common::process_key::ProcessKey;
 use chrono::{DateTime, Utc};
-use ringbuf::HeapRb;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -14,15 +13,6 @@ use nix::{
     sys::signal::{self, Signal},
     unistd::Pid,
 };
-
-/// Log entry with timestamp for ring buffer storage
-#[derive(Debug, Clone)]
-pub struct LogChunk {
-    pub data: Vec<u8>,
-    pub timestamp: DateTime<Utc>,
-    #[allow(dead_code)] // Reserved for future stdout/stderr distinction
-    pub is_stderr: bool,
-}
 
 /// Process lifecycle states
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,8 +88,6 @@ pub struct ProxyInfo {
     pub start_time: DateTime<Utc>,
     /// Current process status (atomic for thread-safe updates)
     pub status: Arc<AtomicU8>,
-    /// Ring buffer for recent log lines (10K capacity)
-    pub ring: Arc<Mutex<HeapRb<LogChunk>>>,
     /// Process ID
     pub pid: u32,
     /// Configured port (if any)
@@ -131,7 +119,6 @@ impl ProxyInfo {
             toolchain: params.toolchain,
             start_time: Utc::now(),
             status: Arc::new(AtomicU8::new(ProcessStatus::Starting as u8)),
-            ring: Arc::new(Mutex::new(HeapRb::new(params.ring_buffer_size))),
             pid: params.pid,
             port: None,
             detected_port: Arc::new(Mutex::new(None)),

@@ -279,15 +279,10 @@ impl GrpcService {
             .join(&project)
             .join(format!("{}.log", req.name));
 
-        // Try to get process first for memory-based search
-        let process = self
-            .process_manager
-            .get_process_by_name_or_id_with_project(&req.name, Some(&req.project));
-
-        // If file doesn't exist and process doesn't exist, return error
-        if !log_file.exists() && process.is_none() {
+        // If file doesn't exist, return error
+        if !log_file.exists() {
             return Err(Status::not_found(format!(
-                "Process '{}' not found in project '{}'",
+                "Log file not found for process '{}' in project '{}'",
                 req.name, req.project
             )));
         }
@@ -305,33 +300,14 @@ impl GrpcService {
         let before = req.before.map(|b| b as usize).unwrap_or(context);
         let after = req.after.map(|a| a as usize).unwrap_or(context);
 
-        // Read and process logs (from file or memory)
-        let matches = if log_file.exists() {
-            // Read from file
-            info!(
-                "grep_logs: Using file-based search for {}",
-                log_file.display()
-            );
-            grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
-                .await
-                .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?
-        } else if let Some(process) = process {
-            // Read from memory (ring buffer)
-            info!(
-                "grep_logs: Using memory-based search for {}/{}",
-                req.project, req.name
-            );
-            grep_from_memory(
-                &process, &pattern, before, after, since_time, until_time, &req.name,
-            )
-            .map_err(|e| Status::internal(format!("Failed to grep memory: {}", e)))?
-        } else {
-            info!(
-                "grep_logs: No file and no process found for {}/{}",
-                req.project, req.name
-            );
-            Vec::new()
-        };
+        // Read and process logs from file
+        info!(
+            "grep_logs: Using file-based search for {}",
+            log_file.display()
+        );
+        let matches = grep_log_file(&log_file, &pattern, before, after, since_time, until_time)
+            .await
+            .map_err(|e| Status::internal(format!("Failed to grep log file: {}", e)))?;
 
         Ok(Response::new(GrepLogsResponse { matches }))
     }
@@ -457,7 +433,27 @@ struct ParsedLogLine {
     content: String, // Parsed content (without timestamp and level prefix)
 }
 
-// Helper function to grep log file
+impl ParsedLogLine {
+    fn to_log_entry(&self) -> LogEntry {
+        LogEntry {
+            line_number: self.line_number,
+            content: self.content.clone(),
+            timestamp: self.timestamp,
+            level: self.level as i32,
+            process_name: None,
+        }
+    }
+}
+
+/// Pending match that is waiting for after-context lines
+struct PendingMatch {
+    matched_line: LogEntry,
+    context_before: Vec<LogEntry>,
+    context_after: Vec<LogEntry>,
+    after_remaining: usize,
+}
+
+// Helper function to grep log file with streaming (memory-efficient)
 async fn grep_log_file(
     log_file: &std::path::Path,
     pattern: &regex::Regex,
@@ -466,6 +462,7 @@ async fn grep_log_file(
     since_time: Option<chrono::DateTime<chrono::Utc>>,
     until_time: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<GrepMatch>, std::io::Error> {
+    use std::collections::VecDeque;
     use tokio::fs::File;
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -473,164 +470,100 @@ async fn grep_log_file(
     let reader = BufReader::new(file);
     let mut lines = reader.lines();
 
-    let mut all_lines: Vec<ParsedLogLine> = Vec::new();
+    // Buffer for before-context lines (keeps only the last `before` lines)
+    let mut before_buffer: VecDeque<ParsedLogLine> = VecDeque::with_capacity(before + 1);
+    // Matches waiting for after-context lines
+    let mut pending_matches: Vec<PendingMatch> = Vec::new();
+    // Completed matches
+    let mut results: Vec<GrepMatch> = Vec::new();
+
     let mut line_num = 0u32;
 
-    // Read all lines and parse them
     while let Ok(Some(line)) = lines.next_line().await {
         line_num += 1;
         let (timestamp, level, content) = parse_log_line(&line);
 
         // Apply time filters
-        if let Some(ts) = &timestamp {
+        let passes_time_filter = if let Some(ts) = &timestamp {
             let log_time =
                 chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
                     .unwrap_or_else(chrono::Utc::now);
 
-            if let Some(since) = since_time {
-                if log_time < since {
-                    continue;
-                }
-            }
+            let passes_since = since_time.is_none_or(|since| log_time >= since);
+            let passes_until = until_time.is_none_or(|until| log_time <= until);
+            passes_since && passes_until
+        } else {
+            // Lines without timestamps pass the filter (unless strict filtering is needed)
+            true
+        };
 
-            if let Some(until) = until_time {
-                if log_time > until {
-                    continue;
-                }
-            }
+        if !passes_time_filter {
+            continue;
         }
 
-        all_lines.push(ParsedLogLine {
+        let parsed = ParsedLogLine {
             line_number: line_num,
             original: line,
             timestamp,
             level,
             content,
-        });
-    }
+        };
 
-    let mut matches = Vec::new();
+        // Add current line to after-context of pending matches
+        for pending in pending_matches.iter_mut() {
+            if pending.after_remaining > 0 {
+                pending.context_after.push(parsed.to_log_entry());
+                pending.after_remaining -= 1;
+            }
+        }
 
-    // Find matches and collect context
-    // Helper to convert ParsedLogLine to LogEntry
-    let to_log_entry = |p: &ParsedLogLine| LogEntry {
-        line_number: p.line_number,
-        content: p.content.clone(),
-        timestamp: p.timestamp,
-        level: p.level as i32,
-        process_name: None,
-    };
+        // Move completed pending matches to results
+        let mut i = 0;
+        while i < pending_matches.len() {
+            if pending_matches[i].after_remaining == 0 {
+                let completed = pending_matches.remove(i);
+                results.push(GrepMatch {
+                    matched_line: Some(completed.matched_line),
+                    context_before: completed.context_before,
+                    context_after: completed.context_after,
+                });
+            } else {
+                i += 1;
+            }
+        }
 
-    // Pattern matching is done against the original line (including timestamp and [ERROR]/[INFO])
-    for (idx, parsed) in all_lines.iter().enumerate() {
+        // Check if current line matches the pattern
         if pattern.is_match(&parsed.original) {
-            let context_before: Vec<LogEntry> = if before > 0 && idx >= before {
-                all_lines[idx.saturating_sub(before)..idx]
-                    .iter()
-                    .map(&to_log_entry)
-                    .collect()
-            } else {
-                all_lines[0..idx].iter().map(&to_log_entry).collect()
-            };
+            // Create context_before from the buffer
+            let context_before: Vec<LogEntry> =
+                before_buffer.iter().map(|p| p.to_log_entry()).collect();
 
-            let context_after: Vec<LogEntry> = if after > 0 && idx + 1 + after <= all_lines.len() {
-                all_lines[idx + 1..idx + 1 + after]
-                    .iter()
-                    .map(&to_log_entry)
-                    .collect()
-            } else {
-                all_lines[idx + 1..].iter().map(&to_log_entry).collect()
-            };
-
-            matches.push(GrepMatch {
-                matched_line: Some(to_log_entry(parsed)),
+            // Create a new pending match
+            pending_matches.push(PendingMatch {
+                matched_line: parsed.to_log_entry(),
                 context_before,
-                context_after,
+                context_after: Vec::with_capacity(after),
+                after_remaining: after,
             });
         }
-    }
 
-    Ok(matches)
-}
-
-// Helper function to grep from memory (ring buffer)
-fn grep_from_memory(
-    process: &std::sync::Arc<crate::daemon::process::proxy::ProxyInfo>,
-    pattern: &regex::Regex,
-    before: usize,
-    after: usize,
-    since_time: Option<chrono::DateTime<chrono::Utc>>,
-    until_time: Option<chrono::DateTime<chrono::Utc>>,
-    process_name: &str,
-) -> Result<Vec<proto::GrepMatch>, String> {
-    use ringbuf::traits::{Consumer, Observer};
-
-    let mut all_lines = Vec::new();
-
-    // Get logs from ring buffer
-    if let Ok(ring) = process.ring.lock() {
-        let chunk_count = ring.occupied_len();
-        info!(
-            "DEBUG grep_from_memory: Found {} chunks in ring buffer for process {}",
-            chunk_count, process_name
-        );
-
-        // Convert chunks to lines with timestamps (without cloning)
-        for log_chunk in ring.iter() {
-            if let Ok(text) = std::str::from_utf8(&log_chunk.data) {
-                for line in text.lines() {
-                    // Apply time filter if specified
-                    if let Some(since) = since_time {
-                        if log_chunk.timestamp < since {
-                            continue;
-                        }
-                    }
-                    if let Some(until) = until_time {
-                        if log_chunk.timestamp > until {
-                            continue;
-                        }
-                    }
-
-                    let log_entry = proto::LogEntry {
-                        line_number: (all_lines.len() + 1) as u32,
-                        content: line.to_string(),
-                        timestamp: Some(prost_types::Timestamp {
-                            seconds: log_chunk.timestamp.timestamp(),
-                            nanos: log_chunk.timestamp.timestamp_subsec_nanos() as i32,
-                        }),
-                        level: 1, // Default to INFO
-                        process_name: Some(process_name.to_string()),
-                    };
-                    all_lines.push(log_entry);
-                }
+        // Update before_buffer (maintain size limit)
+        if before > 0 {
+            before_buffer.push_back(parsed);
+            if before_buffer.len() > before {
+                before_buffer.pop_front();
             }
         }
     }
 
-    let mut matches = Vec::new();
-
-    // Find matches and collect context
-    for (idx, entry) in all_lines.iter().enumerate() {
-        if pattern.is_match(&entry.content) {
-            let context_before = if before > 0 && idx >= before {
-                all_lines[idx.saturating_sub(before)..idx].to_vec()
-            } else {
-                all_lines[0..idx].to_vec()
-            };
-
-            let context_after = if after > 0 && idx + 1 + after <= all_lines.len() {
-                all_lines[idx + 1..idx + 1 + after].to_vec()
-            } else {
-                all_lines[idx + 1..].to_vec()
-            };
-
-            matches.push(proto::GrepMatch {
-                matched_line: Some(entry.clone()),
-                context_before,
-                context_after,
-            });
-        }
+    // Finalize any remaining pending matches (may have incomplete after-context)
+    for pending in pending_matches {
+        results.push(GrepMatch {
+            matched_line: Some(pending.matched_line),
+            context_before: pending.context_before,
+            context_after: pending.context_after,
+        });
     }
 
-    Ok(matches)
+    Ok(results)
 }
