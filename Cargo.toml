@@ -21,7 +21,7 @@ jsonrpc-v2 = "0.13"
 tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
-tonic-build = "0.13"
+tonic-build = "0.14"
 
 # HTTP/WebSocket (only used by mcprocd, not mcp-rs)
 axum = { version = "0.8", features = ["ws", "json"] }
