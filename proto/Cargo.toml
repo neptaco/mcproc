@@ -9,7 +9,7 @@ license.workspace = true
 [dependencies]
 tonic = { workspace = true }
 prost = { workspace = true }
-prost-types = "0.13"
+prost-types = "0.14"
 serde = { workspace = true }
 
 [build-dependencies]
