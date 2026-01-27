@@ -26,7 +26,7 @@ tonic-build = "0.13"
 # HTTP/WebSocket (only used by mcprocd, not mcp-rs)
 axum = { version = "0.8", features = ["ws", "json"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
-tokio-tungstenite = "0.26"
+tokio-tungstenite = "0.28"
 
 # Process management
 dashmap = "6.1"
