@@ -23,6 +23,9 @@ jobs:
       - name: Update Homebrew
         run: brew update
 
+      - name: Tap neptaco/tap
+        run: brew tap neptaco/tap
+
       - name: Fetch and verify checksum
         run: brew fetch --force neptaco/tap/mcproc
 
