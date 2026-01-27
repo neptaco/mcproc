@@ -43,7 +43,7 @@ clap.workspace = true
 # Serialization
 serde.workspace = true
 serde_json.workspace = true
-toml = "0.8"
+toml = "0.9"
 
 # Error handling
 thiserror.workspace = true
