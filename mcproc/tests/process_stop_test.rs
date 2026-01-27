@@ -205,7 +205,10 @@ async fn test_yes_command_stop() {
     .await;
 
     // This test is expected to fail with current implementation
-    if stop_result.is_err() {
+    if let Ok(inner_result) = stop_result {
+        let output = inner_result.expect("Failed to execute stop command");
+        assert!(output.status.success(), "Failed to stop yes process");
+    } else {
         eprintln!("WARNING: yes command stop timed out (known issue)");
 
         // Force cleanup
@@ -220,11 +223,6 @@ async fn test_yes_command_stop() {
             .arg("pkill -f 'yes hello' || true")
             .output()
             .ok();
-    } else {
-        let output = stop_result
-            .unwrap()
-            .expect("Failed to execute stop command");
-        assert!(output.status.success(), "Failed to stop yes process");
     }
 }
 
@@ -258,7 +256,10 @@ async fn test_pipe_command_stop() {
     )
     .await;
 
-    if stop_result.is_err() {
+    if let Ok(inner_result) = stop_result {
+        let output = inner_result.expect("Failed to execute stop command");
+        assert!(output.status.success(), "Failed to stop pipe process");
+    } else {
         eprintln!("WARNING: pipe command stop timed out");
 
         // Force cleanup
@@ -273,10 +274,5 @@ async fn test_pipe_command_stop() {
             .arg("pkill -f 'yes' || true")
             .output()
             .ok();
-    } else {
-        let output = stop_result
-            .unwrap()
-            .expect("Failed to execute stop command");
-        assert!(output.status.success(), "Failed to stop pipe process");
     }
 }
