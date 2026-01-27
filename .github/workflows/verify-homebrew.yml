@@ -1,0 +1,33 @@
+name: Verify Homebrew Formula
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      wait_seconds:
+        description: 'Seconds to wait before verification (for tap propagation)'
+        required: false
+        type: number
+        default: 60
+
+jobs:
+  verify:
+    name: Verify Homebrew Formula
+    runs-on: macos-latest
+
+    steps:
+      - name: Wait for tap update
+        if: ${{ inputs.wait_seconds > 0 }}
+        run: sleep ${{ inputs.wait_seconds }}
+
+      - name: Update Homebrew
+        run: brew update
+
+      - name: Fetch and verify checksum
+        run: brew fetch --force neptaco/tap/mcproc
+
+      - name: Test install
+        run: brew install neptaco/tap/mcproc
+
+      - name: Verify binary
+        run: mcproc --version
