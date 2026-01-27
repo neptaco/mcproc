@@ -19,5 +19,8 @@ tonic-build = { workspace = true }
 # which are used through derive macros or generated code
 [package.metadata.cargo-machete]
 ignored = [
+    "prost",       # Used by generated protobuf code
+    "prost-types", # Used by generated protobuf code
     "serde",       # Used via derive macro in generated protobuf code
+    "tonic",       # Used by generated gRPC code
 ]
