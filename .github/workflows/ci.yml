@@ -101,7 +101,7 @@ jobs:
         run: cargo machete
 
   msrv:
-    name: MSRV (1.75.0)
+    name: MSRV (1.80.0)
     runs-on: ubuntu-latest
 
     steps:
@@ -110,7 +110,7 @@ jobs:
       - name: Install Rust (MSRV)
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.75.0"
+          toolchain: "1.80.0"
 
       - name: Install protobuf compiler
         run: |
