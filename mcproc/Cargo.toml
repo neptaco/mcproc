@@ -82,7 +82,7 @@ crossbeam-channel.workspace = true
 bytes.workspace = true
 
 # Process info
-sysinfo = "0.32"
+sysinfo = "0.38"
 
 # File locking
 fs2 = "0.4"
