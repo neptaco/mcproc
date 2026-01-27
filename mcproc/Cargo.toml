@@ -73,7 +73,7 @@ jsonrpc-v2.workspace = true
 # Additional dependencies
 tokio-stream.workspace = true
 log.workspace = true
-colored = "2.2"
+colored = "3.1"
 tabled = "0.20"
 async-stream = "0.3"
 prost-types.workspace = true
