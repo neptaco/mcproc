@@ -8,12 +8,14 @@ license.workspace = true
 
 [dependencies]
 tonic = { workspace = true }
+tonic-prost = { workspace = true }
 prost = { workspace = true }
-prost-types = "0.13"
+prost-types = { workspace = true }
 serde = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
 
 # cargo-machete reports false positives for these dependencies
 # which are used through derive macros or generated code
@@ -23,4 +25,5 @@ ignored = [
     "prost-types", # Used by generated protobuf code
     "serde",       # Used via derive macro in generated protobuf code
     "tonic",       # Used by generated gRPC code
+    "tonic-prost", # Used by generated gRPC code
 ]
