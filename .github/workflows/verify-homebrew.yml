@@ -33,4 +33,4 @@ jobs:
         run: brew install neptaco/tap/mcproc
 
       - name: Verify binary
-        run: mcproc version
+        run: mcproc --help
