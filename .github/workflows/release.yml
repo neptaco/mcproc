@@ -135,22 +135,20 @@ jobs:
   build-macos:
     name: Build ${{ matrix.target }}
     needs: setup
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
     strategy:
       matrix:
-        include:
-          - os: macos-13
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
-    
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+
     steps:
       - uses: actions/checkout@v6
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
 
       - name: Cache cargo registry
         uses: actions/cache@v5
