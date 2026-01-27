@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-01-27
+
+### Fixed
+- **Grep pattern matching** - Fixed pattern matching to work correctly against original log lines including [ERROR]/[INFO] prefixes
+- **gRPC status codes** - Use appropriate gRPC status codes for error responses
+- **Multiple daemon instances** - Prevent multiple daemon instances from running simultaneously
+- **MCP serve EOF handling** - MCP serve now properly exits when receiving EOF
+- **Graceful shutdown logging** - Capture logs during graceful shutdown process
+
+### Changed
+- **MSRV updated to 1.80.0** - Minimum Supported Rust Version increased from 1.75.0 to 1.80.0
+- **Simplified log system** - Removed ring buffer implementation for cleaner architecture
+
+### Dependencies
+- prost/tonic: 0.13 → 0.14
+- axum-extra: 0.10.3 → 0.12.5
+- sysinfo: 0.32.1 → 0.38.0
+- colored: 2.2.0 → 3.1.1
+- nix: 0.29.0 → 0.31.1
+- tabled: 0.18.0 → 0.20.0
+- tokio-tungstenite: 0.26.2 → 0.28.0
+- toml: 0.8.23 → 0.9.11
+
+### CI/CD
+- cargo-deny for security and license checking
+- cargo-machete for unused dependency detection
+- MSRV verification job
+- Code coverage with codecov
+- Dependabot for automated dependency updates
+- Updated GitHub Actions (checkout v6, cache v5, upload-artifact v6, download-artifact v7)
+
 ## [0.1.3] - 2025-07-30
 
 ### Added
@@ -67,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Process status tracking and port detection
 - Regex-based log searching with time filters
 
-[Unreleased]: https://github.com/neptaco/mcproc/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/neptaco/mcproc/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/neptaco/mcproc/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/neptaco/mcproc/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/neptaco/mcproc/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/neptaco/mcproc/compare/v0.1.0...v0.1.1
