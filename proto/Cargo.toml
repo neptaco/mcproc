@@ -2,6 +2,7 @@
 name = "proto"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 
@@ -13,3 +14,10 @@ serde = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
+
+# cargo-machete reports false positives for these dependencies
+# which are used through derive macros or generated code
+[package.metadata.cargo-machete]
+ignored = [
+    "serde",       # Used via derive macro in generated protobuf code
+]

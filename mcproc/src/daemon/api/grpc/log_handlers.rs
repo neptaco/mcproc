@@ -489,8 +489,8 @@ async fn grep_log_file(
                 chrono::DateTime::<chrono::Utc>::from_timestamp(ts.seconds, ts.nanos as u32)
                     .unwrap_or_else(chrono::Utc::now);
 
-            let passes_since = since_time.is_none_or(|since| log_time >= since);
-            let passes_until = until_time.is_none_or(|until| log_time <= until);
+            let passes_since = since_time.map_or(true, |since| log_time >= since);
+            let passes_until = until_time.map_or(true, |until| log_time <= until);
             passes_since && passes_until
         } else {
             // Lines without timestamps pass the filter (unless strict filtering is needed)

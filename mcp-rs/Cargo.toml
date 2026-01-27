@@ -2,6 +2,7 @@
 name = "mcp-rs"
 version.workspace = true
 edition = "2021"
+rust-version.workspace = true
 authors = ["mcproc contributors"]
 license = "MIT OR Apache-2.0"
 description = "Model Context Protocol (MCP) implementation for Rust"
@@ -45,3 +46,15 @@ full = ["stdio", "sse", "streamable-http"]
 tokio-test = "0.4"
 tracing-subscriber = "0.3"
 chrono = "0.4"
+
+# cargo-machete reports false positives for these dependencies
+# which are used through re-exports or feature flags
+[package.metadata.cargo-machete]
+ignored = [
+    "anyhow",       # Re-exported for tool implementations
+    "bytes",        # Used for HTTP body types
+    "futures-util", # Used for stream utilities
+    "http",         # Used for HTTP types
+    "tokio-stream", # Used for async stream utilities
+    "uuid",         # Used for request ID generation
+]
