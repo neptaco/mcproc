@@ -126,7 +126,7 @@ jobs:
             mcproc-${{ needs.setup.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mcproc-${{ matrix.target }}
           path: releases/*
@@ -191,7 +191,7 @@ jobs:
             mcproc-${{ needs.setup.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: mcproc-${{ matrix.target }}
           path: releases/*
