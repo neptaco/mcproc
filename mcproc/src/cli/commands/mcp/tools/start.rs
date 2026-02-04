@@ -232,42 +232,55 @@ impl ToolHandler for StartTool {
                 let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
 
-                let mut response = json!({
-                    "id": process.id,
-                    "project": process.project,
-                    "name": process.name,
-                    "pid": process.pid,
-                    "status": format_status(process.status),
-                    "log_file": process.log_file,
-                    "start_time": process.start_time.map(|t| {
-                        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                            .unwrap_or_else(chrono::Utc::now);
-                        ts.to_rfc3339()
-                    }),
-                    "ports": process.ports,
-                });
+                let mut output = String::from("START PROCESS\n\n");
+                output.push_str(&format!("Process: {}\n", process.name));
+                output.push_str(&format!("  ID: {}\n", process.id));
+                output.push_str(&format!("  Project: {}\n", process.project));
+                output.push_str(&format!("  Status: {}\n", format_status(process.status)));
+
+                if let Some(pid) = process.pid {
+                    output.push_str(&format!("  PID: {}\n", pid));
+                }
+
+                output.push_str(&format!("  Log file: {}\n", process.log_file));
+
+                if let Some(start_time) = process.start_time {
+                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                        start_time.seconds,
+                        start_time.nanos as u32,
+                    )
+                    .unwrap_or_else(chrono::Utc::now);
+                    output.push_str(&format!("  Started: {}\n", ts.to_rfc3339()));
+                }
+
+                if !process.ports.is_empty() {
+                    let ports_str = process
+                        .ports
+                        .iter()
+                        .map(|port| port.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    output.push_str(&format!("  Ports: {}\n", ports_str));
+                }
 
                 // Add exit information if process failed
                 if process.status == proto::ProcessStatus::Failed as i32 {
+                    output.push_str("\nProcess failed:\n");
                     if let Some(exit_code) = process.exit_code {
-                        response["exit_code"] = json!(exit_code);
+                        output.push_str(&format!("  Exit code: {}\n", exit_code));
                     }
-                    if let Some(exit_reason) = process.exit_reason {
-                        response["exit_reason"] = json!(exit_reason);
+                    if let Some(exit_reason) = &process.exit_reason {
+                        output.push_str(&format!("  Reason: {}\n", exit_reason));
                     }
-                    if let Some(stderr_tail) = process.stderr_tail {
-                        response["stderr_tail"] = json!(stderr_tail);
+                    if let Some(stderr_tail) = &process.stderr_tail {
+                        output.push_str(&format!("  Stderr (last lines):\n{}\n", stderr_tail));
                     }
                 }
 
                 // Add timeout information if available
-                if let Some(timeout_occurred) = process.wait_timeout_occurred {
-                    if timeout_occurred {
-                        response["wait_timeout_occurred"] = json!(true);
-                        response["message"] = json!(
-                            "Process started but wait_for_log pattern was not found within timeout"
-                        );
-                    }
+                let timeout_occurred = process.wait_timeout_occurred.unwrap_or(false);
+                if timeout_occurred {
+                    output.push_str("\nNote: Process started but wait_for_log pattern was not found within timeout.\n");
                 }
 
                 // Always include log context from ProcessInfo (strip ANSI codes)
@@ -277,37 +290,34 @@ impl ToolHandler for StartTool {
                     process.log_context.len(),
                     process.matched_line.is_some()
                 );
-                if !process.log_context.is_empty() {
-                    let cleaned_context: Vec<String> = process
-                        .log_context
-                        .iter()
-                        .map(|line| String::from_utf8_lossy(&strip(line.as_bytes())).to_string())
-                        .collect();
-                    response["log_context"] = json!(cleaned_context);
-                }
 
-                // Check if we have a matched line
                 let has_matched_line = process.matched_line.is_some();
 
+                if !process.log_context.is_empty() {
+                    output.push_str("\nLog context:\n");
+                    for line in &process.log_context {
+                        let cleaned_line =
+                            String::from_utf8_lossy(&strip(line.as_bytes())).to_string();
+                        output.push_str(&format!("  {}\n", cleaned_line));
+                    }
+                }
+
                 // Add matched line if available (strip ANSI codes)
-                if let Some(matched_line) = process.matched_line {
+                if let Some(matched_line) = &process.matched_line {
                     let cleaned_line =
                         String::from_utf8_lossy(&strip(matched_line.as_bytes())).to_string();
-                    response["matched_line"] = json!(cleaned_line);
+                    output.push_str(&format!("\nMatched line: {}\n", cleaned_line));
                 }
 
                 // Add pattern match information if wait_for_log was used
                 if wait_for_log_flag && process.status == proto::ProcessStatus::Running as i32 {
                     // Only report pattern match for running processes
-                    if !process.wait_timeout_occurred.unwrap_or(false) && has_matched_line {
-                        response["pattern_matched"] = json!(true);
-                        response["message"] = json!(format!(
-                            "Process started successfully. Pattern matched in logs."
-                        ));
+                    if !timeout_occurred && has_matched_line {
+                        output.push_str("\n✓ Process started successfully. Pattern matched in logs.\n");
                     }
                 }
 
-                Ok(response)
+                Ok(json!({ "content": [{ "type": "text", "text": output }] }))
             }
             Err(e) => {
                 if e.code() == tonic::Code::AlreadyExists {

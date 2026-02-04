@@ -67,9 +67,12 @@ impl ToolHandler for StopTool {
             .map_err(|e| McpError::Internal(e.to_string()))?
             .into_inner();
 
-        Ok(json!({
-            "success": response.success,
-            "message": response.message,
-        }))
+        let output = format!(
+            "STOP PROCESS\n\nStatus: {}\nMessage: {}",
+            if response.success { "Success" } else { "Failed" },
+            response.message.as_deref().unwrap_or("No message")
+        );
+
+        Ok(json!({ "content": [{ "type": "text", "text": output }] }))
     }
 }
