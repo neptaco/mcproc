@@ -12,13 +12,22 @@ on:
 
 jobs:
   verify:
-    name: Verify Homebrew Formula
-    runs-on: macos-latest
+    name: Verify Homebrew Formula (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
 
     steps:
       - name: Wait for tap update
         if: ${{ inputs.wait_seconds > 0 }}
         run: sleep ${{ inputs.wait_seconds }}
+
+      - name: Install Homebrew (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
 
       - name: Update Homebrew
         run: brew update
