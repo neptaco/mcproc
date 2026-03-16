@@ -93,7 +93,7 @@ nix = { version = "0.31", features = ["signal", "process"] }
 libc = "0.2"
 
 [dev-dependencies]
-serial_test = "3.2"
+serial_test = "3.4"
 
 # cargo-machete reports false positives for these dependencies
 # which are used through re-exports or feature flags
