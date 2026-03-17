@@ -88,27 +88,29 @@ impl ToolHandler for GrepTool {
                 let grep_response = response.into_inner();
 
                 if grep_response.matches.is_empty() {
-                    return Ok(json!({
-                        "process": params.name,
-                        "pattern": params.pattern,
-                        "total_matches": 0,
-                        "message": format!("No matches found for pattern '{}' in process '{}'", params.pattern, params.name)
-                    }));
+                    let output = format!(
+                        "SEARCH LOGS\n\nProcess: {}\nPattern: {}\n\nNo matches found.",
+                        params.name, params.pattern
+                    );
+                    return Ok(json!({ "content": [{ "type": "text", "text": output }] }));
                 }
 
-                // Format timestamp helper uses the common local time formatter
+                let mut output = String::from("SEARCH LOGS\n\n");
+                output.push_str(&format!("Process: {}\n", params.name));
+                output.push_str(&format!("Pattern: {}\n", params.pattern));
+                output.push_str(&format!("Total matches: {}\n\n", grep_response.matches.len()));
 
-                let mut matches = Vec::new();
-
-                for grep_match in grep_response.matches {
-                    let mut lines = Vec::new();
+                for (idx, grep_match) in grep_response.matches.iter().enumerate() {
+                    if idx > 0 {
+                        output.push_str("\n---\n\n");
+                    }
 
                     // Context before
                     for entry in &grep_match.context_before {
                         let content =
                             String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
-                        lines.push(format!(
-                            "{:>6}: {} {}",
+                        output.push_str(&format!(
+                            "{:>6}: {} {}\n",
                             entry.line_number,
                             format_timestamp_local(entry.timestamp.as_ref()),
                             content
@@ -116,50 +118,32 @@ impl ToolHandler for GrepTool {
                     }
 
                     // Matched line (highlighted)
-                    let matched_line_info = if let Some(matched_line) = &grep_match.matched_line {
+                    if let Some(matched_line) = &grep_match.matched_line {
                         let content =
                             String::from_utf8_lossy(&strip(matched_line.content.as_bytes()))
                                 .to_string();
-                        lines.push(format!(
-                            "{:>6}: {} {} <<< MATCH",
+                        output.push_str(&format!(
+                            "{:>6}: {} {} <<< MATCH\n",
                             matched_line.line_number,
                             format_timestamp_local(matched_line.timestamp.as_ref()),
                             content
                         ));
-
-                        Some(json!({
-                            "line_number": matched_line.line_number,
-                            "timestamp": format_timestamp_local(matched_line.timestamp.as_ref()),
-                            "content": content
-                        }))
-                    } else {
-                        None
-                    };
+                    }
 
                     // Context after
                     for entry in &grep_match.context_after {
                         let content =
                             String::from_utf8_lossy(&strip(entry.content.as_bytes())).to_string();
-                        lines.push(format!(
-                            "{:>6}: {} {}",
+                        output.push_str(&format!(
+                            "{:>6}: {} {}\n",
                             entry.line_number,
                             format_timestamp_local(entry.timestamp.as_ref()),
                             content
                         ));
                     }
-
-                    matches.push(json!({
-                        "match_info": matched_line_info,
-                        "context": lines.join("\n")
-                    }));
                 }
 
-                Ok(json!({
-                    "process": params.name,
-                    "pattern": params.pattern,
-                    "total_matches": matches.len(),
-                    "matches": matches
-                }))
+                Ok(json!({ "content": [{ "type": "text", "text": output }] }))
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {

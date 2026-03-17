@@ -133,26 +133,51 @@ impl ToolHandler for StatusTool {
                     }
                 }
 
-                let response = json!({
-                    "id": process.id,
-                    "project": process.project,
-                    "name": process.name,
-                    "status": format_status(process.status),
-                    "pid": process.pid,
-                    "command": process.cmd,
-                    "working_directory": process.cwd,
-                    "log_file": process.log_file,
-                    "start_time": process.start_time.map(|t| {
-                        let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                            .unwrap_or_else(chrono::Utc::now);
-                        ts.to_rfc3339()
-                    }),
-                    "uptime": uptime,
-                    "ports": process.ports,
-                    "recent_logs": logs_preview,
-                });
+                let mut output = String::from("PROCESS STATUS\n\n");
+                output.push_str(&format!("Process: {}\n", process.name));
+                output.push_str(&format!("  ID: {}\n", process.id));
+                output.push_str(&format!("  Project: {}\n", process.project));
+                output.push_str(&format!("  Status: {}\n", format_status(process.status)));
 
-                Ok(response)
+                if let Some(pid) = process.pid {
+                    output.push_str(&format!("  PID: {}\n", pid));
+                }
+
+                output.push_str(&format!("  Command: {}\n", process.cmd));
+                output.push_str(&format!("  Working directory: {}\n", process.cwd));
+                output.push_str(&format!("  Log file: {}\n", process.log_file));
+
+                if let Some(start_time) = process.start_time {
+                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                        start_time.seconds,
+                        start_time.nanos as u32,
+                    )
+                    .unwrap_or_else(chrono::Utc::now);
+                    output.push_str(&format!("  Started: {}\n", ts.to_rfc3339()));
+                }
+
+                if let Some(uptime_str) = uptime {
+                    output.push_str(&format!("  Uptime: {}\n", uptime_str));
+                }
+
+                if !process.ports.is_empty() {
+                    let ports_str = process
+                        .ports
+                        .iter()
+                        .map(|port| port.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    output.push_str(&format!("  Ports: {}\n", ports_str));
+                }
+
+                if !logs_preview.is_empty() {
+                    output.push_str("\nRecent logs:\n");
+                    for log in logs_preview {
+                        output.push_str(&format!("  {}\n", log));
+                    }
+                }
+
+                Ok(json!({ "content": [{ "type": "text", "text": output }] }))
             }
             Err(e) => {
                 if e.code() == tonic::Code::NotFound {
@@ -164,21 +189,12 @@ impl ToolHandler for StatusTool {
 
                     let existing_processes = match client.inner().list_processes(list_request).await
                     {
-                        Ok(response) => {
-                            let processes: Vec<Value> = response
-                                .into_inner()
-                                .processes
-                                .into_iter()
-                                .map(|p| {
-                                    json!({
-                                        "name": p.name,
-                                        "status": format_status(p.status),
-                                        "project": p.project,
-                                    })
-                                })
-                                .collect();
-                            processes
-                        }
+                        Ok(response) => response
+                            .into_inner()
+                            .processes
+                            .into_iter()
+                            .map(|p| (p.name, format_status(p.status), p.project))
+                            .collect::<Vec<_>>(),
                         Err(_) => Vec::new(),
                     };
 
@@ -192,8 +208,9 @@ impl ToolHandler for StatusTool {
                             "Process '{}' not found in project '{}'. Available processes in this project: {}",
                             params.name,
                             project,
-                            existing_processes.iter()
-                                .map(|p| format!("{} ({})", p["name"].as_str().unwrap_or(""), p["status"].as_str().unwrap_or("")))
+                            existing_processes
+                                .iter()
+                                .map(|(name, status, _)| format!("{} ({})", name, status))
                                 .collect::<Vec<_>>()
                                 .join(", ")
                         )

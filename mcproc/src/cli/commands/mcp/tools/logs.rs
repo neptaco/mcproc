@@ -118,9 +118,18 @@ impl ToolHandler for LogsTool {
             }
         }
 
-        // Return as an array for better MCP display
-        Ok(json!({
-            "logs": all_logs
-        }))
+        if all_logs.is_empty() {
+            return Ok(json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("No logs found for process '{}'.", params.name)
+                }]
+            }));
+        }
+
+        let mut output = format!("LOGS FOR PROCESS: {}\n\n", params.name);
+        output.push_str(&all_logs.join("\n"));
+
+        Ok(json!({ "content": [{ "type": "text", "text": output }] }))
     }
 }

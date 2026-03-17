@@ -47,24 +47,49 @@ impl ToolHandler for PsTool {
             .map_err(|e| McpError::Internal(e.to_string()))?
             .into_inner();
 
-        let processes: Vec<Value> = response.processes.into_iter().map(|p| {
-            json!({
-                "id": p.id,
-                "project": p.project,
-                "name": p.name,
-                "pid": p.pid,
-                "status": format_status(p.status),
-                "cmd": p.cmd,
-                "log_file": p.log_file,
-                "start_time": p.start_time.map(|t| {
-                    let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(t.seconds, t.nanos as u32)
-                        .unwrap_or_else(chrono::Utc::now);
-                    ts.to_rfc3339()
-                }),
-                "ports": p.ports,
-            })
-        }).collect();
+        if response.processes.is_empty() {
+            return Ok(json!({ "content": [{ "type": "text", "text": "No processes found." }] }));
+        }
 
-        Ok(json!({ "processes": processes }))
+        let mut output = String::from("PROCESSES\n\n");
+
+        for (idx, p) in response.processes.iter().enumerate() {
+            if idx > 0 {
+                output.push_str("\n---\n\n");
+            }
+
+            output.push_str(&format!("Process: {}\n", p.name));
+            output.push_str(&format!("  ID: {}\n", p.id));
+            output.push_str(&format!("  Project: {}\n", p.project));
+            output.push_str(&format!("  Status: {}\n", format_status(p.status)));
+
+            if let Some(pid) = p.pid {
+                output.push_str(&format!("  PID: {}\n", pid));
+            }
+
+            output.push_str(&format!("  Command: {}\n", p.cmd));
+            output.push_str(&format!("  Log file: {}\n", p.log_file));
+
+            if let Some(start_time) = &p.start_time {
+                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
+                    start_time.seconds,
+                    start_time.nanos as u32,
+                )
+                .unwrap_or_else(chrono::Utc::now);
+                output.push_str(&format!("  Started: {}\n", ts.to_rfc3339()));
+            }
+
+            if !p.ports.is_empty() {
+                let ports_str = p
+                    .ports
+                    .iter()
+                    .map(|port| port.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                output.push_str(&format!("  Ports: {}\n", ports_str));
+            }
+        }
+
+        Ok(json!({ "content": [{ "type": "text", "text": output }] }))
     }
 }
