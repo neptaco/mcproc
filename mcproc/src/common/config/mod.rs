@@ -179,6 +179,11 @@ impl Config {
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
 
+        // Ensure the daemon log file's parent directory exists
+        if let Some(parent) = self.paths.daemon_log_file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
         // Ensure runtime directory exists
         if let Some(parent) = self.paths.socket_path.parent() {
             std::fs::create_dir_all(parent)?;
