@@ -239,7 +239,14 @@ impl ProxyInfo {
 
     #[cfg(unix)]
     async fn confirm_stopped_after_force_kill(&self) -> Result<(), String> {
-        let timeout = tokio::time::Duration::from_secs(2);
+        // Generous deadline: SIGKILL cleanup (zombie transition and reaping)
+        // can stretch to seconds under CPU starvation from parallel builds/CI.
+        self.confirm_stopped_within(tokio::time::Duration::from_secs(10))
+            .await
+    }
+
+    #[cfg(unix)]
+    async fn confirm_stopped_within(&self, timeout: tokio::time::Duration) -> Result<(), String> {
         let start = tokio::time::Instant::now();
         while start.elapsed() < timeout {
             if !Self::is_process_group_alive(self.pid) {
@@ -342,7 +349,9 @@ mod tests {
         let pid = child.id().unwrap();
         let proxy = proxy_for_pid(pid);
 
-        let result = proxy.confirm_stopped_after_force_kill().await;
+        let result = proxy
+            .confirm_stopped_within(tokio::time::Duration::from_millis(300))
+            .await;
 
         assert!(
             result.is_err(),

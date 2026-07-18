@@ -89,6 +89,7 @@ impl GrpcService {
         if force_restart {
             if let Some(existing) = process_manager
                 .get_process_by_name_or_id_with_project(&name, Some(project.as_str()))
+                .await
             {
                 // Stop existing process
                 force_restart_stop_result(
@@ -184,6 +185,7 @@ impl GrpcService {
         // Check if process exists
         if process_manager
             .get_process_by_name_or_id_with_project(&name, Some(&project))
+            .await
             .is_none()
         {
             return Ok(Response::new(StopProcessResponse {
@@ -307,6 +309,7 @@ impl GrpcService {
         match self
             .process_manager
             .get_process_by_name_or_id_with_project(&req.name, Some(req.project.as_str()))
+            .await
         {
             Some(process) => {
                 // Create ProcessInfo using helper
@@ -331,7 +334,7 @@ impl GrpcService {
         request: Request<ListProcessesRequest>,
     ) -> Result<Response<ListProcessesResponse>, Status> {
         let req = request.into_inner();
-        let mut processes = self.process_manager.list_processes();
+        let mut processes = self.process_manager.list_processes().await;
 
         // Filter by project if specified
         if let Some(project_filter) = req.project_filter {

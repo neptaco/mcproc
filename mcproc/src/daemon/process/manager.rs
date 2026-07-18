@@ -414,7 +414,7 @@ impl ProcessManager {
 
         // Detect ports before returning process info
         if matches!(proxy_arc.get_status(), ProcessStatus::Running) {
-            let ports = port_detector::detect_ports(proxy_arc.pid);
+            let ports = port_detector::detect_ports(proxy_arc.pid).await;
             if !ports.is_empty() {
                 debug!("Detected ports for process {}: {:?}", name, ports);
                 if let Some(first_port) = ports.first() {
@@ -582,7 +582,7 @@ impl ProcessManager {
         }
     }
 
-    pub fn get_process_by_name_or_id_with_project(
+    pub async fn get_process_by_name_or_id_with_project(
         &self,
         name_or_id: &str,
         project: Option<&str>,
@@ -593,7 +593,7 @@ impl ProcessManager {
 
         // Detect ports for running process
         if matches!(process.get_status(), ProcessStatus::Running) {
-            let ports = port_detector::detect_ports(process.pid);
+            let ports = port_detector::detect_ports(process.pid).await;
             if !ports.is_empty() {
                 debug!("Detected ports for process {}: {:?}", process.name, ports);
                 if let Some(first_port) = ports.first() {
@@ -609,7 +609,7 @@ impl ProcessManager {
         self.registry.get_all_processes()
     }
 
-    pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
+    pub async fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
         let processes = self.registry.list_processes();
 
         // Detect ports for all running processes in parallel
@@ -625,26 +625,23 @@ impl ProcessManager {
                 running_processes.len()
             );
 
-            // Create a thread pool for parallel port detection
-            use std::thread;
-            let handles: Vec<_> = running_processes
-                .into_iter()
-                .map(|process| {
-                    thread::spawn(move || {
-                        let ports = port_detector::detect_ports(process.pid);
-                        if !ports.is_empty() {
-                            debug!("Detected ports for process {}: {:?}", process.name, ports);
-                            if let Some(first_port) = ports.first() {
-                                process.set_detected_port(*first_port as u16);
-                            }
+            let mut tasks = tokio::task::JoinSet::new();
+            for process in running_processes {
+                tasks.spawn(async move {
+                    let ports = port_detector::detect_ports(process.pid).await;
+                    if !ports.is_empty() {
+                        debug!("Detected ports for process {}: {:?}", process.name, ports);
+                        if let Some(first_port) = ports.first() {
+                            process.set_detected_port(*first_port as u16);
                         }
-                    })
-                })
-                .collect();
+                    }
+                });
+            }
 
-            // Wait for all threads to complete
-            for handle in handles {
-                let _ = handle.join();
+            while let Some(result) = tasks.join_next().await {
+                if let Err(error) = result {
+                    warn!("Port detection task failed: {error}");
+                }
             }
         }
 
