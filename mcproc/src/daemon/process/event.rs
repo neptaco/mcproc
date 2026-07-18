@@ -1,9 +1,5 @@
-use std::sync::Arc;
-use tokio::sync::broadcast;
-
 /// Events related to process lifecycle
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ProcessEvent {
     /// Process is starting
     Starting {
@@ -41,18 +37,6 @@ pub enum ProcessEvent {
 }
 
 impl ProcessEvent {
-    #[allow(dead_code)]
-    pub fn process_id(&self) -> &str {
-        match self {
-            ProcessEvent::Starting { process_id, .. } => process_id,
-            ProcessEvent::Started { process_id, .. } => process_id,
-            ProcessEvent::Stopping { process_id, .. } => process_id,
-            ProcessEvent::Stopped { process_id, .. } => process_id,
-            ProcessEvent::Failed { process_id, .. } => process_id,
-        }
-    }
-
-    #[allow(dead_code)]
     pub fn name(&self) -> &str {
         match self {
             ProcessEvent::Starting { name, .. } => name,
@@ -63,7 +47,6 @@ impl ProcessEvent {
         }
     }
 
-    #[allow(dead_code)]
     pub fn project(&self) -> &str {
         match self {
             ProcessEvent::Starting { project, .. } => project,
@@ -74,39 +57,3 @@ impl ProcessEvent {
         }
     }
 }
-
-/// Event bus for process lifecycle events
-#[allow(dead_code)]
-pub struct ProcessEventBus {
-    sender: broadcast::Sender<ProcessEvent>,
-}
-
-impl ProcessEventBus {
-    pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(1000);
-        Self { sender }
-    }
-
-    /// Publish an event to all subscribers
-    #[allow(dead_code)]
-    pub fn publish(&self, event: ProcessEvent) {
-        // Ignore send errors (no receivers)
-        let _ = self.sender.send(event);
-    }
-
-    /// Subscribe to process events
-    #[allow(dead_code)]
-    pub fn subscribe(&self) -> broadcast::Receiver<ProcessEvent> {
-        self.sender.subscribe()
-    }
-}
-
-impl Default for ProcessEventBus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Shared event bus instance
-#[allow(dead_code)]
-pub type SharedEventBus = Arc<ProcessEventBus>;
