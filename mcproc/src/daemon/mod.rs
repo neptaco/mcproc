@@ -9,7 +9,7 @@ use crate::common::config::Config;
 use fs2::FileExt;
 use std::fs::File;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
@@ -134,7 +134,8 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     // Stop all managed processes
     info!("Stopping all managed processes...");
-    let processes = process_manager.list_processes();
+    let processes = process_manager.list_processes().await;
+    let log_pipeline_processes = processes.clone();
     let running_processes: Vec<_> = processes
         .into_iter()
         .filter(|p| {
@@ -185,6 +186,41 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
         if failed_count > 0 {
             error!("{} process(es) failed to stop", failed_count);
+        }
+    }
+
+    let mut hyperlog_handles = Vec::new();
+    for process in log_pipeline_processes {
+        match process.hyperlog_handles.lock() {
+            Ok(mut handles) => hyperlog_handles.extend(handles.drain(..)),
+            Err(error) => warn!(
+                "Failed to collect log pipeline handles for {}/{}: {}",
+                process.project, process.name, error
+            ),
+        }
+    }
+
+    if !hyperlog_handles.is_empty() {
+        let handle_count = hyperlog_handles.len();
+        info!("Waiting for {handle_count} log pipeline task(s) to finish");
+        let mut tasks = tokio::task::JoinSet::new();
+        for handle in hyperlog_handles {
+            tasks.spawn(async move {
+                if let Err(error) = handle.await {
+                    warn!("Log pipeline task failed to join: {error}");
+                }
+            });
+        }
+
+        let wait_for_pipelines = async { while tasks.join_next().await.is_some() {} };
+        if tokio::time::timeout(tokio::time::Duration::from_secs(5), wait_for_pipelines)
+            .await
+            .is_err()
+        {
+            warn!(
+                "Timed out waiting for log pipelines; {} task(s) remain",
+                tasks.len()
+            );
         }
     }
 

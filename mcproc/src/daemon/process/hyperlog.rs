@@ -258,6 +258,10 @@ impl HyperLogStreamer {
                     tx_guard.take();
                 }
             }
+
+            if let Some(writer) = batch_writer {
+                writer.shutdown().await;
+            }
         });
 
         // Return a handle that waits for both tasks
@@ -472,17 +476,7 @@ mod tests {
             .expect("hyperlog tasks did not finish")
             .unwrap();
 
-        let contents = tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
-            loop {
-                let contents = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-                if contents.contains("partial") {
-                    break contents;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("partial line was not flushed");
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(contents.contains("line1"));
         assert!(contents.contains("partial"));
         tokio::fs::remove_dir_all(root).await.unwrap();

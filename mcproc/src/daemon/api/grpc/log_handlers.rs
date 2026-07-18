@@ -3,6 +3,8 @@ use super::service::GrpcService;
 use crate::daemon::stream::{StreamEvent, StreamFilter};
 use proto::process_manager_server::ProcessManager as ProcessManagerService;
 use proto::*;
+use std::collections::HashSet;
+use std::path::Path;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
@@ -18,6 +20,69 @@ fn clamp_grep_context(value: u32) -> usize {
     (value as usize).min(MAX_GREP_CONTEXT)
 }
 
+fn resolve_log_sources(
+    project: &str,
+    registry_matches: Vec<crate::common::process_key::ProcessKey>,
+    requested_names: &[String],
+    discovered_log_names: &[String],
+) -> Result<Vec<crate::common::process_key::ProcessKey>, Status> {
+    use crate::common::process_key::ProcessKey;
+    use crate::common::validation::{validate_process_name, validate_project_name};
+
+    validate_project_name(project)
+        .map_err(|e| Status::invalid_argument(format!("Invalid project name: {e}")))?;
+    for name in requested_names {
+        validate_process_name(name)
+            .map_err(|e| Status::invalid_argument(format!("Invalid process name: {e}")))?;
+    }
+
+    let mut sources = registry_matches;
+    let mut seen: HashSet<String> = sources.iter().map(|key| key.name.clone()).collect();
+    let discovered: HashSet<&str> = discovered_log_names.iter().map(String::as_str).collect();
+
+    let additional_names: Box<dyn Iterator<Item = &str> + '_> = if requested_names.is_empty() {
+        Box::new(discovered_log_names.iter().map(String::as_str))
+    } else {
+        Box::new(
+            requested_names
+                .iter()
+                .map(String::as_str)
+                .filter(|name| discovered.contains(name)),
+        )
+    };
+
+    for name in additional_names {
+        if validate_process_name(name).is_ok() && seen.insert(name.to_string()) {
+            sources.push(ProcessKey::new(project, name));
+        }
+    }
+
+    Ok(sources)
+}
+
+async fn discover_log_names(project_log_dir: &Path) -> Result<Vec<String>, std::io::Error> {
+    let mut entries = match tokio::fs::read_dir(project_log_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    let mut names = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("log") {
+            continue;
+        }
+        if !entry.file_type().await?.is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_stem().and_then(|stem| stem.to_str()) {
+            names.push(name.to_string());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
 impl GrpcService {
     pub(super) async fn get_logs_impl(
         &self,
@@ -30,6 +95,32 @@ impl GrpcService {
         let tail = clamp_tail(req.tail.unwrap_or(100));
         let follow = req.follow.unwrap_or(false);
         let include_events = req.include_events.unwrap_or(false);
+
+        let processes = self.process_manager.list_processes().await;
+        let registry_matches: Vec<_> = processes
+            .into_iter()
+            .filter(|process| {
+                process.project == project
+                    && (process_names.is_empty() || process_names.contains(&process.name))
+            })
+            .map(|process| {
+                crate::common::process_key::ProcessKey::new(
+                    process.project.clone(),
+                    process.name.clone(),
+                )
+            })
+            .collect();
+        crate::common::validation::validate_project_name(&project)
+            .map_err(|e| Status::invalid_argument(format!("Invalid project name: {e}")))?;
+        let discovered_log_names = discover_log_names(&self.config.paths.log_dir.join(&project))
+            .await
+            .map_err(|e| Status::internal(format!("Failed to list log files: {e}")))?;
+        let log_sources = resolve_log_sources(
+            &project,
+            registry_matches,
+            &process_names,
+            &discovered_log_names,
+        )?;
 
         // Log the request details for debugging
         info!(
@@ -49,30 +140,16 @@ impl GrpcService {
 
         // For tail functionality, read existing logs from files first
         let log_hub = self.log_hub.clone();
-        let process_manager = self.process_manager.clone();
 
         // Create stream
         let stream = async_stream::try_stream! {
-            use crate::common::process_key::ProcessKey;
-
             // First, send existing logs if tail is requested
             if tail > 0 {
                 info!("Reading tail logs (tail={})", tail);
-                // Get list of processes matching the filter
-                let processes = process_manager.list_processes();
-                info!("Found {} total processes", processes.len());
-                let matching_processes: Vec<_> = processes
-                    .into_iter()
-                    .filter(|p| filter.matches_process(&p.project, &p.name))
-                    .collect();
-                info!("Found {} matching processes", matching_processes.len());
+                info!("Found {} matching log sources", log_sources.len());
 
                 // Read tail lines from each matching process's log file
-                for process_info in matching_processes {
-                    let key = ProcessKey {
-                        name: process_info.name.clone(),
-                        project: process_info.project.clone(),
-                    };
+                for key in log_sources {
                     let log_file = log_hub.get_log_file_path_for_key(&key);
 
                     if log_file.exists() {
@@ -86,7 +163,7 @@ impl GrpcService {
                                         content,
                                         timestamp,
                                         level: level as i32,
-                                        process_name: Some(process_info.name.clone()),
+                                        process_name: Some(key.name.clone()),
                                     };
 
                                     yield GetLogsResponse {
@@ -96,7 +173,7 @@ impl GrpcService {
                             }
                             Err(e) => {
                                 error!("Failed to read log file for {}/{}: {}",
-                                    process_info.project, process_info.name, e);
+                                    key.project, key.name, e);
                             }
                         }
                     }
@@ -629,9 +706,10 @@ async fn grep_log_file(
 mod tests {
     use super::{
         clamp_grep_context, clamp_tail, grep_log_file, grep_log_path, parse_time_string,
-        tail_log_lines, MAX_GREP_CONTEXT, MAX_LOG_LINES,
+        resolve_log_sources, tail_log_lines, MAX_GREP_CONTEXT, MAX_LOG_LINES,
     };
     use crate::common::config::Config;
+    use crate::common::process_key::ProcessKey;
     use crate::daemon::log::LogHub;
     use crate::daemon::stream::StreamEventHub;
     use chrono::{Local, TimeZone};
@@ -658,6 +736,51 @@ mod tests {
         assert_eq!(clamp_tail(u32::MAX), MAX_LOG_LINES);
         assert_eq!(clamp_grep_context(u32::MAX), MAX_GREP_CONTEXT);
         assert_eq!(clamp_grep_context(999), 999);
+    }
+
+    #[test]
+    fn explicit_unregistered_process_with_existing_log_is_included() {
+        let sources = resolve_log_sources(
+            "project",
+            vec![],
+            &["stopped".to_string()],
+            &["stopped".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(sources, vec![ProcessKey::new("project", "stopped")]);
+    }
+
+    #[test]
+    fn unspecified_processes_merge_discovered_logs_with_registry() {
+        let sources = resolve_log_sources(
+            "project",
+            vec![ProcessKey::new("project", "running")],
+            &[],
+            &["running".to_string(), "stopped".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            sources,
+            vec![
+                ProcessKey::new("project", "running"),
+                ProcessKey::new("project", "stopped"),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_process_name_is_rejected() {
+        let error = resolve_log_sources(
+            "project",
+            vec![],
+            &["../escape".to_string()],
+            &["escape".to_string()],
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
     }
 
     #[tokio::test]

@@ -21,9 +21,8 @@ pub struct LogEntry {
 
 /// Batch writer for efficient file logging
 pub struct BatchLogWriter {
-    process_key: ProcessKey,
     tx: mpsc::Sender<LogEntry>,
-    _handle: tokio::task::JoinHandle<()>,
+    handle: tokio::task::JoinHandle<()>,
 }
 
 impl BatchLogWriter {
@@ -48,11 +47,7 @@ impl BatchLogWriter {
             }
         });
 
-        Ok(Self {
-            process_key,
-            tx,
-            _handle: handle,
-        })
+        Ok(Self { tx, handle })
     }
 
     /// Write a log entry (non-blocking)
@@ -61,6 +56,13 @@ impl BatchLogWriter {
             .send(entry)
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Log writer closed"))
+    }
+
+    pub async fn shutdown(self) {
+        drop(self.tx);
+        if let Err(error) = self.handle.await {
+            error!("Batch writer task failed to join: {error}");
+        }
     }
 
     /// Background task that batches and writes logs
@@ -170,15 +172,6 @@ impl BatchLogWriter {
     }
 }
 
-impl Drop for BatchLogWriter {
-    fn drop(&mut self) {
-        debug!(
-            "Dropping BatchLogWriter for {}/{}",
-            self.process_key.project, self.process_key.name
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +201,21 @@ mod tests {
         })
         .await
         .expect("log contents were not flushed before timeout")
+    }
+
+    #[tokio::test]
+    async fn shutdown_flushes_pending_entries() {
+        let path = temp_log_path("shutdown-flush");
+        let writer = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        writer.write(entry(b"pending-entry")).await.unwrap();
+
+        writer.shutdown().await;
+
+        let contents = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(contents.contains("pending-entry"), "contents: {contents:?}");
+        tokio::fs::remove_file(path).await.unwrap();
     }
 
     #[tokio::test]

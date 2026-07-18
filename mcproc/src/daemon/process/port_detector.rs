@@ -1,10 +1,10 @@
-use std::process::Command;
+use tokio::process::Command;
 use tracing::{debug, warn};
 
 /// Detect listening ports for a given PID using lsof
-pub fn detect_ports(pid: u32) -> Vec<u32> {
+pub async fn detect_ports(pid: u32) -> Vec<u32> {
     // First, get all child PIDs
-    let all_pids = get_process_tree(pid);
+    let all_pids = get_process_tree(pid).await;
     debug!("Process tree for PID {}: {:?}", pid, all_pids);
 
     let mut all_ports = Vec::new();
@@ -21,6 +21,7 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
                 "-sTCP:LISTEN",         // Only listening state
             ])
             .output()
+            .await
         {
             Ok(output) => output,
             Err(e) => {
@@ -65,23 +66,26 @@ pub fn detect_ports(pid: u32) -> Vec<u32> {
 }
 
 /// Get process tree - parent PID and all its children
-fn get_process_tree(pid: u32) -> Vec<u32> {
+async fn get_process_tree(pid: u32) -> Vec<u32> {
     let mut pids = vec![pid];
+    let mut next_index = 0;
 
-    // Use pgrep to find child processes
-    if let Ok(output) = Command::new("pgrep")
-        .args(["-P", &pid.to_string()])
-        .output()
-    {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if let Ok(child_pid) = line.trim().parse::<u32>() {
-                    // Recursively get children of children
-                    let child_tree = get_process_tree(child_pid);
-                    for cpid in child_tree {
-                        if !pids.contains(&cpid) {
-                            pids.push(cpid);
+    while next_index < pids.len() {
+        let parent_pid = pids[next_index];
+        next_index += 1;
+
+        // Use pgrep to find child processes
+        if let Ok(output) = Command::new("pgrep")
+            .args(["-P", &parent_pid.to_string()])
+            .output()
+            .await
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if let Ok(child_pid) = line.trim().parse::<u32>() {
+                        if !pids.contains(&child_pid) {
+                            pids.push(child_pid);
                         }
                     }
                 }
@@ -109,13 +113,16 @@ fn extract_port(name: &str) -> Option<&str> {
 
 /// Alternative implementation using netstat (for systems without lsof)
 #[allow(dead_code)]
-pub fn detect_ports_netstat(pid: u32) -> Vec<u32> {
+pub async fn detect_ports_netstat(pid: u32) -> Vec<u32> {
     // Try netstat with different options based on OS
     let output = if cfg!(target_os = "macos") {
-        Command::new("netstat").args(["-anv", "-p", "tcp"]).output()
+        Command::new("netstat")
+            .args(["-anv", "-p", "tcp"])
+            .output()
+            .await
     } else {
         // Linux
-        Command::new("netstat").args(["-tlnp"]).output()
+        Command::new("netstat").args(["-tlnp"]).output().await
     };
 
     let output = match output {
@@ -170,5 +177,10 @@ mod tests {
         assert_eq!(extract_port("[::]:3000"), Some("3000"));
         assert_eq!(extract_port("[::1]:8080"), Some("8080"));
         assert_eq!(extract_port("localhost"), None);
+    }
+
+    #[tokio::test]
+    async fn detect_ports_is_awaitable() {
+        let _ = detect_ports(u32::MAX).await;
     }
 }
