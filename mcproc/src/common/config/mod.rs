@@ -176,13 +176,35 @@ impl Config {
     }
 
     pub fn ensure_directories(&self) -> std::io::Result<()> {
+        let log_dir_existed = self.paths.log_dir.exists();
+        let socket_parent_existed = self
+            .paths
+            .socket_path
+            .parent()
+            .map(|parent| parent.exists())
+            .unwrap_or(false);
+
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&self.paths.log_dir, std::fs::Permissions::from_mode(0o700))?;
+            if log_dir_existed {
+                let mode = std::fs::metadata(&self.paths.log_dir)?.permissions().mode();
+                if mode & 0o077 != 0 {
+                    tracing::warn!(
+                        path = %self.paths.log_dir.display(),
+                        mode = format_args!("{:#o}", mode & 0o777),
+                        "Existing log directory has group or other permissions"
+                    );
+                }
+            } else {
+                std::fs::set_permissions(
+                    &self.paths.log_dir,
+                    std::fs::Permissions::from_mode(0o700),
+                )?;
+            }
         }
 
         // Ensure runtime directory exists
@@ -191,7 +213,18 @@ impl Config {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                if socket_parent_existed {
+                    let mode = std::fs::metadata(parent)?.permissions().mode();
+                    if mode & 0o077 != 0 {
+                        tracing::warn!(
+                            path = %parent.display(),
+                            mode = format_args!("{:#o}", mode & 0o777),
+                            "Existing runtime directory has group or other permissions"
+                        );
+                    }
+                } else {
+                    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+                }
             }
         }
 
@@ -251,7 +284,31 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn ensure_directories_sets_private_runtime_and_log_permissions() {
+    fn ensure_directories_sets_private_permissions_for_new_directories() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (config, root) = test_config();
+
+        config.ensure_directories().unwrap();
+
+        let runtime_mode = std::fs::metadata(config.paths.socket_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let log_mode = std::fs::metadata(&config.paths.log_dir)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(runtime_mode, 0o700);
+        assert_eq!(log_mode, 0o700);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directories_preserves_existing_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let (config, root) = test_config();
@@ -280,8 +337,8 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(runtime_mode, 0o700);
-        assert_eq!(log_mode, 0o700);
+        assert_eq!(runtime_mode, 0o755);
+        assert_eq!(log_mode, 0o755);
         std::fs::remove_dir_all(root).unwrap();
     }
 }

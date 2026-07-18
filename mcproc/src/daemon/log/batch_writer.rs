@@ -3,7 +3,7 @@ use crate::common::timestamp::format_datetime_utc_with_tz;
 use bytes::Bytes;
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info};
@@ -72,9 +72,20 @@ impl BatchLogWriter {
         // Open file
         let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&log_file_path)
             .await?;
+
+        let file_len = file.metadata().await?.len();
+        if file_len > 0 {
+            file.seek(std::io::SeekFrom::End(-1)).await?;
+            let mut last_byte = [0];
+            file.read_exact(&mut last_byte).await?;
+            if last_byte[0] != b'\n' {
+                file.write_all(b"\n").await?;
+            }
+        }
 
         info!(
             "Started batch log writer for {}/{}",
@@ -211,6 +222,21 @@ mod tests {
 
         let contents = wait_for_contents(&path, &["existing", "new-line"]).await;
         assert!(contents.starts_with("existing\n"), "contents: {contents:?}");
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn appending_to_partial_line_starts_a_new_line() {
+        let path = temp_log_path("append-partial");
+        tokio::fs::write(&path, "partial").await.unwrap();
+        let writer = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        writer.write(entry(b"new-line")).await.unwrap();
+        drop(writer);
+
+        let contents = wait_for_contents(&path, &["partial", "new-line"]).await;
+        assert!(contents.starts_with("partial\n"), "contents: {contents:?}");
         tokio::fs::remove_file(path).await.unwrap();
     }
 

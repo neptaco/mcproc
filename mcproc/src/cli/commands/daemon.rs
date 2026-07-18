@@ -5,8 +5,14 @@ use clap::{Parser, Subcommand};
 use std::time::Duration;
 use sysinfo::{Pid, System};
 
-fn command_identifies_mcproc(name: &str, command_line: &str) -> bool {
-    name.contains("mcproc") || command_line.contains("mcproc")
+fn command_identifies_mcproc_daemon(name: &str, command: &[String]) -> bool {
+    let executable_is_mcproc = name == "mcproc"
+        || command
+            .first()
+            .and_then(|argv0| std::path::Path::new(argv0).file_name())
+            .and_then(|basename| basename.to_str())
+            == Some("mcproc");
+    executable_is_mcproc && command.iter().any(|argument| argument == "--daemon")
 }
 
 fn pid_is_mcproc_daemon(pid: i32) -> bool {
@@ -23,13 +29,13 @@ fn pid_is_mcproc_daemon(pid: i32) -> bool {
         return true;
     };
     let name = process.name().to_string_lossy();
-    let command_line = process
+    let command = process
         .cmd()
         .iter()
         .map(|part| part.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ");
-    command_identifies_mcproc(&name, &command_line)
+        .map(|part| part.into_owned())
+        .collect::<Vec<_>>();
+    command_identifies_mcproc_daemon(&name, &command)
 }
 
 #[derive(Parser)]
@@ -330,7 +336,7 @@ fn is_daemon_running_with_details(config: &Config) -> (bool, Option<i32>) {
             // Now verify with PID file
             if let Ok(pid_str) = std::fs::read_to_string(&config.paths.pid_file) {
                 if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    return (pid_is_mcproc_daemon(pid), Some(pid));
+                    return (true, Some(pid));
                 }
             }
             // Socket exists but no valid PID file - suspicious state
@@ -452,10 +458,22 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!("Consider running 'mcproc daemon stop' first to clean up");
     }
 
-    let log_file = std::fs::OpenOptions::new()
+    let mut log_file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(config.daemon_log_file())?;
+
+    use std::io::{Read, Seek, Write};
+    let file_len = log_file.metadata()?.len();
+    if file_len > 0 {
+        log_file.seek(std::io::SeekFrom::End(-1))?;
+        let mut last_byte = [0];
+        log_file.read_exact(&mut last_byte)?;
+        if last_byte[0] != b'\n' {
+            log_file.write_all(b"\n")?;
+        }
+    }
 
     let mut cmd = std::process::Command::new(&mcproc_path);
     cmd.arg("--daemon")
@@ -529,12 +547,33 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_identifies_mcproc, pid_is_mcproc_daemon};
+    use super::{
+        command_identifies_mcproc_daemon, is_daemon_running_with_details, pid_is_mcproc_daemon,
+    };
+    use crate::common::config::Config;
 
     #[test]
     fn command_identity_requires_mcproc() {
-        assert!(command_identifies_mcproc("mcproc", "mcproc --daemon"));
-        assert!(!command_identifies_mcproc("sleep", "sleep 5"));
+        assert!(command_identifies_mcproc_daemon(
+            "mcproc",
+            &["mcproc".into(), "--daemon".into()]
+        ));
+        assert!(command_identifies_mcproc_daemon(
+            "other",
+            &["/usr/local/bin/mcproc".into(), "--daemon".into()]
+        ));
+        assert!(!command_identifies_mcproc_daemon(
+            "mcproc",
+            &["mcproc".into(), "start".into(), "x".into()]
+        ));
+        assert!(!command_identifies_mcproc_daemon(
+            "vim",
+            &["vim".into(), "mcproc/notes.md".into()]
+        ));
+        assert!(!command_identifies_mcproc_daemon(
+            "sleep",
+            &["sleep".into(), "5".into()]
+        ));
     }
 
     #[test]
@@ -546,5 +585,28 @@ mod tests {
         assert!(!pid_is_mcproc_daemon(child.id() as i32));
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn connectable_socket_is_running_even_when_pid_is_not_mcproc() {
+        let root = std::path::PathBuf::from("/tmp").join(format!("mcp-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = Config::default();
+        config.paths.socket_path = root.join("mcprocd.sock");
+        config.paths.pid_file = root.join("mcprocd.pid");
+        let listener = std::os::unix::net::UnixListener::bind(&config.paths.socket_path).unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let pid = child.id() as i32;
+        std::fs::write(&config.paths.pid_file, pid.to_string()).unwrap();
+
+        assert_eq!(is_daemon_running_with_details(&config), (true, Some(pid)));
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+        drop(listener);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

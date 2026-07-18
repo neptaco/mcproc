@@ -72,8 +72,13 @@ impl ProcessRegistry {
 
     /// Get process by name or ID
     pub fn get_process_by_name_or_id(&self, name_or_id: &str) -> Option<Arc<ProxyInfo>> {
-        self.get_process_by_name(name_or_id)
-            .or_else(|| self.get_process_by_id(name_or_id))
+        if uuid::Uuid::parse_str(name_or_id).is_ok() {
+            self.get_process_by_id(name_or_id)
+                .or_else(|| self.get_process_by_name(name_or_id))
+        } else {
+            self.get_process_by_name(name_or_id)
+                .or_else(|| self.get_process_by_id(name_or_id))
+        }
     }
 
     /// Get process by name or ID with project filter
@@ -83,15 +88,17 @@ impl ProcessRegistry {
         project: Option<&str>,
     ) -> Option<Arc<ProxyInfo>> {
         if let Some(project_name) = project {
-            if let Some(process) = self.get_process_by_name_with_project(name_or_id, project_name) {
-                return Some(process);
+            let id_lookup = || {
+                self.get_process_by_id(name_or_id)
+                    .filter(|process| process.project == project_name)
+            };
+            let name_lookup = || self.get_process_by_name_with_project(name_or_id, project_name);
+
+            if uuid::Uuid::parse_str(name_or_id).is_ok() {
+                id_lookup().or_else(name_lookup)
+            } else {
+                name_lookup().or_else(id_lookup)
             }
-            if let Some(process) = self.get_process_by_id(name_or_id) {
-                if process.project == project_name {
-                    return Some(process);
-                }
-            }
-            None
         } else {
             self.get_process_by_name_or_id(name_or_id)
         }
@@ -182,6 +189,31 @@ mod tests {
                 .unwrap()
                 .id,
             process_b.id
+        );
+    }
+
+    #[test]
+    fn uuid_lookup_wins_over_matching_process_name() {
+        let registry = ProcessRegistry::new();
+        let uuid = uuid::Uuid::new_v4().to_string();
+        let process_a = proxy(&uuid, "process-a", "project");
+        let process_b = proxy("process-b-id", &uuid, "project");
+        registry.add_process(process_a.clone());
+        registry.add_process(process_b);
+
+        assert_eq!(
+            registry
+                .get_process_by_name_or_id_with_project(&uuid, Some("project"))
+                .unwrap()
+                .id,
+            process_a.id
+        );
+        assert_eq!(
+            registry
+                .get_process_by_name_or_id_with_project(&uuid, None)
+                .unwrap()
+                .id,
+            process_a.id
         );
     }
 }

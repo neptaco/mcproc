@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 
 const MAX_LOG_LINES: usize = 10_000;
 const MAX_GREP_CONTEXT: usize = 1_000;
+const MAX_GREP_MATCHES: usize = 1_000;
 
 fn clamp_tail(tail: u32) -> usize {
     (tail as usize).min(MAX_LOG_LINES)
@@ -581,6 +582,10 @@ async fn grep_log_file(
             }
         }
 
+        if results.len() >= MAX_GREP_MATCHES {
+            return Ok(results);
+        }
+
         // Check if current line matches the pattern
         if pattern.is_match(&parsed.original) {
             // Create context_before from the buffer
@@ -607,6 +612,9 @@ async fn grep_log_file(
 
     // Finalize any remaining pending matches (may have incomplete after-context)
     for pending in pending_matches {
+        if results.len() >= MAX_GREP_MATCHES {
+            break;
+        }
         results.push(GrepMatch {
             matched_line: Some(pending.matched_line),
             context_before: pending.context_before,
@@ -703,6 +711,29 @@ mod tests {
             matches[0].matched_line.as_ref().unwrap().content,
             "after invalid"
         );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grep_log_file_limits_matches_to_one_thousand() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mcproc-grep-limit-{}-{suffix}.log",
+            std::process::id()
+        ));
+        let contents = (0..3_000)
+            .map(|line| format!("matching line {line}\n"))
+            .collect::<String>();
+        std::fs::write(&path, contents).unwrap();
+
+        let matches = grep_log_file(&path, &regex::Regex::new(".*").unwrap(), 0, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1_000);
         std::fs::remove_file(path).unwrap();
     }
 
