@@ -25,6 +25,34 @@ pub struct ProcessManager {
     event_hub: Option<SharedStreamEventHub>,
 }
 
+struct ProcessNameReservation {
+    registry: ProcessRegistry,
+    key: ProcessKey,
+    release_on_drop: bool,
+}
+
+impl ProcessNameReservation {
+    fn new(registry: ProcessRegistry, key: ProcessKey) -> Self {
+        Self {
+            registry,
+            key,
+            release_on_drop: true,
+        }
+    }
+
+    fn keep(mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for ProcessNameReservation {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.registry.release_name(&self.key);
+        }
+    }
+}
+
 impl ProcessManager {
     pub fn with_event_hub(
         config: Arc<Config>,
@@ -103,8 +131,13 @@ impl ProcessManager {
                 .to_string()
         });
 
-        // Check if process already exists
-        if let Some(existing) = self.registry.get_process_by_name(&name) {
+        let process_key = ProcessKey::new(project.clone(), name.clone());
+
+        // Remove a reusable terminal entry before atomically reserving this project/name.
+        if let Some(existing) = self
+            .registry
+            .get_process_by_name_with_project(&name, &project)
+        {
             match existing.get_status() {
                 ProcessStatus::Running => {
                     return Err(McprocdError::ProcessAlreadyExists(name));
@@ -119,10 +152,15 @@ impl ProcessManager {
                     self.registry.remove_process(&existing.id);
                 }
                 _ => {
-                    // Starting or Stopping states should be kept
+                    return Err(McprocdError::ProcessAlreadyExists(name));
                 }
             }
         }
+
+        if !self.registry.try_reserve_name(process_key.clone()) {
+            return Err(McprocdError::ProcessAlreadyExists(name));
+        }
+        let reservation = ProcessNameReservation::new(self.registry.clone(), process_key);
 
         // Parse wait pattern if provided
         let log_pattern = self.launcher.parse_wait_pattern(wait_for_log.clone())?;
@@ -177,6 +215,7 @@ impl ProcessManager {
 
         // Add to registry
         self.registry.add_process(proxy_arc.clone());
+        reservation.keep();
 
         // Publish Starting event
         self.publish_process_event(crate::daemon::process::event::ProcessEvent::Starting {
@@ -448,14 +487,23 @@ impl ProcessManager {
                 // Try force kill as last resort
                 if !force {
                     match tokio::time::timeout(
-                        tokio::time::Duration::from_secs(2),
+                        tokio::time::Duration::from_secs(5),
                         process.stop(true, self.config.process.restart.process_stop_timeout_ms),
                     )
                     .await
                     {
                         Ok(Ok(())) => info!("Process {} force killed", name),
-                        _ => error!("Failed to force kill process {}", name),
+                        Ok(Err(e)) => return Err(McprocdError::StopError(e)),
+                        Err(_) => {
+                            return Err(McprocdError::StopError(format!(
+                                "Timed out force killing process {name}"
+                            )))
+                        }
                     }
+                } else {
+                    return Err(McprocdError::StopError(format!(
+                        "Timed out stopping process {name}"
+                    )));
                 }
             }
         }
@@ -827,6 +875,94 @@ impl ProcessManager {
                     name, e
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::daemon::stream::StreamEventHub;
+    use uuid::Uuid;
+
+    fn test_manager() -> (ProcessManager, PathBuf) {
+        let root = std::env::temp_dir().join(format!("mcproc-manager-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = Config::default();
+        config.paths.data_dir = root.clone();
+        config.paths.log_dir = root.join("logs");
+        config.process.restart.process_stop_timeout_ms = 500;
+        let config = Arc::new(config);
+        let event_hub = Arc::new(StreamEventHub::new());
+        let log_hub = Arc::new(LogHub::with_event_hub(config.clone(), event_hub.clone()));
+        (
+            ProcessManager::with_event_hub(config, log_hub, event_hub),
+            root,
+        )
+    }
+
+    async fn start_sleep(
+        manager: &ProcessManager,
+        name: &str,
+        project: &str,
+    ) -> Result<Arc<ProxyInfo>> {
+        manager
+            .start_process_with_log_stream(
+                name.to_string(),
+                Some(project.to_string()),
+                None,
+                vec!["sleep".to_string(), "5".to_string()],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map(|result| result.0)
+    }
+
+    #[tokio::test]
+    async fn permits_same_process_name_in_different_projects() {
+        let (manager, root) = test_manager();
+        let first = start_sleep(&manager, "shared-name", "a").await.unwrap();
+        let second = start_sleep(&manager, "shared-name", "b").await.unwrap();
+        assert_eq!(manager.registry.get_all_processes().len(), 2);
+        manager
+            .stop_process(&first.id, Some("a"), true)
+            .await
+            .unwrap();
+        manager
+            .stop_process(&second.id, Some("b"), true)
+            .await
+            .unwrap();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_starts_reserve_name_atomically() {
+        for _ in 0..10 {
+            let (manager, root) = test_manager();
+            let (first, second) = tokio::join!(
+                start_sleep(&manager, "same-name", "same-project"),
+                start_sleep(&manager, "same-name", "same-project")
+            );
+            assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+            let error = match (first, second) {
+                (Err(error), _) | (_, Err(error)) => error,
+                _ => unreachable!(),
+            };
+            assert!(
+                matches!(error, McprocdError::ProcessAlreadyExists(_)),
+                "{error:?}"
+            );
+            let processes = manager.registry.get_processes_by_project("same-project");
+            assert_eq!(processes.len(), 1);
+            manager
+                .stop_process(&processes[0].id, Some("same-project"), true)
+                .await
+                .unwrap();
+            tokio::fs::remove_dir_all(root).await.unwrap();
         }
     }
 }

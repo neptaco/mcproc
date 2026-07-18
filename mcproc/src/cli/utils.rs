@@ -1,6 +1,27 @@
 //! Utility functions for mcproc
 
 use crate::common::validation::validate_project_name;
+use std::time::Duration;
+
+pub(crate) fn start_deadline(wait_timeout: u32) -> Duration {
+    Duration::from_secs(u64::from(wait_timeout).saturating_add(5))
+}
+
+pub(crate) fn stop_deadline(process_stop_timeout_ms: u64) -> Duration {
+    Duration::from_millis(process_stop_timeout_ms.saturating_add(15_000))
+}
+
+pub(crate) fn restart_deadline(
+    process_stop_timeout_ms: u64,
+    wait_timeout: Option<u32>,
+    default_wait_timeout_secs: u32,
+) -> Duration {
+    Duration::from_millis(process_stop_timeout_ms)
+        .saturating_add(Duration::from_secs(u64::from(
+            wait_timeout.unwrap_or(default_wait_timeout_secs),
+        )))
+        .saturating_add(Duration::from_secs(20))
+}
 
 /// Get the project name from environment variable
 /// Returns None if not set
@@ -62,4 +83,32 @@ pub fn resolve_mcp_project_name(params_project: Option<String>) -> Result<String
     Err(mcp_rs::Error::InvalidParams(
         "Unable to determine project name. Please specify --project, set MCPROC_DEFAULT_PROJECT, or run from a valid project directory".to_string()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{restart_deadline, start_deadline, stop_deadline};
+    use std::time::Duration;
+
+    #[test]
+    fn start_deadline_handles_maximum_u32() {
+        assert_eq!(
+            start_deadline(u32::MAX),
+            Duration::from_secs(u64::from(u32::MAX) + 5)
+        );
+    }
+
+    #[test]
+    fn stop_deadline_covers_force_fallback_and_cleanup() {
+        assert_eq!(stop_deadline(30_000), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn restart_deadline_covers_stop_wait_and_cleanup() {
+        assert_eq!(
+            restart_deadline(30_000, Some(60), 30),
+            Duration::from_secs(110)
+        );
+        assert_eq!(restart_deadline(30_000, None, 30), Duration::from_secs(80));
+    }
 }

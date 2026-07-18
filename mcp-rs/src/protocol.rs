@@ -34,6 +34,19 @@ pub trait McpHandler: Send + Sync {
     async fn handle(&self, params: Option<Value>) -> Result<Value>;
 }
 
+fn invalid_request_response(id: JsonRpcId) -> JsonRpcMessage {
+    JsonRpcMessage::Response(JsonRpcResponse {
+        jsonrpc: "2.0".to_string(),
+        result: None,
+        error: Some(JsonRpcError {
+            code: error_codes::INVALID_REQUEST,
+            message: "Invalid Request".to_string(),
+            data: None,
+        }),
+        id,
+    })
+}
+
 impl Protocol {
     pub fn new(name: String, version: String) -> Self {
         Self {
@@ -90,6 +103,12 @@ impl Protocol {
                 None
             }
             JsonRpcMessage::Batch(batch) => {
+                if batch.is_empty() {
+                    return (
+                        Some(invalid_request_response(JsonRpcId::Null)),
+                        queued_sender.take_all().await,
+                    );
+                }
                 let mut responses = Vec::new();
                 for msg in batch {
                     let (resp, _) = Box::pin(self.handle_message(msg)).await;
@@ -134,6 +153,9 @@ impl Protocol {
                 None
             }
             JsonRpcMessage::Batch(batch) => {
+                if batch.is_empty() {
+                    return Some(invalid_request_response(JsonRpcId::Null));
+                }
                 let mut responses = Vec::new();
                 for msg in batch {
                     if let Some(resp) = Box::pin(self.handle_message_realtime(msg)).await {
@@ -167,6 +189,13 @@ impl Protocol {
         req: JsonRpcRequest,
         notification_sender: Arc<dyn crate::notification::NotificationSender>,
     ) -> JsonRpcResponse {
+        if req.jsonrpc != "2.0" {
+            return match invalid_request_response(req.id) {
+                JsonRpcMessage::Response(response) => response,
+                _ => unreachable!(),
+            };
+        }
+
         let result = match req.method.parse::<McpMethod>().unwrap() {
             McpMethod::Initialize => self.handle_initialize(req.params).await,
             McpMethod::ToolsList => self.handle_tools_list(req.params).await,
@@ -352,6 +381,57 @@ impl Protocol {
                 message: error.to_string(),
                 data: None,
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_invalid_request(message: Option<JsonRpcMessage>) {
+        match message {
+            Some(JsonRpcMessage::Response(response)) => {
+                assert_eq!(response.id, JsonRpcId::Null);
+                assert_eq!(response.error.unwrap().code, error_codes::INVALID_REQUEST);
+            }
+            other => panic!("expected invalid-request response, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_batch_returns_invalid_request() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+
+        let (queued, _) = protocol
+            .handle_message(JsonRpcMessage::Batch(Vec::new()))
+            .await;
+        let realtime = protocol
+            .handle_message_realtime(JsonRpcMessage::Batch(Vec::new()))
+            .await;
+
+        assert_invalid_request(queued);
+        assert_invalid_request(realtime);
+    }
+
+    #[tokio::test]
+    async fn non_2_0_request_returns_invalid_request() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        let request = JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "1.0".to_string(),
+            method: "initialize".to_string(),
+            params: None,
+            id: JsonRpcId::Number(7),
+        });
+
+        let response = protocol.handle_message_realtime(request).await;
+
+        match response {
+            Some(JsonRpcMessage::Response(response)) => {
+                assert_eq!(response.id, JsonRpcId::Number(7));
+                assert_eq!(response.error.unwrap().code, error_codes::INVALID_REQUEST);
+            }
+            other => panic!("expected invalid-request response, got {other:?}"),
         }
     }
 }

@@ -33,6 +33,8 @@ impl DaemonClient {
         if !daemon_running {
             eprintln!("mcprocd daemon is not running. Starting it automatically...");
 
+            config.ensure_directories()?;
+
             // Start daemon in background (use current binary with --daemon flag)
             let mcproc_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mcproc"));
 

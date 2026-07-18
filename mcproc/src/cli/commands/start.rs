@@ -5,7 +5,6 @@ use crate::common::validation::validate_process_name;
 use clap::Args;
 use colored::*;
 use proto::StartProcessRequest;
-use std::time::Duration;
 use tonic::Request;
 
 #[derive(Debug, Args)]
@@ -81,7 +80,7 @@ impl StartCommand {
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup and pattern matching
-        let timeout = Duration::from_secs((self.wait_timeout + 5) as u64);
+        let timeout = crate::cli::utils::start_deadline(self.wait_timeout);
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);
 

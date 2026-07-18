@@ -179,8 +179,23 @@ impl Config {
         std::fs::create_dir_all(&self.paths.data_dir)?;
         std::fs::create_dir_all(&self.paths.log_dir)?;
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&self.paths.log_dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+
         // Ensure runtime directory exists
         if let Some(parent) = self.paths.socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+            }
+        }
+
+        if let Some(parent) = self.paths.daemon_log_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
@@ -198,5 +213,75 @@ impl Config {
     // Create a minimal config for CLI/client use (no daemon dependencies)
     pub fn for_client() -> Self {
         Self::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_config() -> (Config, PathBuf) {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "mcproc-config-test-{}-{suffix}",
+            std::process::id()
+        ));
+        let mut config = Config::default();
+        config.paths.data_dir = root.join("data");
+        config.paths.log_dir = root.join("runtime/log");
+        config.paths.pid_file = root.join("runtime/mcprocd.pid");
+        config.paths.socket_path = root.join("runtime/mcprocd.sock");
+        config.paths.daemon_log_file = root.join("state/log/mcprocd.log");
+        (config, root)
+    }
+
+    #[test]
+    fn ensure_directories_creates_daemon_log_parent() {
+        let (config, root) = test_config();
+
+        config.ensure_directories().unwrap();
+
+        assert!(config.daemon_log_file().parent().unwrap().is_dir());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_directories_sets_private_runtime_and_log_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (config, root) = test_config();
+        std::fs::create_dir_all(config.paths.socket_path.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(&config.paths.log_dir).unwrap();
+        std::fs::set_permissions(
+            config.paths.socket_path.parent().unwrap(),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &config.paths.log_dir,
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+
+        config.ensure_directories().unwrap();
+
+        let runtime_mode = std::fs::metadata(config.paths.socket_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        let log_mode = std::fs::metadata(&config.paths.log_dir)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(runtime_mode, 0o700);
+        assert_eq!(log_mode, 0o700);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

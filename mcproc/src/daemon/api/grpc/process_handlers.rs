@@ -21,12 +21,41 @@ fn mcprocd_error_to_status(e: &McprocdError) -> Status {
     }
 }
 
+fn matches_status_filter(status: crate::daemon::process::ProcessStatus, filter: i32) -> bool {
+    let status: proto::ProcessStatus = status.into();
+    status as i32 == filter
+}
+
+fn validate_wait_timeout(wait_timeout: Option<u32>) -> Result<(), Status> {
+    if wait_timeout.is_some_and(|timeout| timeout > 3600) {
+        return Err(Status::invalid_argument(
+            "wait_timeout must not exceed 3600 seconds",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_status_filter(filter: i32) -> Result<(), Status> {
+    proto::ProcessStatus::try_from(filter)
+        .map(|_| ())
+        .map_err(|_| Status::invalid_argument(format!("Unknown status_filter value: {filter}")))
+}
+
+fn force_restart_stop_result(result: Result<(), McprocdError>) -> Result<(), Status> {
+    result.map_err(|error| {
+        Status::failed_precondition(format!(
+            "Failed to stop existing process before restart: {error}"
+        ))
+    })
+}
+
 impl GrpcService {
     pub(super) async fn start_process_impl(
         &self,
         request: Request<StartProcessRequest>,
     ) -> Result<Response<<Self as ProcessManagerService>::StartProcessStream>, Status> {
         let req = request.into_inner();
+        validate_wait_timeout(req.wait_timeout)?;
 
         // Validate process name
         if let Err(e) = crate::common::validation::validate_process_name(&req.name) {
@@ -62,9 +91,11 @@ impl GrpcService {
                 .get_process_by_name_or_id_with_project(&name, Some(project.as_str()))
             {
                 // Stop existing process
-                let _ = process_manager
-                    .stop_process(&existing.id, Some(project.as_str()), true) // Use force=true
-                    .await;
+                force_restart_stop_result(
+                    process_manager
+                        .stop_process(&existing.id, Some(project.as_str()), true)
+                        .await,
+                )?;
 
                 // Wait for process to be completely removed
                 process_manager
@@ -188,6 +219,7 @@ impl GrpcService {
         request: Request<RestartProcessRequest>,
     ) -> Result<Response<<Self as ProcessManagerService>::RestartProcessStream>, Status> {
         let req = request.into_inner();
+        validate_wait_timeout(req.wait_timeout)?;
         let name = req.name.clone();
         let project = req.project.clone();
         let wait_for_log = req.wait_for_log.clone();
@@ -306,6 +338,11 @@ impl GrpcService {
             processes.retain(|p| p.project == project_filter);
         }
 
+        if let Some(status_filter) = req.status_filter {
+            validate_status_filter(status_filter)?;
+            processes.retain(|p| matches_status_filter(p.get_status(), status_filter));
+        }
+
         let log_dir = self.config.paths.log_dir.clone();
         let process_infos: Vec<ProcessInfo> = processes
             .into_iter()
@@ -324,5 +361,50 @@ impl GrpcService {
         Ok(Response::new(ListProcessesResponse {
             processes: process_infos,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        force_restart_stop_result, matches_status_filter, validate_status_filter,
+        validate_wait_timeout,
+    };
+    use crate::daemon::error::McprocdError;
+    use crate::daemon::process::ProcessStatus;
+
+    #[test]
+    fn status_filter_selects_only_requested_status() {
+        let statuses = [ProcessStatus::Running, ProcessStatus::Stopped];
+        let running = statuses
+            .into_iter()
+            .filter(|status| matches_status_filter(*status, proto::ProcessStatus::Running as i32))
+            .collect::<Vec<_>>();
+
+        assert_eq!(running, vec![ProcessStatus::Running]);
+    }
+
+    #[test]
+    fn wait_timeout_is_limited_to_one_hour() {
+        assert!(validate_wait_timeout(Some(3600)).is_ok());
+        assert_eq!(
+            validate_wait_timeout(Some(3601)).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn undefined_status_filter_is_rejected() {
+        assert_eq!(
+            validate_status_filter(999).unwrap_err().code(),
+            tonic::Code::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn force_restart_propagates_stop_failure() {
+        let result =
+            force_restart_stop_result(Err(McprocdError::StopError("cannot stop".to_string())));
+        assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
     }
 }

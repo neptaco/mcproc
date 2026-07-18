@@ -3,6 +3,34 @@
 use crate::common::config::Config;
 use clap::{Parser, Subcommand};
 use std::time::Duration;
+use sysinfo::{Pid, System};
+
+fn command_identifies_mcproc(name: &str, command_line: &str) -> bool {
+    name.contains("mcproc") || command_line.contains("mcproc")
+}
+
+fn pid_is_mcproc_daemon(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    if nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_err() {
+        return false;
+    }
+
+    let system = System::new_all();
+    let Some(process) = system.process(Pid::from_u32(pid as u32)) else {
+        // Preserve the existing liveness behavior if process metadata is unavailable.
+        return true;
+    };
+    let name = process.name().to_string_lossy();
+    let command_line = process
+        .cmd()
+        .iter()
+        .map(|part| part.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    command_identifies_mcproc(&name, &command_line)
+}
 
 #[derive(Parser)]
 pub struct DaemonCommand {
@@ -72,6 +100,13 @@ impl DaemonCommand {
                     .trim()
                     .parse::<i32>()?;
 
+                if !pid_is_mcproc_daemon(pid) {
+                    return Err(format!(
+                        "Refusing to signal PID {pid}: process is not an mcproc daemon"
+                    )
+                    .into());
+                }
+
                 // Send SIGTERM
                 nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid),
@@ -103,6 +138,12 @@ impl DaemonCommand {
                 }
 
                 println!("Warning: daemon did not stop gracefully, sending SIGKILL");
+                if !pid_is_mcproc_daemon(pid) {
+                    return Err(format!(
+                        "Refusing to signal PID {pid}: process is not an mcproc daemon"
+                    )
+                    .into());
+                }
                 nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(pid),
                     nix::sys::signal::Signal::SIGKILL,
@@ -124,6 +165,13 @@ impl DaemonCommand {
                     let pid = std::fs::read_to_string(&config.paths.pid_file)?
                         .trim()
                         .parse::<i32>()?;
+
+                    if !pid_is_mcproc_daemon(pid) {
+                        return Err(format!(
+                            "Refusing to signal PID {pid}: process is not an mcproc daemon"
+                        )
+                        .into());
+                    }
 
                     nix::sys::signal::kill(
                         nix::unistd::Pid::from_raw(pid),
@@ -160,6 +208,12 @@ impl DaemonCommand {
                     // If daemon didn't stop gracefully, force kill it
                     if !stopped {
                         println!("Daemon did not stop gracefully, sending SIGKILL...");
+                        if !pid_is_mcproc_daemon(pid) {
+                            return Err(format!(
+                                "Refusing to signal PID {pid}: process is not an mcproc daemon"
+                            )
+                            .into());
+                        }
                         nix::sys::signal::kill(
                             nix::unistd::Pid::from_raw(pid),
                             nix::sys::signal::Signal::SIGKILL,
@@ -276,7 +330,7 @@ fn is_daemon_running_with_details(config: &Config) -> (bool, Option<i32>) {
             // Now verify with PID file
             if let Ok(pid_str) = std::fs::read_to_string(&config.paths.pid_file) {
                 if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    return (true, Some(pid));
+                    return (pid_is_mcproc_daemon(pid), Some(pid));
                 }
             }
             // Socket exists but no valid PID file - suspicious state
@@ -325,6 +379,10 @@ fn is_daemon_running_with_details(config: &Config) -> (bool, Option<i32>) {
                             }
                         }
                     }
+                }
+
+                if !pid_is_mcproc_daemon(pid) {
+                    return (false, Some(pid));
                 }
 
                 // Process exists and is not a zombie but socket is not working
@@ -396,8 +454,7 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     let log_file = std::fs::OpenOptions::new()
         .create(true)
-        .write(true)
-        .truncate(true)
+        .append(true)
         .open(config.daemon_log_file())?;
 
     let mut cmd = std::process::Command::new(&mcproc_path);
@@ -428,7 +485,9 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
                 config.daemon.startup_timeout_ms / config.daemon.stop_check_interval_ms;
             for i in 0..max_wait_iterations {
                 std::thread::sleep(Duration::from_millis(config.daemon.stop_check_interval_ms));
-                if config.paths.pid_file.exists() {
+                if config.paths.pid_file.exists()
+                    && std::os::unix::net::UnixStream::connect(&config.paths.socket_path).is_ok()
+                {
                     println!("Daemon started successfully");
                     return Ok(());
                 }
@@ -462,8 +521,30 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            Err("Daemon failed to start (PID file not created)".into())
+            Err("Daemon failed to start (PID file or socket not ready)".into())
         }
         Err(e) => Err(format!("Failed to spawn mcprocd: {}", e).into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_identifies_mcproc, pid_is_mcproc_daemon};
+
+    #[test]
+    fn command_identity_requires_mcproc() {
+        assert!(command_identifies_mcproc("mcproc", "mcproc --daemon"));
+        assert!(!command_identifies_mcproc("sleep", "sleep 5"));
+    }
+
+    #[test]
+    fn sleep_process_is_not_an_mcproc_daemon() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        assert!(!pid_is_mcproc_daemon(child.id() as i32));
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

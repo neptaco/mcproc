@@ -13,11 +13,11 @@ use tracing::{debug, info};
 
 /// Real-time notification sender that sends notifications immediately
 struct RealtimeNotificationSender {
-    tx: mpsc::Sender<JsonRpcNotification>,
+    tx: mpsc::UnboundedSender<JsonRpcNotification>,
 }
 
 impl RealtimeNotificationSender {
-    fn new(tx: mpsc::Sender<JsonRpcNotification>) -> Self {
+    fn new(tx: mpsc::UnboundedSender<JsonRpcNotification>) -> Self {
         Self { tx }
     }
 }
@@ -31,7 +31,7 @@ impl NotificationSender for RealtimeNotificationSender {
             params: Some(serde_json::to_value(notification)?),
         };
 
-        self.tx.send(notif).await.map_err(|_| {
+        self.tx.send(notif).map_err(|_| {
             crate::error::Error::Internal("Failed to send notification".to_string())
         })?;
         Ok(())
@@ -44,7 +44,7 @@ impl NotificationSender for RealtimeNotificationSender {
             params: Some(serde_json::to_value(notification)?),
         };
 
-        self.tx.send(notif).await.map_err(|_| {
+        self.tx.send(notif).map_err(|_| {
             crate::error::Error::Internal("Failed to send notification".to_string())
         })?;
         Ok(())
@@ -57,7 +57,7 @@ impl NotificationSender for RealtimeNotificationSender {
             params,
         };
 
-        self.tx.send(notif).await.map_err(|_| {
+        self.tx.send(notif).map_err(|_| {
             crate::error::Error::Internal("Failed to send notification".to_string())
         })?;
         Ok(())
@@ -87,7 +87,8 @@ impl Server {
         self.transport.start().await?;
 
         // Create notification channel
-        let (notification_tx, mut notification_rx) = mpsc::channel::<JsonRpcNotification>(100);
+        let (notification_tx, mut notification_rx) =
+            mpsc::unbounded_channel::<JsonRpcNotification>();
 
         // Create real-time notification sender
         let realtime_sender = Arc::new(RealtimeNotificationSender::new(notification_tx.clone()));
@@ -165,5 +166,84 @@ impl ServerBuilder {
         }
 
         Ok(Server::new(protocol, transport))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{JsonRpcId, JsonRpcRequest, MessageLevel, ToolInfo};
+    use serde_json::json;
+    use std::collections::VecDeque;
+
+    struct MockTransport {
+        incoming: VecDeque<JsonRpcMessage>,
+    }
+
+    #[async_trait]
+    impl Transport for MockTransport {
+        async fn start(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        async fn send(&mut self, _message: JsonRpcMessage) -> Result<()> {
+            Ok(())
+        }
+
+        async fn receive(&mut self) -> Result<Option<JsonRpcMessage>> {
+            Ok(self.incoming.pop_front())
+        }
+
+        async fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoisyTool;
+
+    #[async_trait]
+    impl ToolHandler for NoisyTool {
+        fn tool_info(&self) -> ToolInfo {
+            ToolInfo {
+                name: "noisy".to_string(),
+                description: "sends many notifications".to_string(),
+                input_schema: json!({"type": "object"}),
+            }
+        }
+
+        async fn handle(
+            &self,
+            _params: Option<Value>,
+            context: crate::notification::ToolContext,
+        ) -> Result<Value> {
+            for index in 0..150 {
+                context
+                    .send_log(MessageLevel::Info, format!("notification {index}"))
+                    .await?;
+            }
+            Ok(json!({"done": true}))
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_call_with_more_than_channel_capacity_does_not_deadlock() {
+        let transport = MockTransport {
+            incoming: VecDeque::from([JsonRpcMessage::Request(JsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                method: "tools/call".to_string(),
+                params: Some(json!({"name": "noisy", "arguments": {}})),
+                id: JsonRpcId::Number(1),
+            })]),
+        };
+        let mut server = ServerBuilder::new("test", "1")
+            .add_tool(Arc::new(NoisyTool))
+            .build(Box::new(transport))
+            .await
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), server.start())
+            .await
+            .expect("server deadlocked while tool sent notifications")
+            .unwrap();
     }
 }

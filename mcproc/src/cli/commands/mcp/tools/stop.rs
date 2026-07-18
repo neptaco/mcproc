@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tonic::Request;
 
 pub struct StopTool {
     client: DaemonClient,
@@ -53,11 +54,18 @@ impl ToolHandler for StopTool {
 
         let project = resolve_mcp_project_name(params.project)?;
 
-        let request = proto::StopProcessRequest {
+        let grpc_request = proto::StopProcessRequest {
             name: params.name,
             force: None,
             project,
         };
+
+        let config =
+            crate::common::config::Config::load().map_err(|e| McpError::Internal(e.to_string()))?;
+        let mut request = Request::new(grpc_request);
+        request.set_timeout(crate::cli::utils::stop_deadline(
+            config.process.restart.process_stop_timeout_ms,
+        ));
 
         let mut client = self.client.clone();
         let response = client

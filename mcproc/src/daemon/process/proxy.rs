@@ -250,6 +250,8 @@ impl ProxyInfo {
             for child_pid in &child_pids {
                 let _ = Self::send_signal(*child_pid, Signal::SIGKILL);
             }
+
+            self.confirm_stopped_after_force_kill().await?;
         }
 
         self.set_status(ProcessStatus::Stopped);
@@ -264,6 +266,23 @@ impl ProxyInfo {
         // process dies, and will be cleaned up when ProxyInfo is dropped.
 
         Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn confirm_stopped_after_force_kill(&self) -> Result<(), String> {
+        let timeout = tokio::time::Duration::from_secs(2);
+        let start = tokio::time::Instant::now();
+        while start.elapsed() < timeout {
+            if !Self::is_process_alive(self.pid) {
+                return Ok(());
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        Err(format!(
+            "Process {} (PID {}) is still alive after SIGKILL",
+            self.name, self.pid
+        ))
     }
 
     pub fn set_detected_port(&self, port: u16) {
@@ -318,5 +337,56 @@ impl ProxyInfo {
 
         find_descendants(&system, parent_pid, &mut child_pids);
         child_pids
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::daemon::process::types::ProxyInfoParams;
+    use uuid::Uuid;
+
+    fn proxy_for_pid(pid: u32) -> ProxyInfo {
+        ProxyInfo::new(ProxyInfoParams {
+            id: Uuid::new_v4().to_string(),
+            name: "stop-test".into(),
+            project: "test".into(),
+            cmd: None,
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+            wait_for_log: None,
+            wait_timeout: None,
+            toolchain: None,
+            pid,
+        })
+    }
+
+    #[tokio::test]
+    async fn force_stop_errors_when_process_survives_sigkill() {
+        let proxy = proxy_for_pid(std::process::id());
+        let result = proxy.confirm_stopped_after_force_kill().await;
+        assert!(
+            result.is_err(),
+            "live process unexpectedly reported as stopped"
+        );
+        assert_ne!(proxy.get_status(), ProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn force_stop_succeeds_for_killable_process() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let waiter = tokio::spawn(async move { child.wait().await.unwrap() });
+        let proxy = proxy_for_pid(pid);
+        proxy.stop(true, 1_000).await.unwrap();
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.get_status(), ProcessStatus::Stopped);
     }
 }
