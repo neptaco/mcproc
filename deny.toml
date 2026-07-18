@@ -9,6 +9,10 @@ ignore = [
     # fxhash is a transitive dependency from jsonrpc-v2 -> extensions
     # No safe upgrade available as of now
     "RUSTSEC-2025-0057",
+    # proc-macro-error2 (unmaintained) is a transitive dependency from
+    # tabled -> tabled_derive; no safe upgrade available as of now
+    # (latest tabled_derive 0.11 still depends on it)
+    "RUSTSEC-2026-0173",
 ]
 
 [licenses]
