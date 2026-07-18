@@ -81,11 +81,11 @@ strip-ansi-escapes = "0.2.1"
 crossbeam-channel.workspace = true
 bytes.workspace = true
 
-# Process info
-sysinfo = "0.38"
-
 # File locking
 fs2 = "0.4"
+
+# Process inspection (daemon PID validation)
+sysinfo = "0.38"
 
 # Platform specific
 [target.'cfg(unix)'.dependencies]
@@ -94,6 +94,7 @@ libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3.2"
+tempfile = "3"
 
 # cargo-machete reports false positives for these dependencies
 # which are used through re-exports or feature flags

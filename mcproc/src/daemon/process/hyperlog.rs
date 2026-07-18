@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 const CHUNK_SIZE: usize = 8192; // 8KB chunks
 const BATCH_SIZE: usize = 4; // Process 4 chunks at a time for better responsiveness
 const BATCH_TIMEOUT_MS: u64 = 50; // Process after 50ms for better responsiveness
 const CHUNK_CHANNEL_CAPACITY: usize = 1024;
+const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024;
 
 pub struct HyperLogConfig {
     pub stream_name: &'static str,
@@ -381,9 +382,36 @@ impl HyperLogStreamer {
 
             // Pattern matching is now done per line above - no need for buffer checking
 
-            // Clean up buffer if it gets too large (incomplete line protection)
-            if line_buffer.len() > 1024 * 1024 {
-                line_buffer.clear();
+            // Force-flush oversized incomplete lines without losing their data.
+            if line_buffer.len() > MAX_LINE_BUFFER_SIZE {
+                let flushed_bytes = line_buffer.len();
+                warn!(
+                    process_key = %config.process_key,
+                    stream_name = config.stream_name,
+                    flushed_bytes,
+                    "Line buffer exceeded the maximum size; force-flushing it and splitting the line"
+                );
+
+                let mut forced_line = std::mem::take(line_buffer);
+                forced_line.push(b'\n');
+                let timestamp = Utc::now();
+                let line_bytes = Bytes::from(forced_line);
+
+                if let Some(writer) = batch_writer {
+                    let log_entry = BatchLogEntry {
+                        timestamp,
+                        content: line_bytes.clone(),
+                        is_stderr: config.is_stderr,
+                    };
+                    if let Err(e) = writer.write(log_entry).await {
+                        error!("Failed to write log to batch writer: {}", e);
+                    }
+                }
+
+                // Do not apply wait_for_log pattern matching to an incomplete forced-flush line.
+                if let Ok(line_str) = std::str::from_utf8(&line_bytes) {
+                    lines_to_publish.push(line_str.trim_end().to_string());
+                }
             }
         }
 
@@ -407,8 +435,9 @@ impl HyperLogStreamer {
 mod tests {
     use super::*;
     use crate::common::config::Config;
-    use crate::daemon::stream::StreamEventHub;
+    use crate::daemon::stream::{StreamEvent, StreamEventHub};
     use tokio::io::AsyncWriteExt;
+    use tokio::sync::broadcast;
     use uuid::Uuid;
 
     #[tokio::test]
@@ -457,5 +486,126 @@ mod tests {
         assert!(contents.contains("line1"));
         assert!(contents.contains("partial"));
         tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    fn test_config() -> (HyperLogConfig, broadcast::Receiver<StreamEvent>) {
+        let event_hub = Arc::new(StreamEventHub::new());
+        let receiver = event_hub.subscribe();
+        let log_hub = Arc::new(LogHub::with_event_hub(
+            Arc::new(Config::default()),
+            event_hub,
+        ));
+
+        (
+            HyperLogConfig {
+                stream_name: "stdout",
+                process_key: ProcessKey::new("test-project", "test-process"),
+                log_pattern: None,
+                log_ready_tx: None,
+                pattern_matched: Arc::new(Mutex::new(false)),
+                matched_line: Arc::new(Mutex::new(None)),
+                timeout_occurred: Arc::new(Mutex::new(false)),
+                wait_timeout: None,
+                default_wait_timeout_secs: 30,
+                is_stderr: false,
+                log_file_path: None,
+                log_hub,
+            },
+            receiver,
+        )
+    }
+
+    fn log_content(event: StreamEvent) -> String {
+        match event {
+            StreamEvent::Log { entry, .. } => entry.content,
+            StreamEvent::Process(_) => panic!("expected a log event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_oversized_line_is_flushed_not_dropped() {
+        let (config, mut rx) = test_config();
+        let oversized_line_len = 2 * 1024 * 1024;
+        let mut batch = vec![Bytes::from(vec![b'a'; oversized_line_len])];
+        let mut line_buffer = Vec::new();
+
+        HyperLogStreamer::process_batch(&config, &mut batch, &mut line_buffer, &None).await;
+
+        let content = log_content(rx.try_recv().expect("oversized line should be published"));
+        assert_eq!(content, "a".repeat(oversized_line_len));
+        assert!(line_buffer.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_oversized_line_split_preserves_all_data() {
+        let (config, mut rx) = test_config();
+        let oversized_line_len = 3 * 1024 * 1024 / 2;
+        let mut batch = vec![Bytes::from(vec![b'a'; oversized_line_len])];
+        let mut line_buffer = Vec::new();
+
+        HyperLogStreamer::process_batch(&config, &mut batch, &mut line_buffer, &None).await;
+        let oversized_content = log_content(
+            rx.try_recv()
+                .expect("oversized line should be force-flushed"),
+        );
+
+        batch.push(Bytes::from_static(b"tail\n"));
+        HyperLogStreamer::process_batch(&config, &mut batch, &mut line_buffer, &None).await;
+        let tail_content = log_content(rx.try_recv().expect("tail should be published"));
+
+        assert_eq!(oversized_content, "a".repeat(oversized_line_len));
+        assert_eq!(tail_content, "tail");
+        assert_eq!(
+            oversized_content.len() + tail_content.len(),
+            oversized_line_len + 4
+        );
+        assert!(line_buffer.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_normal_lines_unaffected() {
+        let (config, mut rx) = test_config();
+        let mut batch = vec![Bytes::from_static(b"hello\nworld\n")];
+        let mut line_buffer = Vec::new();
+
+        HyperLogStreamer::process_batch(&config, &mut batch, &mut line_buffer, &None).await;
+
+        assert_eq!(
+            log_content(rx.try_recv().expect("hello should be published")),
+            "hello"
+        );
+        assert_eq!(
+            log_content(rx.try_recv().expect("world should be published")),
+            "world"
+        );
+        assert!(line_buffer.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_under_threshold_buffer_retained() {
+        let (config, mut rx) = test_config();
+        let buffered_line_len = 512 * 1024;
+        let mut batch = vec![Bytes::from(vec![b'a'; buffered_line_len])];
+        let mut line_buffer = Vec::new();
+
+        HyperLogStreamer::process_batch(&config, &mut batch, &mut line_buffer, &None).await;
+
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        assert_eq!(line_buffer, vec![b'a'; buffered_line_len]);
     }
 }

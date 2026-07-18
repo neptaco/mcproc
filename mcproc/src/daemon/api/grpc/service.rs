@@ -52,15 +52,18 @@ impl GrpcService {
 
             let project_results: Vec<_> = results
                 .into_iter()
-                .map(
-                    |(project, stopped_names)| proto::clean_project_response::ProjectCleanResult {
+                .map(|(project, (stopped_names, deleted_log_paths))| {
+                    proto::clean_project_response::ProjectCleanResult {
                         project,
                         processes_stopped: stopped_names.len() as u32,
-                        logs_deleted: 0,
+                        logs_deleted: deleted_log_paths.len() as u32,
                         stopped_process_names: stopped_names,
-                        deleted_log_files: vec![],
-                    },
-                )
+                        deleted_log_files: deleted_log_paths
+                            .into_iter()
+                            .map(|path| path.to_string_lossy().into_owned())
+                            .collect(),
+                    }
+                })
                 .collect();
 
             Ok(Response::new(CleanProjectResponse {
@@ -73,19 +76,24 @@ impl GrpcService {
         } else {
             // Clean single project
             let project = req.project.as_deref().unwrap_or("default");
-            let stopped_names = self
+            let (stopped_names, deleted_log_paths) = self
                 .process_manager
                 .clean_project(project, req.force)
                 .await
                 .map_err(|e| {
                     Status::internal(format!("Failed to clean project {}: {}", project, e))
                 })?;
+            let logs_deleted = deleted_log_paths.len() as u32;
+            let deleted_log_files = deleted_log_paths
+                .into_iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
 
             Ok(Response::new(CleanProjectResponse {
                 processes_stopped: stopped_names.len() as u32,
-                logs_deleted: 0,
+                logs_deleted,
                 stopped_process_names: stopped_names,
-                deleted_log_files: vec![],
+                deleted_log_files,
                 project_results: vec![],
             }))
         }

@@ -153,28 +153,36 @@ impl ProcessLauncher {
         command.stdin(Stdio::null());
 
         // IMPORTANT: Do NOT use kill_on_drop(true) as it sends SIGKILL immediately
-        // and prevents graceful shutdown. We handle process termination manually
-        // in ProxyInfo::stop() with proper SIGTERM -> wait -> SIGKILL sequence.
+        // and prevents graceful shutdown. ProxyInfo::stop() signals the process group
+        // with the proper SIGTERM -> wait -> SIGKILL sequence.
         command.kill_on_drop(false);
 
-        // Set up process death signal on Linux
-        // This ensures child processes receive SIGTERM when the parent dies
-        #[cfg(target_os = "linux")]
+        // Create a dedicated session so the child PID is also the process group ID.
+        // ProxyInfo::stop() relies on this invariant to signal the entire process tree.
+        #[cfg(unix)]
         {
             unsafe {
                 command.pre_exec(|| {
-                    // PR_SET_PDEATHSIG = 1
-                    let result = libc::prctl(1, libc::SIGTERM);
-                    if result == -1 {
-                        eprintln!(
-                            "prctl(PR_SET_PDEATHSIG) failed with errno: {}",
-                            std::io::Error::last_os_error()
-                        );
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
                     }
+
+                    #[cfg(target_os = "linux")]
+                    {
+                        // PR_SET_PDEATHSIG = 1
+                        let result = libc::prctl(1, libc::SIGTERM);
+                        if result == -1 {
+                            eprintln!(
+                                "prctl(PR_SET_PDEATHSIG) failed with errno: {}",
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                    }
+
                     Ok(())
                 });
             }
-            debug!("Configured PR_SET_PDEATHSIG for {}", params.name);
+            debug!("Configured dedicated process group for {}", params.name);
         }
 
         // Log file will be created automatically on first write

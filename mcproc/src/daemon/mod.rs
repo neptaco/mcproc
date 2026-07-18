@@ -188,9 +188,6 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Briefly allow buffered logs to flush before removing the PID file.
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
     // Remove PID file
     if let Err(e) = std::fs::remove_file(&config.paths.pid_file) {
         error!("Failed to remove PID file: {}", e);

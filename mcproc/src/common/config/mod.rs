@@ -252,17 +252,10 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn test_config() -> (Config, PathBuf) {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before Unix epoch")
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "mcproc-config-test-{}-{suffix}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("mcproc-config-test-{}", uuid::Uuid::new_v4()));
         let mut config = Config::default();
         config.paths.data_dir = root.join("data");
         config.paths.log_dir = root.join("runtime/log");
