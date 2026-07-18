@@ -4,13 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use sysinfo::{Pid as SysPid, ProcessesToUpdate, System};
 use tokio::task::JoinHandle;
 use tracing::info;
 
 #[cfg(unix)]
 use nix::{
-    sys::signal::{self, Signal},
+    sys::signal::{killpg, Signal},
     unistd::Pid,
 };
 
@@ -148,39 +147,27 @@ impl ProxyInfo {
         );
         self.set_status(ProcessStatus::Stopping);
 
-        // NOTE: We do NOT cancel tasks here anymore. Cancelling the monitor task
+        // NOTE: We do NOT cancel tasks here. Cancelling the monitor task
         // would drop the Child object, closing stdout/stderr pipes and causing
-        // the child to receive SIGPIPE instead of our SIGTERM signal.
-
-        // Find all child processes of this PID
-        let child_pids = self.find_child_processes(self.pid).await;
-        if !child_pids.is_empty() {
-            info!(
-                "Found {} child process(es) for {} (PID: {}): {:?}",
-                child_pids.len(),
-                self.name,
-                self.pid,
-                child_pids
-            );
-        }
+        // group members to receive SIGPIPE instead of our group signal.
 
         // First attempt: Send SIGTERM (unless force is specified)
         if !force {
             info!(
-                "Sending SIGTERM to process {} (PID: {})",
+                "Sending SIGTERM to process group {} (PGID: {})",
                 self.name, self.pid
             );
 
             #[cfg(unix)]
             {
-                match Self::send_signal(self.pid, Signal::SIGTERM) {
+                match Self::send_signal_to_group(self.pid, Signal::SIGTERM) {
                     Ok(()) => {
-                        info!("SIGTERM sent successfully to PID {}", self.pid);
+                        info!("SIGTERM sent successfully to PGID {}", self.pid);
                     }
                     Err(e) => {
-                        info!("Failed to send SIGTERM to PID {}: {}", self.pid, e);
-                        // If process doesn't exist, mark as stopped
-                        if !Self::is_process_alive(self.pid) {
+                        info!("Failed to send SIGTERM to PGID {}: {}", self.pid, e);
+                        // If the process group doesn't exist, mark as stopped
+                        if !Self::is_process_group_alive(self.pid) {
                             self.set_status(ProcessStatus::Stopped);
                             if let Ok(mut exit_time) = self.exit_time.lock() {
                                 *exit_time = Some(Utc::now());
@@ -188,11 +175,6 @@ impl ProxyInfo {
                             return Ok(());
                         }
                     }
-                }
-
-                // Also send SIGTERM to all child processes directly
-                for child_pid in &child_pids {
-                    let _ = Self::send_signal(*child_pid, Signal::SIGTERM);
                 }
             }
 
@@ -203,10 +185,9 @@ impl ProxyInfo {
             #[cfg(unix)]
             {
                 while start.elapsed() < timeout {
-                    // Check if process is still alive
-                    if !Self::is_process_alive(self.pid) {
-                        info!("Process {} has stopped", self.name);
-                        // Process has stopped
+                    // The group is stopped only after every member has exited.
+                    if !Self::is_process_group_alive(self.pid) {
+                        info!("Process group {} has stopped", self.name);
                         self.set_status(ProcessStatus::Stopped);
                         if let Ok(mut exit_time) = self.exit_time.lock() {
                             *exit_time = Some(Utc::now());
@@ -222,33 +203,21 @@ impl ProxyInfo {
         }
 
         // Force kill with SIGKILL
-        info!("Sending SIGKILL to process {}", self.name);
+        info!("Sending SIGKILL to process group {}", self.name);
 
         #[cfg(unix)]
         {
-            match Self::send_signal(self.pid, Signal::SIGKILL) {
+            match Self::send_signal_to_group(self.pid, Signal::SIGKILL) {
                 Ok(()) => {
-                    info!("SIGKILL sent successfully to PID {}", self.pid);
+                    info!("SIGKILL sent successfully to PGID {}", self.pid);
                 }
                 Err(e) => {
-                    info!("Failed to send SIGKILL to PID {}: {}", self.pid, e);
-                    // If process doesn't exist, that's OK
-                    if !Self::is_process_alive(self.pid) {
-                        info!("Process {} already terminated", self.name);
-                    } else {
-                        // Process still exists but we couldn't kill it
-                        // Try to kill child processes directly
-                        info!("Killing child processes directly");
-                        for child_pid in &child_pids {
-                            let _ = Self::send_signal(*child_pid, Signal::SIGKILL);
-                        }
+                    info!("Failed to send SIGKILL to PGID {}: {}", self.pid, e);
+                    // If the process group doesn't exist, that's OK
+                    if !Self::is_process_group_alive(self.pid) {
+                        info!("Process group {} already terminated", self.name);
                     }
                 }
-            }
-
-            // Also kill all child processes to ensure cleanup
-            for child_pid in &child_pids {
-                let _ = Self::send_signal(*child_pid, Signal::SIGKILL);
             }
         }
 
@@ -272,51 +241,26 @@ impl ProxyInfo {
         }
     }
 
-    /// Send a signal to a process using nix crate
+    /// Send a signal to every process in the managed process group.
     #[cfg(unix)]
-    fn send_signal(pid: u32, sig: Signal) -> Result<(), String> {
-        match signal::kill(Pid::from_raw(pid as i32), sig) {
+    fn send_signal_to_group(pgid: u32, sig: Signal) -> Result<(), String> {
+        match killpg(Pid::from_raw(pgid as i32), sig) {
             Ok(()) => Ok(()),
             Err(nix::Error::ESRCH) => {
-                // Process doesn't exist - this is OK
+                // The process group has already exited.
                 Ok(())
             }
-            Err(e) => Err(format!("Failed to send signal: {}", e)),
+            Err(e) => Err(format!("Failed to send process group signal: {}", e)),
         }
     }
 
-    /// Check if a process is alive using nix crate
+    /// Check whether any process remains in the managed process group.
     #[cfg(unix)]
-    fn is_process_alive(pid: u32) -> bool {
-        // Send signal 0 to check if process exists
-        match signal::kill(Pid::from_raw(pid as i32), None) {
+    fn is_process_group_alive(pgid: u32) -> bool {
+        match killpg(Pid::from_raw(pgid as i32), None) {
             Ok(()) => true,
             Err(nix::Error::ESRCH) => false,
-            Err(_) => true, // Other errors mean process exists but we may lack permissions
+            Err(_) => true, // Other errors mean the group exists but we may lack permissions
         }
-    }
-
-    /// Find all child processes of a given PID using sysinfo
-    async fn find_child_processes(&self, parent_pid: u32) -> Vec<u32> {
-        let mut system = System::new_all();
-        system.refresh_processes(ProcessesToUpdate::All, true);
-
-        let mut child_pids = Vec::new();
-        let parent_pid = SysPid::from(parent_pid as usize);
-
-        // Helper function to recursively find all descendants
-        fn find_descendants(system: &System, parent_pid: SysPid, result: &mut Vec<u32>) {
-            for (pid, process) in system.processes() {
-                if process.parent() == Some(parent_pid) {
-                    let child_pid = pid.as_u32();
-                    result.push(child_pid);
-                    // Recursively find children of this child
-                    find_descendants(system, *pid, result);
-                }
-            }
-        }
-
-        find_descendants(&system, parent_pid, &mut child_pids);
-        child_pids
     }
 }
