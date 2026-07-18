@@ -94,6 +94,7 @@ libc = "0.2"
 
 [dev-dependencies]
 serial_test = "3.2"
+tempfile = "3"
 
 # cargo-machete reports false positives for these dependencies
 # which are used through re-exports or feature flags
