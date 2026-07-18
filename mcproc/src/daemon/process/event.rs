@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use tokio::sync::broadcast;
-
 /// Events related to process lifecycle
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -74,39 +71,3 @@ impl ProcessEvent {
         }
     }
 }
-
-/// Event bus for process lifecycle events
-#[allow(dead_code)]
-pub struct ProcessEventBus {
-    sender: broadcast::Sender<ProcessEvent>,
-}
-
-impl ProcessEventBus {
-    pub fn new() -> Self {
-        let (sender, _) = broadcast::channel(1000);
-        Self { sender }
-    }
-
-    /// Publish an event to all subscribers
-    #[allow(dead_code)]
-    pub fn publish(&self, event: ProcessEvent) {
-        // Ignore send errors (no receivers)
-        let _ = self.sender.send(event);
-    }
-
-    /// Subscribe to process events
-    #[allow(dead_code)]
-    pub fn subscribe(&self) -> broadcast::Receiver<ProcessEvent> {
-        self.sender.subscribe()
-    }
-}
-
-impl Default for ProcessEventBus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Shared event bus instance
-#[allow(dead_code)]
-pub type SharedEventBus = Arc<ProcessEventBus>;
