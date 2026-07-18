@@ -77,12 +77,12 @@ impl GrpcService {
                                     all_lines.push(line);
                                 }
 
-                                // Get tail lines
+                                // Get tail lines (line numbers are 1-based)
                                 let start_idx = all_lines.len().saturating_sub(tail);
-                                let mut line_num = start_idx as u32;
 
-                                for line in &all_lines[start_idx..] {
-                                    line_num += 1;
+                                for (line_num, line) in
+                                    (start_idx as u32 + 1..).zip(&all_lines[start_idx..])
+                                {
                                     let (timestamp, level, content) = parse_log_line(line);
 
                                     let log_entry = LogEntry {
