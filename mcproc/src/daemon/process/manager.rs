@@ -1,7 +1,7 @@
 use crate::common::config::Config;
 use crate::common::process_key::ProcessKey;
 use crate::daemon::error::{McprocdError, Result};
-use crate::daemon::log::LogHub;
+use crate::daemon::log::{cleaner, LogHub};
 use crate::daemon::process::exit_handler::ExitHandler;
 use crate::daemon::process::launcher::ProcessLauncher;
 use crate::daemon::process::log_stream::LogStreamConfig;
@@ -10,7 +10,7 @@ use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
 use crate::daemon::process::registry::ProcessRegistry;
 use crate::daemon::stream::{SharedStreamEventHub, StreamEvent};
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -603,7 +603,11 @@ impl ProcessManager {
         processes
     }
 
-    pub async fn clean_project(&self, project: &str, force: bool) -> Result<Vec<String>> {
+    pub async fn clean_project(
+        &self,
+        project: &str,
+        force: bool,
+    ) -> Result<(Vec<String>, Vec<PathBuf>)> {
         let processes = self.registry.get_processes_by_project(project);
         let mut stopped = Vec::new();
 
@@ -619,17 +623,47 @@ impl ProcessManager {
             }
         }
 
-        Ok(stopped)
+        let exclude = self
+            .registry
+            .get_processes_by_project(project)
+            .into_iter()
+            .map(|process| {
+                let key = ProcessKey::new(process.project.clone(), process.name.clone());
+                self.log_hub.get_log_file_path_for_key(&key)
+            })
+            .collect::<HashSet<_>>();
+        let project_log_dir = self.config.paths.log_dir.join(project);
+        let deleted_logs = cleaner::delete_project_logs(&project_log_dir, &exclude);
+
+        Ok((stopped, deleted_logs))
     }
 
-    pub async fn clean_all_projects(&self, force: bool) -> Result<HashMap<String, Vec<String>>> {
-        let projects = self.registry.get_all_projects();
+    pub async fn clean_all_projects(
+        &self,
+        force: bool,
+    ) -> Result<HashMap<String, (Vec<String>, Vec<PathBuf>)>> {
+        let mut projects = self
+            .registry
+            .get_all_projects()
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        if let Ok(entries) = std::fs::read_dir(&self.config.paths.log_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+                    projects.insert(entry.file_name().to_string_lossy().into_owned());
+                }
+            }
+        }
+
+        let mut projects = projects.into_iter().collect::<Vec<_>>();
+        projects.sort();
         let mut results = HashMap::new();
 
         for project in projects {
             match self.clean_project(&project, force).await {
-                Ok(stopped) => {
-                    results.insert(project, stopped);
+                Ok(result) => {
+                    results.insert(project, result);
                 }
                 Err(e) => {
                     error!("Failed to clean project {}: {}", project, e);
