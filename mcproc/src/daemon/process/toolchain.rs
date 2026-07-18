@@ -9,25 +9,21 @@ pub struct Toolchain {
     pub command_template: &'static str,
     /// The display template for logging
     pub display_template: &'static str,
-    /// Quote style for shell command: true for double quotes, false for single quotes
-    pub use_double_quotes: bool,
 }
 
 impl Toolchain {
     /// mise toolchain
     pub const MISE: Self = Self {
         name: "mise",
-        command_template: "mise exec -- sh -c \"{cmd}\"",
+        command_template: "mise exec -- sh -c '{cmd}'",
         display_template: "mise exec -- sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// asdf toolchain
     pub const ASDF: Self = Self {
         name: "asdf",
-        command_template: "asdf exec sh -c \"{cmd}\"",
+        command_template: "asdf exec sh -c '{cmd}'",
         display_template: "asdf exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// nvm toolchain
@@ -35,63 +31,55 @@ impl Toolchain {
         name: "nvm",
         command_template: "bash -c 'source \"$NVM_DIR/nvm.sh\" && {cmd}'",
         display_template: "nvm (bash) -c '{cmd}'",
-        use_double_quotes: false,
     };
 
     /// rbenv toolchain
     pub const RBENV: Self = Self {
         name: "rbenv",
-        command_template: "rbenv exec sh -c \"{cmd}\"",
+        command_template: "rbenv exec sh -c '{cmd}'",
         display_template: "rbenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// pyenv toolchain
     pub const PYENV: Self = Self {
         name: "pyenv",
-        command_template: "pyenv exec sh -c \"{cmd}\"",
+        command_template: "pyenv exec sh -c '{cmd}'",
         display_template: "pyenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// nodenv toolchain
     pub const NODENV: Self = Self {
         name: "nodenv",
-        command_template: "nodenv exec sh -c \"{cmd}\"",
+        command_template: "nodenv exec sh -c '{cmd}'",
         display_template: "nodenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// jenv toolchain
     pub const JENV: Self = Self {
         name: "jenv",
-        command_template: "jenv exec sh -c \"{cmd}\"",
+        command_template: "jenv exec sh -c '{cmd}'",
         display_template: "jenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// tfenv toolchain
     pub const TFENV: Self = Self {
         name: "tfenv",
-        command_template: "tfenv exec sh -c \"{cmd}\"",
+        command_template: "tfenv exec sh -c '{cmd}'",
         display_template: "tfenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// goenv toolchain
     pub const GOENV: Self = Self {
         name: "goenv",
-        command_template: "goenv exec sh -c \"{cmd}\"",
+        command_template: "goenv exec sh -c '{cmd}'",
         display_template: "goenv exec sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// rustup toolchain
     pub const RUSTUP: Self = Self {
         name: "rustup",
-        command_template: "rustup run stable sh -c \"{cmd}\"",
+        command_template: "rustup run stable sh -c '{cmd}'",
         display_template: "rustup run stable sh -c '{cmd}'",
-        use_double_quotes: true,
     };
 
     /// All supported toolchains
@@ -124,11 +112,7 @@ impl Toolchain {
 
     /// Wrap command with toolchain-specific execution
     pub fn wrap_command(&self, shell_command: &str) -> (String, String) {
-        let escaped_cmd = if self.use_double_quotes {
-            shell_command.replace("\"", "\\\"")
-        } else {
-            shell_command.replace("'", "'\\''")
-        };
+        let escaped_cmd = shell_command.replace("'", "'\\''");
 
         let final_command = self.command_template.replace("{cmd}", &escaped_cmd);
         let display_command = self.display_template.replace("{cmd}", shell_command);
@@ -140,5 +124,22 @@ impl Toolchain {
 impl fmt::Display for Toolchain {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_command_preserves_shell_expansion_characters_for_inner_shell() {
+        let (wrapped, _) = Toolchain::MISE.wrap_command("echo $HOME `whoami` \\path");
+        assert_eq!(wrapped, "mise exec -- sh -c 'echo $HOME `whoami` \\path'");
+    }
+
+    #[test]
+    fn wrap_command_escapes_single_quotes() {
+        let (wrapped, _) = Toolchain::MISE.wrap_command("echo don't");
+        assert_eq!(wrapped, "mise exec -- sh -c 'echo don'\\''t'");
     }
 }

@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::time::Duration;
 use strip_ansi_escapes::strip;
 use tonic::Request;
 
@@ -143,7 +142,7 @@ impl ToolHandler for StartTool {
         };
 
         // Set timeout to wait_timeout + 5 seconds to allow for process startup
-        let timeout = Duration::from_secs((wait_timeout_value.unwrap_or(30) + 5) as u64);
+        let timeout = crate::cli::utils::start_deadline(wait_timeout_value.unwrap_or(30));
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);
 
@@ -172,18 +171,11 @@ impl ToolHandler for StartTool {
                 // Collect all streaming responses
                 let mut log_count = 0;
 
-                eprintln!("DEBUG: MCP start - waiting for gRPC stream messages...");
-                while let Some(msg) = stream.message().await.map_err(|e| {
-                    eprintln!("DEBUG: MCP start - stream error: {}", e);
-                    McpError::Internal(e.to_string())
-                })? {
-                    eprintln!(
-                        "DEBUG: MCP start - received message type: {:?}",
-                        msg.response.as_ref().map(|r| match r {
-                            proto::start_process_response::Response::LogEntry(_) => "LogEntry",
-                            proto::start_process_response::Response::Process(_) => "Process",
-                        })
-                    );
+                while let Some(msg) = stream
+                    .message()
+                    .await
+                    .map_err(|e| McpError::Internal(e.to_string()))?
+                {
                     match msg.response {
                         Some(proto::start_process_response::Response::LogEntry(entry)) => {
                             // Send log entry as notification
@@ -223,11 +215,6 @@ impl ToolHandler for StartTool {
                         None => {}
                     }
                 }
-
-                eprintln!(
-                    "DEBUG: MCP start - stream ended, process_info available: {}",
-                    process_info.is_some()
-                );
 
                 let process = process_info
                     .ok_or_else(|| McpError::Internal("No process info returned".to_string()))?;
@@ -271,12 +258,6 @@ impl ToolHandler for StartTool {
                 }
 
                 // Always include log context from ProcessInfo (strip ANSI codes)
-                eprintln!(
-                    "DEBUG: MCP start - process: {}, log_context: {} lines, matched_line: {}",
-                    process.name,
-                    process.log_context.len(),
-                    process.matched_line.is_some()
-                );
                 if !process.log_context.is_empty() {
                     let cleaned_context: Vec<String> = process
                         .log_context

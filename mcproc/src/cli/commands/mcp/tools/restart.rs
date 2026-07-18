@@ -8,6 +8,7 @@ use mcp_rs::{Error as McpError, Result as McpResult, ToolHandler, ToolInfo};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use strip_ansi_escapes::strip;
+use tonic::Request;
 
 pub struct RestartTool {
     client: DaemonClient,
@@ -65,12 +66,22 @@ impl ToolHandler for RestartTool {
 
         let project = resolve_mcp_project_name(params.project)?;
 
-        let request = proto::RestartProcessRequest {
+        let wait_timeout = params.wait_timeout;
+        let grpc_request = proto::RestartProcessRequest {
             name: params.name.clone(),
             project,
             wait_for_log: params.wait_for_log,
-            wait_timeout: params.wait_timeout,
+            wait_timeout,
         };
+
+        let config =
+            crate::common::config::Config::load().map_err(|e| McpError::Internal(e.to_string()))?;
+        let mut request = Request::new(grpc_request);
+        request.set_timeout(crate::cli::utils::restart_deadline(
+            config.process.restart.process_stop_timeout_ms,
+            wait_timeout,
+            config.process.startup.default_wait_timeout_secs,
+        ));
 
         let mut client = self.client.clone();
         match client.inner().restart_process(request).await {

@@ -8,6 +8,10 @@ use proto::*;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
+fn uptime_seconds(now: DateTime<Utc>, start_time: DateTime<Utc>) -> u64 {
+    (now - start_time).num_seconds().max(0) as u64
+}
+
 pub struct GrpcService {
     pub(super) process_manager: Arc<ProcessManager>,
     pub(super) log_hub: Arc<LogHub>,
@@ -101,7 +105,7 @@ impl GrpcService {
     ) -> Result<Response<GetDaemonStatusResponse>, Status> {
         let pid = std::process::id();
         let now = Utc::now();
-        let uptime_seconds = (now - self.start_time).num_seconds() as u64;
+        let uptime_seconds = uptime_seconds(now, self.start_time);
 
         let active_processes = self.process_manager.get_all_processes().len() as u32;
 
@@ -118,5 +122,17 @@ impl GrpcService {
         };
 
         Ok(Response::new(response))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uptime_seconds;
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn uptime_is_zero_when_clock_moves_backwards() {
+        let now = Utc::now();
+        assert_eq!(uptime_seconds(now, now + Duration::seconds(10)), 0);
     }
 }

@@ -13,6 +13,7 @@ use tracing::{debug, error, info, warn};
 const CHUNK_SIZE: usize = 8192; // 8KB chunks
 const BATCH_SIZE: usize = 4; // Process 4 chunks at a time for better responsiveness
 const BATCH_TIMEOUT_MS: u64 = 50; // Process after 50ms for better responsiveness
+const CHUNK_CHANNEL_CAPACITY: usize = 1024;
 const MAX_LINE_BUFFER_SIZE: usize = 1024 * 1024;
 
 pub struct HyperLogConfig {
@@ -32,13 +33,13 @@ pub struct HyperLogConfig {
 
 pub struct HyperLogStreamer {
     config: HyperLogConfig,
-    chunk_tx: mpsc::UnboundedSender<Bytes>,
-    chunk_rx: mpsc::UnboundedReceiver<Bytes>,
+    chunk_tx: mpsc::Sender<Bytes>,
+    chunk_rx: mpsc::Receiver<Bytes>,
 }
 
 impl HyperLogStreamer {
     pub fn new(config: HyperLogConfig) -> Self {
-        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, chunk_rx) = mpsc::channel(CHUNK_CHANNEL_CAPACITY);
         Self {
             config,
             chunk_tx,
@@ -94,7 +95,7 @@ impl HyperLogStreamer {
                     Ok(n) => {
                         // Send chunk without copying
                         let chunk = buffer.split_to(n).freeze();
-                        if chunk_tx.send(chunk).is_err() {
+                        if chunk_tx.send(chunk).await.is_err() {
                             debug!("Channel closed, stopping reader");
                             break;
                         }
@@ -242,6 +243,13 @@ impl HyperLogStreamer {
                         }
                     }
                 }
+            }
+
+            if !line_buffer.is_empty() {
+                line_buffer.push(b'\n');
+                let mut final_batch = vec![Bytes::new()];
+                Self::process_batch(&config, &mut final_batch, &mut line_buffer, &batch_writer)
+                    .await;
             }
 
             // Close ready channel if needed
@@ -428,7 +436,57 @@ mod tests {
     use super::*;
     use crate::common::config::Config;
     use crate::daemon::stream::{StreamEvent, StreamEventHub};
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::broadcast;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn flushes_final_line_without_newline_at_eof() {
+        let root = std::env::temp_dir().join(format!("mcproc-hyperlog-{}", Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        let path = root.join("process.log");
+        let mut config = Config::default();
+        config.paths.log_dir = root.clone();
+        let event_hub = Arc::new(StreamEventHub::new());
+        let log_hub = Arc::new(LogHub::with_event_hub(Arc::new(config), event_hub));
+        let streamer = HyperLogStreamer::new(HyperLogConfig {
+            stream_name: "stdout",
+            process_key: ProcessKey::new("p", "n"),
+            log_pattern: None,
+            log_ready_tx: None,
+            pattern_matched: Arc::new(Mutex::new(false)),
+            matched_line: Arc::new(Mutex::new(None)),
+            timeout_occurred: Arc::new(Mutex::new(false)),
+            wait_timeout: None,
+            default_wait_timeout_secs: 1,
+            is_stderr: false,
+            log_file_path: Some(path.clone()),
+            log_hub,
+        });
+        let (mut input, output) = tokio::io::duplex(64);
+        let handle = streamer.spawn(output).await;
+        input.write_all(b"line1\npartial").await.unwrap();
+        drop(input);
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), handle)
+            .await
+            .expect("hyperlog tasks did not finish")
+            .unwrap();
+
+        let contents = tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
+            loop {
+                let contents = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+                if contents.contains("partial") {
+                    break contents;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("partial line was not flushed");
+        assert!(contents.contains("line1"));
+        assert!(contents.contains("partial"));
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
 
     fn test_config() -> (HyperLogConfig, broadcast::Receiver<StreamEvent>) {
         let event_hub = Arc::new(StreamEventHub::new());

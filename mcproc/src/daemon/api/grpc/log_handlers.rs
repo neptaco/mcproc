@@ -6,6 +6,18 @@ use proto::*;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
+const MAX_LOG_LINES: usize = 10_000;
+const MAX_GREP_CONTEXT: usize = 1_000;
+const MAX_GREP_MATCHES: usize = 1_000;
+
+fn clamp_tail(tail: u32) -> usize {
+    (tail as usize).min(MAX_LOG_LINES)
+}
+
+fn clamp_grep_context(value: u32) -> usize {
+    (value as usize).min(MAX_GREP_CONTEXT)
+}
+
 impl GrpcService {
     pub(super) async fn get_logs_impl(
         &self,
@@ -15,7 +27,7 @@ impl GrpcService {
 
         let project = req.project.clone();
         let process_names = req.process_names.clone();
-        let tail = req.tail.unwrap_or(100) as usize;
+        let tail = clamp_tail(req.tail.unwrap_or(100));
         let follow = req.follow.unwrap_or(false);
         let include_events = req.include_events.unwrap_or(false);
 
@@ -41,8 +53,6 @@ impl GrpcService {
 
         // Create stream
         let stream = async_stream::try_stream! {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            use tokio::fs::File;
             use crate::common::process_key::ProcessKey;
 
             // First, send existing logs if tail is requested
@@ -66,27 +76,13 @@ impl GrpcService {
                     let log_file = log_hub.get_log_file_path_for_key(&key);
 
                     if log_file.exists() {
-                        match File::open(&log_file).await {
-                            Ok(file) => {
-                                let reader = BufReader::new(file);
-                                let mut lines = reader.lines();
-                                let mut all_lines = Vec::new();
-
-                                // Read all lines
-                                while let Ok(Some(line)) = lines.next_line().await {
-                                    all_lines.push(line);
-                                }
-
-                                // Get tail lines
-                                let start_idx = all_lines.len().saturating_sub(tail);
-
-                                for (line_num, line) in
-                                    (start_idx as u32 + 1..).zip(&all_lines[start_idx..])
-                                {
+                        match tail_log_lines(&log_file, tail).await {
+                            Ok((start_idx, lines)) => {
+                                for (line_num, line) in lines.iter().enumerate() {
                                     let (timestamp, level, content) = parse_log_line(line);
 
                                     let log_entry = LogEntry {
-                                        line_number: line_num,
+                                        line_number: (start_idx + line_num + 1) as u32,
                                         content,
                                         timestamp,
                                         level: level as i32,
@@ -99,7 +95,7 @@ impl GrpcService {
                                 }
                             }
                             Err(e) => {
-                                error!("Failed to open log file for {}/{}: {}",
+                                error!("Failed to read log file for {}/{}: {}",
                                     process_info.project, process_info.name, e);
                             }
                         }
@@ -225,6 +221,19 @@ impl GrpcService {
     }
 }
 
+fn grep_log_path(
+    log_hub: &crate::daemon::log::LogHub,
+    project: &str,
+    name: &str,
+) -> Result<std::path::PathBuf, Status> {
+    crate::common::validation::validate_project_name(project)
+        .map_err(|e| Status::invalid_argument(format!("Invalid project name: {e}")))?;
+    crate::common::validation::validate_process_name(name)
+        .map_err(|e| Status::invalid_argument(format!("Invalid process name: {e}")))?;
+    let key = crate::common::process_key::ProcessKey::new(project, name);
+    Ok(log_hub.get_log_file_path_for_key(&key))
+}
+
 // Helper function to parse log lines
 fn parse_log_line(line: &str) -> (Option<prost_types::Timestamp>, log_entry::LogLevel, String) {
     // Expected format: "2025-07-15T03:13:12.375+00:00 [INFO] Log message"
@@ -267,17 +276,7 @@ impl GrpcService {
     ) -> Result<Response<GrepLogsResponse>, Status> {
         let req = request.into_inner();
 
-        // Construct the log file path
-        let project = req.project.clone();
-
-        // Use project-based directory structure
-        let log_file = self
-            .log_hub
-            .config
-            .paths
-            .log_dir
-            .join(&project)
-            .join(format!("{}.log", req.name));
+        let log_file = grep_log_path(&self.log_hub, &req.project, &req.name)?;
 
         // If file doesn't exist, return error
         if !log_file.exists() {
@@ -296,9 +295,9 @@ impl GrpcService {
             .map_err(|e| Status::invalid_argument(format!("Invalid regex pattern: {}", e)))?;
 
         // Determine context settings
-        let context = req.context.unwrap_or(3) as usize;
-        let before = req.before.map(|b| b as usize).unwrap_or(context);
-        let after = req.after.map(|a| a as usize).unwrap_or(context);
+        let context = clamp_grep_context(req.context.unwrap_or(3));
+        let before = req.before.map(clamp_grep_context).unwrap_or(context);
+        let after = req.after.map(clamp_grep_context).unwrap_or(context);
 
         // Read and process logs from file
         info!(
@@ -390,6 +389,8 @@ fn parse_duration(duration_str: &str) -> Result<chrono::Duration, String> {
 
 // Helper function to parse time strings
 fn parse_time_string(time_str: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    use chrono::TimeZone;
+
     let time_str = time_str.trim();
 
     // Try different time formats
@@ -402,26 +403,79 @@ fn parse_time_string(time_str: &str) -> Result<chrono::DateTime<chrono::Utc>, St
 
     for format in &formats {
         if let Ok(naive_time) = chrono::NaiveDateTime::parse_from_str(time_str, format) {
-            return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                naive_time,
-                chrono::Utc,
-            ));
+            return chrono::Local
+                .from_local_datetime(&naive_time)
+                .single()
+                .map(|date_time| date_time.with_timezone(&chrono::Utc))
+                .ok_or_else(|| format!("Local time is ambiguous or does not exist: {time_str}"));
         }
 
         // For time-only formats, combine with today's date
         if format.starts_with("%H") {
             if let Ok(naive_time) = chrono::NaiveTime::parse_from_str(time_str, format) {
-                let today = chrono::Utc::now().date_naive();
+                let today = chrono::Local::now().date_naive();
                 let naive_datetime = today.and_time(naive_time);
-                return Ok(chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                    naive_datetime,
-                    chrono::Utc,
-                ));
+                return chrono::Local
+                    .from_local_datetime(&naive_datetime)
+                    .single()
+                    .map(|date_time| date_time.with_timezone(&chrono::Utc))
+                    .ok_or_else(|| {
+                        format!("Local time is ambiguous or does not exist: {time_str}")
+                    });
             }
         }
     }
 
     Err(format!("Could not parse time: {}", time_str))
+}
+
+/// Read the next line as lossy UTF-8 (non-UTF-8 bytes are replaced, not fatal).
+/// Returns Ok(None) at EOF.
+async fn next_line_lossy<R: tokio::io::AsyncBufRead + Unpin>(
+    reader: &mut R,
+    bytes: &mut Vec<u8>,
+) -> Result<Option<String>, std::io::Error> {
+    use tokio::io::AsyncBufReadExt;
+
+    bytes.clear();
+    if reader.read_until(b'\n', bytes).await? == 0 {
+        return Ok(None);
+    }
+    if bytes.last() == Some(&b'\n') {
+        bytes.pop();
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    Ok(Some(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+async fn tail_log_lines(
+    log_file: &std::path::Path,
+    tail: usize,
+) -> Result<(usize, Vec<String>), std::io::Error> {
+    use std::collections::VecDeque;
+
+    let file = tokio::fs::File::open(log_file).await?;
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut bytes = Vec::new();
+    let mut lines = VecDeque::with_capacity(tail);
+    let mut total_lines = 0usize;
+    while let Some(line) = next_line_lossy(&mut reader, &mut bytes).await? {
+        total_lines += 1;
+        if tail == 0 {
+            continue;
+        }
+        if lines.len() == tail {
+            lines.pop_front();
+        }
+        lines.push_back(line);
+    }
+
+    Ok((
+        total_lines.saturating_sub(lines.len()),
+        lines.into_iter().collect(),
+    ))
 }
 
 /// Parsed log line with original content preserved for pattern matching
@@ -463,12 +517,9 @@ async fn grep_log_file(
     until_time: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<GrepMatch>, std::io::Error> {
     use std::collections::VecDeque;
-    use tokio::fs::File;
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    let file = File::open(log_file).await?;
-    let reader = BufReader::new(file);
-    let mut lines = reader.lines();
+    let file = tokio::fs::File::open(log_file).await?;
+    let mut reader = tokio::io::BufReader::new(file);
+    let mut line_bytes = Vec::new();
 
     // Buffer for before-context lines (keeps only the last `before` lines)
     let mut before_buffer: VecDeque<ParsedLogLine> = VecDeque::with_capacity(before + 1);
@@ -478,8 +529,7 @@ async fn grep_log_file(
     let mut results: Vec<GrepMatch> = Vec::new();
 
     let mut line_num = 0u32;
-
-    while let Ok(Some(line)) = lines.next_line().await {
+    while let Some(line) = next_line_lossy(&mut reader, &mut line_bytes).await? {
         line_num += 1;
         let (timestamp, level, content) = parse_log_line(&line);
 
@@ -532,6 +582,10 @@ async fn grep_log_file(
             }
         }
 
+        if results.len() >= MAX_GREP_MATCHES {
+            return Ok(results);
+        }
+
         // Check if current line matches the pattern
         if pattern.is_match(&parsed.original) {
             // Create context_before from the buffer
@@ -558,6 +612,9 @@ async fn grep_log_file(
 
     // Finalize any remaining pending matches (may have incomplete after-context)
     for pending in pending_matches {
+        if results.len() >= MAX_GREP_MATCHES {
+            break;
+        }
         results.push(GrepMatch {
             matched_line: Some(pending.matched_line),
             context_before: pending.context_before,
@@ -566,4 +623,128 @@ async fn grep_log_file(
     }
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clamp_grep_context, clamp_tail, grep_log_file, grep_log_path, parse_time_string,
+        tail_log_lines, MAX_GREP_CONTEXT, MAX_LOG_LINES,
+    };
+    use crate::common::config::Config;
+    use crate::daemon::log::LogHub;
+    use crate::daemon::stream::StreamEventHub;
+    use chrono::{Local, TimeZone};
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn grep_log_path_rejects_traversal_and_stays_under_log_dir() {
+        let mut config = Config::default();
+        config.paths.log_dir = std::env::temp_dir().join("mcproc-grep-path-test");
+        let log_dir = config.paths.log_dir.clone();
+        let log_hub = LogHub::with_event_hub(Arc::new(config), Arc::new(StreamEventHub::new()));
+
+        assert!(grep_log_path(&log_hub, "project", "../../x").is_err());
+        assert!(grep_log_path(&log_hub, "../project", "process").is_err());
+        assert_eq!(
+            grep_log_path(&log_hub, "project", "process").unwrap(),
+            log_dir.join("project/process.log")
+        );
+    }
+
+    #[test]
+    fn log_request_sizes_are_clamped() {
+        assert_eq!(clamp_tail(u32::MAX), MAX_LOG_LINES);
+        assert_eq!(clamp_grep_context(u32::MAX), MAX_GREP_CONTEXT);
+        assert_eq!(clamp_grep_context(999), 999);
+    }
+
+    #[tokio::test]
+    async fn tail_log_lines_returns_last_lines_with_original_start_index() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("mcproc-tail-{}-{suffix}.log", std::process::id()));
+        let contents = (1..=50)
+            .map(|line| format!("line {line}\n"))
+            .collect::<String>();
+        std::fs::write(&path, contents).unwrap();
+
+        let (start_idx, lines) = tail_log_lines(&path, 10).await.unwrap();
+
+        assert_eq!(start_idx, 40);
+        assert_eq!(lines.len(), 10);
+        assert_eq!(lines.first().unwrap(), "line 41");
+        assert_eq!(lines.last().unwrap(), "line 50");
+        assert_eq!(start_idx + 1, 41);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grep_log_file_continues_after_invalid_utf8() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mcproc-invalid-utf8-{}-{suffix}.log",
+            std::process::id()
+        ));
+        std::fs::write(&path, b"before\ninvalid \xff bytes\ntarget after invalid\n").unwrap();
+
+        let matches = grep_log_file(
+            &path,
+            &regex::Regex::new("target").unwrap(),
+            0,
+            0,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches[0].matched_line.as_ref().unwrap().content,
+            "after invalid"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn grep_log_file_limits_matches_to_one_thousand() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mcproc-grep-limit-{}-{suffix}.log",
+            std::process::id()
+        ));
+        let contents = (0..3_000)
+            .map(|line| format!("matching line {line}\n"))
+            .collect::<String>();
+        std::fs::write(&path, contents).unwrap();
+
+        let matches = grep_log_file(&path, &regex::Regex::new(".*").unwrap(), 0, 0, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(matches.len(), 1_000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn parse_time_string_interprets_naive_datetime_as_local() {
+        let expected = Local
+            .with_ymd_and_hms(2026, 1, 1, 12, 0, 0)
+            .single()
+            .expect("test time must be unambiguous")
+            .with_timezone(&chrono::Utc);
+
+        assert_eq!(parse_time_string("2026-01-01 12:00").unwrap(), expected);
+    }
 }

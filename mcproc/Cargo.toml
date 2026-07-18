@@ -84,6 +84,9 @@ bytes.workspace = true
 # File locking
 fs2 = "0.4"
 
+# Process inspection (daemon PID validation)
+sysinfo = "0.38"
+
 # Platform specific
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal", "process"] }

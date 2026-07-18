@@ -3,7 +3,7 @@ use crate::common::timestamp::format_datetime_utc_with_tz;
 use bytes::Bytes;
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
 use tracing::{debug, error, info};
@@ -72,10 +72,20 @@ impl BatchLogWriter {
         // Open file
         let mut file = OpenOptions::new()
             .create(true)
-            .write(true)
-            .truncate(true)
+            .read(true)
+            .append(true)
             .open(&log_file_path)
             .await?;
+
+        let file_len = file.metadata().await?.len();
+        if file_len > 0 {
+            file.seek(std::io::SeekFrom::End(-1)).await?;
+            let mut last_byte = [0];
+            file.read_exact(&mut last_byte).await?;
+            if last_byte[0] != b'\n' {
+                file.write_all(b"\n").await?;
+            }
+        }
 
         info!(
             "Started batch log writer for {}/{}",
@@ -88,12 +98,22 @@ impl BatchLogWriter {
 
         loop {
             tokio::select! {
-                Some(entry) = rx.recv() => {
-                    batch.push(entry);
+                entry = rx.recv() => {
+                    match entry {
+                        Some(entry) => {
+                            batch.push(entry);
 
-                    // Write if batch is full
-                    if batch.len() >= WRITE_BATCH_SIZE {
-                        Self::flush_batch(&mut file, &mut batch).await?;
+                            // Write if batch is full
+                            if batch.len() >= WRITE_BATCH_SIZE {
+                                Self::flush_batch(&mut file, &mut batch).await?;
+                            }
+                        }
+                        None => {
+                            if !batch.is_empty() {
+                                Self::flush_batch(&mut file, &mut batch).await?;
+                            }
+                            break;
+                        }
                     }
                 }
                 _ = timer.tick() => {
@@ -101,13 +121,6 @@ impl BatchLogWriter {
                     if !batch.is_empty() {
                         Self::flush_batch(&mut file, &mut batch).await?;
                     }
-                }
-                else => {
-                    // Channel closed, write remaining batch
-                    if !batch.is_empty() {
-                        Self::flush_batch(&mut file, &mut batch).await?;
-                    }
-                    break;
                 }
             }
         }
@@ -163,5 +176,102 @@ impl Drop for BatchLogWriter {
             "Dropping BatchLogWriter for {}/{}",
             self.process_key.project, self.process_key.name
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn temp_log_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("mcproc-{label}-{}.log", Uuid::new_v4()))
+    }
+
+    fn entry(content: &'static [u8]) -> LogEntry {
+        LogEntry {
+            timestamp: chrono::Utc::now(),
+            content: Bytes::from_static(content),
+            is_stderr: false,
+        }
+    }
+
+    async fn wait_for_contents(path: &PathBuf, needles: &[&str]) -> String {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let contents = tokio::fs::read_to_string(path).await.unwrap_or_default();
+                if needles.iter().all(|needle| contents.contains(needle)) {
+                    return contents;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("log contents were not flushed before timeout")
+    }
+
+    #[tokio::test]
+    async fn appends_to_existing_log_file() {
+        let path = temp_log_path("append");
+        tokio::fs::write(&path, "existing\n").await.unwrap();
+        let writer = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        writer.write(entry(b"new-line")).await.unwrap();
+        drop(writer);
+
+        let contents = wait_for_contents(&path, &["existing", "new-line"]).await;
+        assert!(contents.starts_with("existing\n"), "contents: {contents:?}");
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn appending_to_partial_line_starts_a_new_line() {
+        let path = temp_log_path("append-partial");
+        tokio::fs::write(&path, "partial").await.unwrap();
+        let writer = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        writer.write(entry(b"new-line")).await.unwrap();
+        drop(writer);
+
+        let contents = wait_for_contents(&path, &["partial", "new-line"]).await;
+        assert!(contents.starts_with("partial\n"), "contents: {contents:?}");
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_writers_append_without_overwriting_each_other() {
+        let path = temp_log_path("two-writers");
+        let first = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        first.write(entry(b"from-first")).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let second = BatchLogWriter::new(ProcessKey::new("p", "n"), path.clone())
+            .await
+            .unwrap();
+        second.write(entry(b"from-second")).await.unwrap();
+        drop(first);
+        drop(second);
+
+        wait_for_contents(&path, &["from-first", "from-second"]).await;
+        tokio::fs::remove_file(path).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn writer_task_exits_when_channel_closes() {
+        let path = temp_log_path("channel-close");
+        let (tx, rx) = mpsc::channel(1);
+        drop(tx);
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            BatchLogWriter::writer_task(ProcessKey::new("p", "n"), path.clone(), rx),
+        )
+        .await
+        .expect("writer task did not exit after channel close")
+        .unwrap();
+        tokio::fs::remove_file(path).await.unwrap();
     }
 }

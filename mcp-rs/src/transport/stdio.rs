@@ -2,8 +2,36 @@ use crate::error::Result;
 use crate::transport::Transport;
 use crate::types::JsonRpcMessage;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+
+fn parse_input_line(line: &str) -> std::result::Result<JsonRpcMessage, Box<JsonRpcMessage>> {
+    serde_json::from_str(line).map_err(|_| {
+        Box::new(JsonRpcMessage::Response(crate::types::JsonRpcResponse {
+            jsonrpc: "2.0".to_string(),
+            result: None,
+            error: Some(crate::types::JsonRpcError {
+                code: crate::types::error_codes::PARSE_ERROR,
+                message: "Parse error".to_string(),
+                data: None,
+            }),
+            id: crate::types::JsonRpcId::Null,
+        }))
+    })
+}
+
+async fn write_message(
+    stdout: &Arc<Mutex<tokio::io::Stdout>>,
+    message: &JsonRpcMessage,
+) -> Result<()> {
+    let json = serde_json::to_string(message)?;
+    let mut stdout = stdout.lock().await;
+    stdout.write_all(json.as_bytes()).await?;
+    stdout.write_all(b"\n").await?;
+    stdout.flush().await?;
+    Ok(())
+}
 
 /// Stdio transport for MCP communication
 pub struct StdioTransport {
@@ -12,6 +40,7 @@ pub struct StdioTransport {
     tx: Option<mpsc::Sender<JsonRpcMessage>>,
     rx: mpsc::Receiver<JsonRpcMessage>,
     shutdown_tx: mpsc::Sender<()>,
+    stdout: Arc<Mutex<tokio::io::Stdout>>,
 }
 
 impl StdioTransport {
@@ -23,6 +52,7 @@ impl StdioTransport {
             tx: Some(tx),
             rx,
             shutdown_tx,
+            stdout: Arc::new(Mutex::new(tokio::io::stdout())),
         }
     }
 }
@@ -44,6 +74,7 @@ impl Transport for StdioTransport {
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
         self.shutdown_tx = shutdown_tx;
+        let stdout = self.stdout.clone();
 
         // Spawn stdin reader
         tokio::spawn(async move {
@@ -57,9 +88,16 @@ impl Transport for StdioTransport {
                     line = lines.next_line() => {
                         match line {
                             Ok(Some(line)) => {
-                                if let Ok(message) = serde_json::from_str::<JsonRpcMessage>(&line) {
-                                    if tx.send(message).await.is_err() {
-                                        break;
+                                match parse_input_line(&line) {
+                                    Ok(message) => {
+                                        if tx.send(message).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(response) => {
+                                        if write_message(&stdout, &response).await.is_err() {
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -76,12 +114,7 @@ impl Transport for StdioTransport {
     }
 
     async fn send(&mut self, message: JsonRpcMessage) -> Result<()> {
-        let json = serde_json::to_string(&message)?;
-        let mut stdout = tokio::io::stdout();
-        stdout.write_all(json.as_bytes()).await?;
-        stdout.write_all(b"\n").await?;
-        stdout.flush().await?;
-        Ok(())
+        write_message(&self.stdout, &message).await
     }
 
     async fn receive(&mut self) -> Result<Option<JsonRpcMessage>> {
@@ -91,5 +124,22 @@ impl Transport for StdioTransport {
     async fn close(&mut self) -> Result<()> {
         let _ = self.shutdown_tx.send(()).await;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_input_line;
+    use crate::types::{error_codes, JsonRpcId, JsonRpcMessage};
+
+    #[test]
+    fn invalid_json_produces_parse_error_response() {
+        match *parse_input_line("{not json").unwrap_err() {
+            JsonRpcMessage::Response(response) => {
+                assert_eq!(response.id, JsonRpcId::Null);
+                assert_eq!(response.error.unwrap().code, error_codes::PARSE_ERROR);
+            }
+            other => panic!("expected parse-error response, got {other:?}"),
+        }
     }
 }

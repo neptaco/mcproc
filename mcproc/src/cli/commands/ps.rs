@@ -35,7 +35,7 @@ struct ProcessRow {
 impl PsCommand {
     pub async fn execute(self, mut client: DaemonClient) -> Result<(), Box<dyn std::error::Error>> {
         let request = ListProcessesRequest {
-            status_filter: None, // TODO: Parse status filter
+            status_filter: self.status.as_deref().map(parse_status).transpose()?,
             project_filter: None,
         };
 
@@ -69,11 +69,30 @@ impl PsCommand {
     }
 }
 
+fn parse_status(status: &str) -> Result<i32, String> {
+    let status = match status.to_ascii_lowercase().as_str() {
+        "unknown" => proto::ProcessStatus::Unknown,
+        "starting" => proto::ProcessStatus::Starting,
+        "running" => proto::ProcessStatus::Running,
+        "stopping" => proto::ProcessStatus::Stopping,
+        "stopped" => proto::ProcessStatus::Stopped,
+        "failed" => proto::ProcessStatus::Failed,
+        _ => return Err(format!("Invalid process status: {status}")),
+    };
+    Ok(status as i32)
+}
+
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
+    } else if max_len <= 3 {
+        ".".repeat(max_len)
     } else {
-        format!("{}...", &s[..max_len - 3])
+        let cutoff = s
+            .char_indices()
+            .nth(max_len - 3)
+            .map_or(s.len(), |(index, _)| index);
+        format!("{}...", &s[..cutoff])
     }
 }
 
@@ -86,5 +105,18 @@ fn format_ports(ports: &[u32]) -> String {
             .map(|p| p.to_string())
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate;
+
+    #[test]
+    fn truncate_handles_multibyte_characters() {
+        let truncated = truncate("日本語のとても長いコマンドライン文字列テスト", 10);
+
+        assert_eq!(truncated.chars().count(), 10);
+        assert!(truncated.ends_with("..."));
     }
 }

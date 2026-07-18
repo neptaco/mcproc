@@ -3,7 +3,6 @@ use crate::client::DaemonClient;
 use clap::Args;
 use colored::*;
 use proto::RestartProcessRequest;
-use std::time::Duration;
 use tonic::Request;
 
 #[derive(Debug, Args)]
@@ -31,9 +30,10 @@ impl RestartCommand {
         let config = crate::common::config::Config::load()?;
         // Set timeout based on config: process_stop_timeout + grpc_request_buffer
         // Restart needs more time: stop + start
-        let timeout = Duration::from_millis(
-            (config.process.restart.process_stop_timeout_ms * 2)
-                + config.api.grpc_request_buffer_secs * 1000,
+        let timeout = crate::cli::utils::restart_deadline(
+            config.process.restart.process_stop_timeout_ms,
+            None,
+            config.process.startup.default_wait_timeout_secs,
         );
         let mut request = Request::new(grpc_request);
         request.set_timeout(timeout);

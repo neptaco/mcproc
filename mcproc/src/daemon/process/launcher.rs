@@ -12,6 +12,23 @@ use tokio::process::Command;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
+fn shell_quote_args(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if !arg.is_empty()
+                && arg
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+            {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Parameters for launching a process
 pub struct LaunchProcessParams {
     pub name: String,
@@ -55,7 +72,7 @@ impl ProcessLauncher {
         // Build command - always use shell execution for consistency
         let shell_command = if !params.args.is_empty() {
             // Convert args to shell command
-            params.args.join(" ")
+            shell_quote_args(&params.args)
         } else if let Some(cmd_str) = params.cmd {
             // Use the cmd string as-is
             cmd_str
@@ -230,5 +247,54 @@ impl ProcessLauncher {
                     })
             })
             .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    #[test]
+    fn shell_quotes_direct_command_arguments() {
+        assert_eq!(
+            shell_quote_args(&["echo".into(), "a b".into()]),
+            "echo 'a b'"
+        );
+        assert_eq!(
+            shell_quote_args(&["echo".into(), "$HOME".into()]),
+            "echo '$HOME'"
+        );
+        assert_eq!(
+            shell_quote_args(&["printf".into(), "don't".into()]),
+            "printf 'don'\\''t'"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_process_preserves_direct_argument_boundaries() {
+        let launcher = ProcessLauncher::new();
+        let (mut child, _) = launcher
+            .launch_process(LaunchProcessParams {
+                name: "quoted-args".into(),
+                project: "test".into(),
+                cmd: None,
+                args: vec!["printf".into(), "%s".into(), "a b;$HOME".into()],
+                cwd: None,
+                env: None,
+                toolchain: None,
+            })
+            .await
+            .unwrap();
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .await
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        assert_eq!(output, "a b;$HOME");
     }
 }

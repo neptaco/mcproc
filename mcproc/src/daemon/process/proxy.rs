@@ -219,6 +219,8 @@ impl ProxyInfo {
                     }
                 }
             }
+
+            self.confirm_stopped_after_force_kill().await?;
         }
 
         self.set_status(ProcessStatus::Stopped);
@@ -233,6 +235,49 @@ impl ProxyInfo {
         // process dies, and will be cleaned up when ProxyInfo is dropped.
 
         Ok(())
+    }
+
+    #[cfg(unix)]
+    async fn confirm_stopped_after_force_kill(&self) -> Result<(), String> {
+        let timeout = tokio::time::Duration::from_secs(2);
+        let start = tokio::time::Instant::now();
+        while start.elapsed() < timeout {
+            if !Self::is_process_group_alive(self.pid) {
+                return Ok(());
+            }
+            // killpg(pgid, 0) keeps succeeding while unreaped zombies remain in
+            // the group, so only report failure if a non-zombie member survives.
+            if !Self::group_has_live_non_zombie_member(self.pid).await {
+                return Ok(());
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        Err(format!(
+            "Process group {} (PGID {}) still has live members after SIGKILL",
+            self.name, self.pid
+        ))
+    }
+
+    #[cfg(unix)]
+    async fn group_has_live_non_zombie_member(pgid: u32) -> bool {
+        let output = match tokio::process::Command::new("ps")
+            .args(["-axo", "pgid=,stat="])
+            .output()
+            .await
+        {
+            Ok(output) => output,
+            // If membership cannot be inspected, assume survivors so the
+            // failure is reported rather than silently ignored.
+            Err(_) => return true,
+        };
+
+        String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            let line_pgid = fields.next().and_then(|field| field.parse::<u32>().ok());
+            let stat = fields.next();
+            line_pgid == Some(pgid) && stat.is_some_and(|stat| !stat.starts_with('Z'))
+        })
     }
 
     pub fn set_detected_port(&self, port: u16) {
@@ -262,5 +307,67 @@ impl ProxyInfo {
             Err(nix::Error::ESRCH) => false,
             Err(_) => true, // Other errors mean the group exists but we may lack permissions
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::daemon::process::types::ProxyInfoParams;
+    use uuid::Uuid;
+
+    fn proxy_for_pid(pid: u32) -> ProxyInfo {
+        ProxyInfo::new(ProxyInfoParams {
+            id: Uuid::new_v4().to_string(),
+            name: "stop-test".into(),
+            project: "test".into(),
+            cmd: None,
+            args: Vec::new(),
+            cwd: None,
+            env: None,
+            wait_for_log: None,
+            wait_timeout: None,
+            toolchain: None,
+            pid,
+        })
+    }
+
+    #[tokio::test]
+    async fn force_stop_errors_when_process_survives_sigkill() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let proxy = proxy_for_pid(pid);
+
+        let result = proxy.confirm_stopped_after_force_kill().await;
+
+        assert!(
+            result.is_err(),
+            "live process group unexpectedly reported as stopped"
+        );
+        assert_ne!(proxy.get_status(), ProcessStatus::Stopped);
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn force_stop_succeeds_for_killable_process() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("5")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let waiter = tokio::spawn(async move { child.wait().await.unwrap() });
+        let proxy = proxy_for_pid(pid);
+        proxy.stop(true, 1_000).await.unwrap();
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proxy.get_status(), ProcessStatus::Stopped);
     }
 }
