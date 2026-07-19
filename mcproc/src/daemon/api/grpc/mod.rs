@@ -5,4 +5,7 @@ pub mod process_handlers;
 pub mod server;
 pub mod service;
 
+#[cfg(test)]
+mod test_support;
+
 pub use server::start_grpc_server;

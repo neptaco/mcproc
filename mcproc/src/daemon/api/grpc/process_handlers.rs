@@ -370,8 +370,13 @@ mod tests {
         force_restart_stop_result, matches_status_filter, validate_status_filter,
         validate_wait_timeout,
     };
+    use crate::daemon::api::grpc::test_support::{process_from_restart_stream, TestHarness};
     use crate::daemon::error::McprocdError;
     use crate::daemon::process::ProcessStatus;
+    use proto::{
+        GetProcessRequest, ListProcessesRequest, RestartProcessRequest, StopProcessRequest,
+    };
+    use tonic::{Code, Request};
 
     #[test]
     fn status_filter_selects_only_requested_status() {
@@ -406,5 +411,238 @@ mod tests {
         let result =
             force_restart_stop_result(Err(McprocdError::StopError("cannot stop".to_string())));
         assert_eq!(result.unwrap_err().code(), tonic::Code::FailedPrecondition);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_start_process_returns_running_process_info() {
+        let harness = TestHarness::new();
+        let process = harness.start("worker", "alpha").await.unwrap();
+        harness.cleanup().await;
+
+        assert_eq!(process.name, "worker");
+        assert_eq!(process.project, "alpha");
+        assert!(process.pid.is_some_and(|pid| pid > 0));
+        assert!(matches!(
+            proto::ProcessStatus::try_from(process.status).unwrap(),
+            proto::ProcessStatus::Starting | proto::ProcessStatus::Running
+        ));
+    }
+
+    #[tokio::test]
+    async fn grpc_rpc_start_process_rejects_invalid_process_name() {
+        let harness = TestHarness::new();
+        let mut request = TestHarness::start_request("a/b", "alpha");
+        request.args.clear();
+        let result = harness
+            .service
+            .start_process_impl(Request::new(request))
+            .await;
+        harness.cleanup().await;
+
+        assert_eq!(result.err().unwrap().code(), Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn grpc_rpc_start_process_rejects_wait_timeout_over_one_hour() {
+        let harness = TestHarness::new();
+        let mut request = TestHarness::start_request("worker", "alpha");
+        request.wait_timeout = Some(3601);
+        let result = harness
+            .service
+            .start_process_impl(Request::new(request))
+            .await;
+        harness.cleanup().await;
+
+        assert_eq!(result.err().unwrap().code(), Code::InvalidArgument);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_start_process_rejects_duplicate_name_in_project() {
+        let harness = TestHarness::new();
+        harness.start("worker", "alpha").await.unwrap();
+        let duplicate = harness.start("worker", "alpha").await;
+        harness.cleanup().await;
+
+        assert_eq!(duplicate.unwrap_err().code(), Code::AlreadyExists);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_start_process_reports_missing_command_as_failed_process() {
+        let harness = TestHarness::new();
+        let mut request = TestHarness::start_request("missing-command", "alpha");
+        request.args.clear();
+        request.cmd = Some("definitely-not-a-command-xyz".to_string());
+        let process = harness.start_with_request(request).await.unwrap();
+        harness.cleanup().await;
+
+        assert_eq!(
+            process.status,
+            proto::ProcessStatus::Failed as i32,
+            "a command lookup failure must be represented in ProcessInfo"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_start_process_force_restart_replaces_running_process() {
+        let harness = TestHarness::new();
+        let first = harness.start("worker", "alpha").await.unwrap();
+        let mut request = TestHarness::start_request("worker", "alpha");
+        request.force_restart = Some(true);
+        let replacement = harness.start_with_request(request).await.unwrap();
+        harness.cleanup().await;
+
+        assert_ne!(first.pid, replacement.pid);
+        assert_eq!(replacement.status, proto::ProcessStatus::Running as i32);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_stop_process_handles_existing_and_missing_processes() {
+        let harness = TestHarness::new();
+        harness.start("worker", "alpha").await.unwrap();
+        let stopped = harness
+            .service
+            .stop_process_impl(Request::new(StopProcessRequest {
+                name: "worker".to_string(),
+                project: "alpha".to_string(),
+                force: Some(true),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let removed = harness
+            .service
+            .process_manager
+            .get_process_by_name_or_id_with_project("worker", Some("alpha"))
+            .is_none();
+        let missing = harness
+            .service
+            .stop_process_impl(Request::new(StopProcessRequest {
+                name: "absent".to_string(),
+                project: "alpha".to_string(),
+                force: Some(true),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        harness.cleanup().await;
+
+        assert!(stopped.success);
+        assert!(removed);
+        assert!(!missing.success);
+        assert!(missing.message.unwrap().contains("not found"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_restart_process_replaces_pid_and_missing_process_is_not_found() {
+        let harness = TestHarness::new();
+        let first = harness.start("worker", "alpha").await.unwrap();
+        let response = harness
+            .service
+            .restart_process_impl(Request::new(RestartProcessRequest {
+                name: "worker".to_string(),
+                project: "alpha".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let restarted = process_from_restart_stream(response.into_inner())
+            .await
+            .unwrap();
+        let missing_response = harness
+            .service
+            .restart_process_impl(Request::new(RestartProcessRequest {
+                name: "absent".to_string(),
+                project: "alpha".to_string(),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+        let missing = process_from_restart_stream(missing_response.into_inner()).await;
+        harness.cleanup().await;
+
+        assert_ne!(first.pid, restarted.pid);
+        assert_eq!(restarted.status, proto::ProcessStatus::Running as i32);
+        assert_eq!(missing.unwrap_err().code(), Code::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_get_process_returns_metadata_and_not_found() {
+        let harness = TestHarness::new();
+        let started = harness.start("worker", "alpha").await.unwrap();
+        let found = harness
+            .service
+            .get_process_impl(Request::new(GetProcessRequest {
+                name: "worker".to_string(),
+                project: "alpha".to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .process
+            .unwrap();
+        let missing = harness
+            .service
+            .get_process_impl(Request::new(GetProcessRequest {
+                name: "absent".to_string(),
+                project: "alpha".to_string(),
+            }))
+            .await;
+        harness.cleanup().await;
+
+        assert_eq!(found.name, "worker");
+        assert_eq!(found.project, "alpha");
+        assert_eq!(found.pid, started.pid);
+        assert_eq!(found.status, proto::ProcessStatus::Running as i32);
+        assert_eq!(missing.unwrap_err().code(), Code::NotFound);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_list_processes_applies_project_and_status_filters() {
+        let harness = TestHarness::new();
+        harness.start("alpha-worker", "alpha").await.unwrap();
+        harness.start("beta-worker", "beta").await.unwrap();
+        let by_project = harness
+            .service
+            .list_processes_impl(Request::new(ListProcessesRequest {
+                project_filter: Some("alpha".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let running = harness
+            .service
+            .list_processes_impl(Request::new(ListProcessesRequest {
+                status_filter: Some(proto::ProcessStatus::Running as i32),
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let invalid = harness
+            .service
+            .list_processes_impl(Request::new(ListProcessesRequest {
+                status_filter: Some(999),
+                ..Default::default()
+            }))
+            .await;
+        harness.cleanup().await;
+
+        assert_eq!(by_project.processes.len(), 1);
+        assert_eq!(by_project.processes[0].project, "alpha");
+        assert_eq!(running.processes.len(), 2);
+        assert!(running
+            .processes
+            .iter()
+            .all(|process| process.status == proto::ProcessStatus::Running as i32));
+        assert_eq!(invalid.unwrap_err().code(), Code::InvalidArgument);
     }
 }

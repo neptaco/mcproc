@@ -313,10 +313,8 @@ impl Protocol {
                 }
             }
         } else {
-            Err(Error::MethodNotFound(format!(
-                "Tool not found: {}",
-                tool_name
-            )))
+            // MCP spec: unknown tool is an Invalid params error, not Method not found
+            Err(Error::InvalidParams(format!("Unknown tool: {}", tool_name)))
         }
     }
 
@@ -389,6 +387,79 @@ impl Protocol {
 mod tests {
     use super::*;
 
+    struct FixedTool;
+
+    #[async_trait]
+    impl ToolHandler for FixedTool {
+        fn tool_info(&self) -> ToolInfo {
+            ToolInfo {
+                name: "fixed".to_string(),
+                description: "Returns a fixed value".to_string(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "ignored": { "type": "string" }
+                    }
+                }),
+            }
+        }
+
+        async fn handle(
+            &self,
+            _params: Option<Value>,
+            _context: crate::notification::ToolContext,
+        ) -> Result<Value> {
+            Ok(json!({ "answer": 42 }))
+        }
+    }
+
+    fn request(method: &str, params: Option<Value>, id: JsonRpcId) -> JsonRpcMessage {
+        JsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params,
+            id,
+        })
+    }
+
+    fn notification(method: &str, params: Option<Value>) -> JsonRpcMessage {
+        JsonRpcMessage::Notification(JsonRpcNotification {
+            jsonrpc: "2.0".to_string(),
+            method: method.to_string(),
+            params,
+        })
+    }
+
+    fn response(message: Option<JsonRpcMessage>) -> JsonRpcResponse {
+        match message {
+            Some(JsonRpcMessage::Response(response)) => response,
+            other => panic!("expected response, got {other:?}"),
+        }
+    }
+
+    fn batch(message: Option<JsonRpcMessage>) -> Vec<JsonRpcMessage> {
+        match message {
+            Some(JsonRpcMessage::Batch(batch)) => batch,
+            other => panic!("expected batch response, got {other:?}"),
+        }
+    }
+
+    fn result(response: &JsonRpcResponse) -> &Value {
+        assert!(response.error.is_none());
+        match response.result.as_ref() {
+            Some(result) => result,
+            None => panic!("expected successful result, got {response:?}"),
+        }
+    }
+
+    fn error(response: &JsonRpcResponse) -> &JsonRpcError {
+        assert!(response.result.is_none());
+        match response.error.as_ref() {
+            Some(error) => error,
+            None => panic!("expected error, got {response:?}"),
+        }
+    }
+
     fn assert_invalid_request(message: Option<JsonRpcMessage>) {
         match message {
             Some(JsonRpcMessage::Response(response)) => {
@@ -433,5 +504,243 @@ mod tests {
             }
             other => panic!("expected invalid-request response, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_server_metadata_and_capabilities() {
+        let protocol = Protocol::new("test-server".to_string(), "1.2.3".to_string());
+        let response = response(
+            protocol
+                .handle_message_realtime(request(
+                    "initialize",
+                    Some(json!({
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": { "name": "test-client", "version": "1" }
+                    })),
+                    JsonRpcId::String("init-1".to_string()),
+                ))
+                .await,
+        );
+
+        assert_eq!(response.jsonrpc, "2.0");
+        assert_eq!(response.id, JsonRpcId::String("init-1".to_string()));
+        assert_eq!(result(&response)["protocolVersion"], "2025-03-26");
+        assert_eq!(result(&response)["serverInfo"]["name"], "test-server");
+        assert_eq!(result(&response)["serverInfo"]["version"], "1.2.3");
+        assert!(result(&response)["capabilities"]["tools"].is_object());
+    }
+
+    #[tokio::test]
+    async fn tools_list_returns_registered_tool_metadata() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        protocol.register_tool(Arc::new(FixedTool)).await;
+
+        let response = response(
+            protocol
+                .handle_message_realtime(request("tools/list", None, JsonRpcId::Number(1)))
+                .await,
+        );
+        let tools = match result(&response)["tools"].as_array() {
+            Some(tools) => tools,
+            None => panic!("expected tools array"),
+        };
+
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["name"], "fixed");
+        assert_eq!(tools[0]["description"], "Returns a fixed value");
+        assert_eq!(
+            tools[0]["inputSchema"],
+            json!({
+                "type": "object",
+                "properties": {
+                    "ignored": { "type": "string" }
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_returns_tool_result_and_echoes_id() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        protocol.register_tool(Arc::new(FixedTool)).await;
+
+        let response = response(
+            protocol
+                .handle_message_realtime(request(
+                    "tools/call",
+                    Some(json!({ "name": "fixed", "arguments": { "ignored": "x" } })),
+                    JsonRpcId::String("call-1".to_string()),
+                ))
+                .await,
+        );
+
+        assert_eq!(response.id, JsonRpcId::String("call-1".to_string()));
+        assert_eq!(result(&response)["isError"], false);
+        assert_eq!(result(&response)["content"][0]["type"], "text");
+        assert_eq!(
+            result(&response)["content"][0]["text"],
+            serde_json::to_string_pretty(&json!({ "answer": 42 })).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_missing_params_or_name_returns_invalid_params() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        let cases = [
+            (None, JsonRpcId::Number(10)),
+            (Some(json!({})), JsonRpcId::Number(11)),
+        ];
+
+        for (params, id) in cases {
+            let response = response(
+                protocol
+                    .handle_message_realtime(request("tools/call", params, id.clone()))
+                    .await,
+            );
+
+            assert_eq!(response.id, id);
+            assert_eq!(error(&response).code, error_codes::INVALID_PARAMS);
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_call_unknown_tool_returns_invalid_params() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+
+        let response = response(
+            protocol
+                .handle_message_realtime(request(
+                    "tools/call",
+                    Some(json!({ "name": "no-such-tool", "arguments": {} })),
+                    JsonRpcId::Number(12),
+                ))
+                .await,
+        );
+
+        // MCP spec: unknown tool is an Invalid params error (-32602), not
+        // Method not found (https://modelcontextprotocol.io/specification/2025-03-26/server/tools)
+        assert_eq!(error(&response).code, error_codes::INVALID_PARAMS);
+    }
+
+    #[test]
+    fn error_variants_map_to_json_rpc_error_codes() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        let serialization_error = match serde_json::from_str::<Value>("{") {
+            Err(error) => error,
+            Ok(value) => panic!("expected malformed JSON to fail, got {value}"),
+        };
+        let cases = [
+            (
+                Error::Transport("transport".to_string()),
+                error_codes::SERVER_ERROR,
+            ),
+            (
+                Error::Protocol("protocol".to_string()),
+                error_codes::SERVER_ERROR,
+            ),
+            (
+                Error::Serialization(serialization_error),
+                error_codes::SERVER_ERROR,
+            ),
+            (
+                Error::Io(std::io::Error::other("io")),
+                error_codes::SERVER_ERROR,
+            ),
+            (
+                Error::MethodNotFound("missing".to_string()),
+                error_codes::METHOD_NOT_FOUND,
+            ),
+            (
+                Error::InvalidParams("invalid".to_string()),
+                error_codes::INVALID_PARAMS,
+            ),
+            (
+                Error::Internal("internal".to_string()),
+                error_codes::INTERNAL_ERROR,
+            ),
+            (
+                Error::NotImplemented("todo".to_string()),
+                error_codes::SERVER_ERROR,
+            ),
+        ];
+
+        for (source, expected_code) in cases {
+            let mapped = protocol.error_to_json_rpc(source);
+            assert_eq!(mapped.code, expected_code);
+            assert!(mapped.data.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_custom_method_returns_method_not_found() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        let response = response(
+            protocol
+                .handle_message_realtime(request("unknown/custom", None, JsonRpcId::Number(20)))
+                .await,
+        );
+
+        assert_eq!(response.id, JsonRpcId::Number(20));
+        assert_eq!(error(&response).code, error_codes::METHOD_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn nonempty_batch_returns_responses_in_request_order() {
+        let protocol = Protocol::new("test-server".to_string(), "1".to_string());
+        let responses = batch(
+            protocol
+                .handle_message_realtime(JsonRpcMessage::Batch(vec![
+                    request("initialize", None, JsonRpcId::Number(31)),
+                    request("tools/list", None, JsonRpcId::Number(32)),
+                ]))
+                .await,
+        );
+
+        assert_eq!(responses.len(), 2);
+        for (message, expected_id) in responses.iter().zip([31, 32]) {
+            match message {
+                JsonRpcMessage::Response(response) => {
+                    assert_eq!(response.id, JsonRpcId::Number(expected_id));
+                    assert!(response.error.is_none());
+                }
+                other => panic!("expected response in batch, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_batch_omits_notification_response() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+        let responses = batch(
+            protocol
+                .handle_message_realtime(JsonRpcMessage::Batch(vec![
+                    request("tools/list", None, JsonRpcId::Number(41)),
+                    notification("notifications/initialized", None),
+                ]))
+                .await,
+        );
+
+        assert_eq!(responses.len(), 1);
+        match &responses[0] {
+            JsonRpcMessage::Response(response) => {
+                assert_eq!(response.id, JsonRpcId::Number(41));
+            }
+            other => panic!("expected response in batch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn standalone_notification_produces_no_response() {
+        let protocol = Protocol::new("test".to_string(), "1".to_string());
+
+        let response = protocol
+            .handle_message_realtime(notification(
+                "notifications/initialized",
+                Some(json!({ "ready": true })),
+            ))
+            .await;
+
+        assert!(response.is_none());
     }
 }
