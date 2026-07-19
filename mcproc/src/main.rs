@@ -17,7 +17,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         daemon::run_daemon().await
     } else {
         // Run in CLI mode
-        cli::run_cli().await
+        match cli::run_cli().await {
+            Err(error)
+                if error
+                    .downcast_ref::<client::DaemonRestartedForUpgrade>()
+                    .is_some() =>
+            {
+                eprintln!("Daemon restarted successfully. Please run your command again.");
+                Ok(())
+            }
+            result => result,
+        }
     }
 }
 
