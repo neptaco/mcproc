@@ -187,7 +187,7 @@ jobs:
           find artifacts -name "*.tar.gz*" -exec cp {} release-files/ \;
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: release-files/*
           tag_name: "v${{ needs.setup.outputs.version }}"
