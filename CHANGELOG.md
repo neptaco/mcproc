@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-07-19
+
+### Fixed
+- **Reliable process termination** - Processes are spawned in their own process group and stopped via group signaling (SIGTERM → SIGKILL escalation), so children spawned mid-stop and orphaned grandchildren no longer survive
+- **`daemon stop` delay** - Removed an unconditional 30-second sleep on shutdown; stopping the daemon now completes in under a second when no processes are running
+- **`clean` log deletion** - The clean command now actually deletes project log files and reports accurate deleted counts (previously always reported 0)
+- **Oversized log lines** - Single log lines larger than 1 MiB are force-flushed in ~1 MiB chunks instead of being silently discarded
+- **Logs of stopped processes** - `get_logs` can now read log files of processes that are no longer in the registry, including project-wide log discovery
+- **Real-time MCP notifications** - Progress and log notifications are now delivered while a tool call is still executing instead of after its response
+- **Log integrity** - Log files open in append mode and a newline is inserted before appending after an unclean shutdown, preventing truncation and joined records
+- **Duplicate daemon prevention** - A connectable socket is treated as a running daemon even when the PID file is stale, so `daemon start` cannot spawn a second daemon
+- **Shutdown log draining** - Daemon shutdown flushes and joins the log pipeline before exiting, so final log lines are no longer lost
+- **Same-name processes across projects** - Processes with the same name in different projects are now permitted
+- **Timezone handling** - `--since`/`--until` naive datetimes are interpreted in local time
+- **Grep memory safety** - Search results are capped at 1000 matches so a match-everything pattern cannot exhaust daemon memory
+
+### Changed
+- **Port detection** - Detected ports are refreshed by a periodic background task instead of spawning `lsof`/`pgrep` on every status/list call, and are cleared when a process stops listening
+
+### Security
+- **Shell escaping** - Arguments passed via `args` are POSIX single-quote escaped to prevent shell injection
+- **Path validation** - Process and project names are validated in log paths to prevent path traversal
+- **File permissions** - mcproc-created runtime directories are restricted to 0700 (pre-existing directories are left untouched with a warning)
+
 ## [0.1.4] - 2026-01-27
 
 ### Fixed
