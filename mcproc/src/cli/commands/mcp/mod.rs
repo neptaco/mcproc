@@ -2,6 +2,11 @@
 
 pub mod tools;
 
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+mod tests;
+
 use crate::client::DaemonClient;
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
