@@ -112,11 +112,6 @@ impl ProcessRegistry {
             .collect()
     }
 
-    /// List processes (same as get_all_processes for compatibility)
-    pub fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
-        self.get_all_processes()
-    }
-
     /// Get processes by project
     pub fn get_processes_by_project(&self, project: &str) -> Vec<Arc<ProxyInfo>> {
         self.processes

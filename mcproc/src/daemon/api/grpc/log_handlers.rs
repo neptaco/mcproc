@@ -96,7 +96,7 @@ impl GrpcService {
         let follow = req.follow.unwrap_or(false);
         let include_events = req.include_events.unwrap_or(false);
 
-        let processes = self.process_manager.list_processes().await;
+        let processes = self.process_manager.get_all_processes();
         let registry_matches: Vec<_> = processes
             .into_iter()
             .filter(|process| {

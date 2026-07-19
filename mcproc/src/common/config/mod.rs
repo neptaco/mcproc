@@ -69,8 +69,6 @@ pub struct ProcessConfig {
     pub startup: ProcessStartupConfig,
     /// Restart configuration
     pub restart: ProcessRestartConfig,
-    /// Port detection configuration
-    pub port_detection: PortDetectionConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,16 +87,6 @@ pub struct ProcessRestartConfig {
     pub delay_ms: u64,
     /// Timeout for graceful shutdown of a single process (milliseconds)
     pub process_stop_timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PortDetectionConfig {
-    /// Initial delay before starting port detection (seconds)
-    pub initial_delay_secs: u64,
-    /// Interval between port detection attempts (seconds)
-    pub interval_secs: u64,
-    /// Maximum number of port detection attempts
-    pub max_attempts: u32,
 }
 
 impl Default for Config {
@@ -135,11 +123,6 @@ impl Default for Config {
                     max_attempts: 3,
                     delay_ms: 1000,
                     process_stop_timeout_ms: 30000, // 30 seconds per process
-                },
-                port_detection: PortDetectionConfig {
-                    initial_delay_secs: 3,
-                    interval_secs: 3,
-                    max_attempts: 30,
                 },
             },
             logging: LoggingConfig {

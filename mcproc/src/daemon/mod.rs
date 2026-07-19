@@ -134,7 +134,7 @@ pub async fn run_daemon() -> Result<(), Box<dyn std::error::Error>> {
 
     // Stop all managed processes
     info!("Stopping all managed processes...");
-    let processes = process_manager.list_processes().await;
+    let processes = process_manager.get_all_processes();
     let log_pipeline_processes = processes.clone();
     let running_processes: Vec<_> = processes
         .into_iter()
