@@ -287,9 +287,9 @@ impl ProxyInfo {
         })
     }
 
-    pub fn set_detected_port(&self, port: u16) {
+    pub fn update_detected_port(&self, ports: &[u32]) {
         if let Ok(mut detected) = self.detected_port.lock() {
-            *detected = Some(port);
+            *detected = ports.first().map(|port| *port as u16);
         }
     }
 
@@ -337,6 +337,17 @@ mod tests {
             toolchain: None,
             pid,
         })
+    }
+
+    #[test]
+    fn update_detected_port_sets_first_port_and_clears_empty_result() {
+        let proxy = proxy_for_pid(1234);
+
+        proxy.update_detected_port(&[8080, 8081]);
+        assert_eq!(*proxy.detected_port.lock().unwrap(), Some(8080));
+
+        proxy.update_detected_port(&[]);
+        assert_eq!(*proxy.detected_port.lock().unwrap(), None);
     }
 
     #[tokio::test]

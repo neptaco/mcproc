@@ -417,10 +417,8 @@ impl ProcessManager {
             let ports = port_detector::detect_ports(proxy_arc.pid).await;
             if !ports.is_empty() {
                 debug!("Detected ports for process {}: {:?}", name, ports);
-                if let Some(first_port) = ports.first() {
-                    proxy_arc.set_detected_port(*first_port as u16);
-                }
             }
+            proxy_arc.update_detected_port(&ports);
         }
 
         Ok((
@@ -582,70 +580,17 @@ impl ProcessManager {
         }
     }
 
-    pub async fn get_process_by_name_or_id_with_project(
+    pub fn get_process_by_name_or_id_with_project(
         &self,
         name_or_id: &str,
         project: Option<&str>,
     ) -> Option<Arc<ProxyInfo>> {
-        let process = self
-            .registry
-            .get_process_by_name_or_id_with_project(name_or_id, project)?;
-
-        // Detect ports for running process
-        if matches!(process.get_status(), ProcessStatus::Running) {
-            let ports = port_detector::detect_ports(process.pid).await;
-            if !ports.is_empty() {
-                debug!("Detected ports for process {}: {:?}", process.name, ports);
-                if let Some(first_port) = ports.first() {
-                    process.set_detected_port(*first_port as u16);
-                }
-            }
-        }
-
-        Some(process)
+        self.registry
+            .get_process_by_name_or_id_with_project(name_or_id, project)
     }
 
     pub fn get_all_processes(&self) -> Vec<Arc<ProxyInfo>> {
         self.registry.get_all_processes()
-    }
-
-    pub async fn list_processes(&self) -> Vec<Arc<ProxyInfo>> {
-        let processes = self.registry.list_processes();
-
-        // Detect ports for all running processes in parallel
-        let running_processes: Vec<_> = processes
-            .iter()
-            .filter(|p| matches!(p.get_status(), ProcessStatus::Running))
-            .cloned()
-            .collect();
-
-        if !running_processes.is_empty() {
-            debug!(
-                "Detecting ports for {} running processes",
-                running_processes.len()
-            );
-
-            let mut tasks = tokio::task::JoinSet::new();
-            for process in running_processes {
-                tasks.spawn(async move {
-                    let ports = port_detector::detect_ports(process.pid).await;
-                    if !ports.is_empty() {
-                        debug!("Detected ports for process {}: {:?}", process.name, ports);
-                        if let Some(first_port) = ports.first() {
-                            process.set_detected_port(*first_port as u16);
-                        }
-                    }
-                });
-            }
-
-            while let Some(result) = tasks.join_next().await {
-                if let Err(error) = result {
-                    warn!("Port detection task failed: {error}");
-                }
-            }
-        }
-
-        processes
     }
 
     pub async fn clean_project(
@@ -803,15 +748,16 @@ impl ProcessManager {
                 interval.tick().await;
 
                 // Get all processes that should be checked
-                let processes = registry.list_processes();
+                let processes = registry.get_all_processes();
                 let active_processes: Vec<_> = processes
-                    .into_iter()
+                    .iter()
                     .filter(|p| {
                         matches!(
                             p.get_status(),
                             ProcessStatus::Running | ProcessStatus::Starting
                         )
                     })
+                    .cloned()
                     .collect();
 
                 if !active_processes.is_empty() {
@@ -825,10 +771,36 @@ impl ProcessManager {
                         Self::sync_process_status_static(&process).await;
                     }
                 }
+
+                Self::refresh_detected_ports(&processes).await;
             }
         });
 
         info!("Started periodic process state synchronization (interval: 10s)");
+    }
+
+    async fn refresh_detected_ports(processes: &[Arc<ProxyInfo>]) {
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for process in processes
+            .iter()
+            .filter(|process| matches!(process.get_status(), ProcessStatus::Running))
+            .cloned()
+        {
+            tasks.spawn(async move {
+                let ports = port_detector::detect_ports(process.pid).await;
+                if !ports.is_empty() {
+                    debug!("Detected ports for process {}: {:?}", process.name, ports);
+                }
+                process.update_detected_port(&ports);
+            });
+        }
+
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                warn!("Port detection task failed: {error}");
+            }
+        }
     }
 
     /// Static version of sync_process_status for use in background tasks
