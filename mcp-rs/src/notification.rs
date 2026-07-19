@@ -138,3 +138,66 @@ impl NotificationSender for QueuedNotificationSender {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{JsonRpcId, MessageLevel};
+
+    #[tokio::test]
+    async fn tool_context_send_log_queues_message_notification() {
+        let sender = Arc::new(QueuedNotificationSender::new());
+        let context = ToolContext::new(
+            sender.clone(),
+            None,
+            Some(JsonRpcId::String("request-1".to_string())),
+        );
+
+        context
+            .send_log(MessageLevel::Info, "tool started".to_string())
+            .await
+            .unwrap();
+
+        let notifications = sender.take_all().await;
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].jsonrpc, "2.0");
+        assert_eq!(notifications[0].method, "notifications/message");
+        assert_eq!(
+            notifications[0].params,
+            Some(json!({
+                "level": "info",
+                "logger": "mcproc",
+                "data": { "message": "tool started" }
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_context_send_progress_queues_progress_notification() {
+        let sender = Arc::new(QueuedNotificationSender::new());
+        let context = ToolContext::new(
+            sender.clone(),
+            Some("progress-1".to_string()),
+            Some(JsonRpcId::Number(7)),
+        );
+
+        context
+            .send_progress(2, 5, Some("working".to_string()))
+            .await
+            .unwrap();
+
+        let notifications = sender.take_all().await;
+        assert_eq!(notifications.len(), 1);
+        assert_eq!(notifications[0].jsonrpc, "2.0");
+        assert_eq!(notifications[0].method, "notifications/progress");
+        assert_eq!(
+            notifications[0].params,
+            Some(json!({
+                "progressToken": "progress-1",
+                "progress": 2,
+                "total": 5,
+                "message": "working"
+            }))
+        );
+    }
+}

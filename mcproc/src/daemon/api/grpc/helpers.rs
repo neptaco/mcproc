@@ -174,3 +174,66 @@ pub fn create_failed_process_info(params: FailedProcessParams) -> ProcessInfo {
         matched_line: None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::create_process_info;
+    use crate::daemon::process::proxy::{ProcessStatus, ProxyInfo};
+    use crate::daemon::process::types::ProxyInfoParams;
+    use std::path::Path;
+
+    #[test]
+    fn grpc_rpc_create_process_info_maps_proxy_fields_for_every_status_and_detected_port_state() {
+        let statuses = [
+            ProcessStatus::Starting,
+            ProcessStatus::Running,
+            ProcessStatus::Stopping,
+            ProcessStatus::Stopped,
+            ProcessStatus::Failed,
+        ];
+
+        for status in statuses {
+            for detected_port in [None, Some(4321)] {
+                let process = ProxyInfo::new(ProxyInfoParams {
+                    id: format!("id-{status:?}-{detected_port:?}"),
+                    name: "worker".to_string(),
+                    project: "alpha".to_string(),
+                    cmd: Some("sleep 30".to_string()),
+                    args: vec![],
+                    cwd: Some("/tmp/work".into()),
+                    env: None,
+                    wait_for_log: None,
+                    wait_timeout: None,
+                    toolchain: None,
+                    pid: 1234,
+                });
+                process.set_status(status);
+                process.update_detected_port(&detected_port.into_iter().collect::<Vec<_>>());
+
+                let info = create_process_info(
+                    &process,
+                    Path::new("/tmp/mcproc-logs"),
+                    None,
+                    vec![],
+                    None,
+                );
+
+                assert_eq!(info.id, process.id);
+                assert_eq!(info.name, "worker");
+                assert_eq!(info.project, "alpha");
+                assert_eq!(info.cmd, "sleep 30");
+                assert_eq!(info.cwd, "/tmp/work");
+                assert_eq!(info.pid, Some(1234));
+                assert_eq!(info.status, proto::ProcessStatus::from(status) as i32);
+                assert_eq!(info.ports, detected_port.into_iter().collect::<Vec<_>>());
+                assert_eq!(info.log_file, "/tmp/mcproc-logs/alpha/worker.log");
+                let start_time = info.start_time.unwrap();
+                assert_eq!(start_time.seconds, process.start_time.timestamp());
+                assert_eq!(
+                    start_time.nanos,
+                    process.start_time.timestamp_subsec_nanos() as i32
+                );
+            }
+        }
+    }
+}

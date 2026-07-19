@@ -128,11 +128,62 @@ impl GrpcService {
 #[cfg(test)]
 mod tests {
     use super::uptime_seconds;
+    use crate::daemon::api::grpc::test_support::TestHarness;
     use chrono::{Duration, Utc};
+    use proto::{CleanProjectRequest, GetDaemonStatusRequest};
+    use tonic::Request;
 
     #[test]
     fn uptime_is_zero_when_clock_moves_backwards() {
         let now = Utc::now();
         assert_eq!(uptime_seconds(now, now + Duration::seconds(10)), 0);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_clean_project_stops_every_process_and_returns_names() {
+        let harness = TestHarness::new();
+        harness.start("worker-one", "alpha").await.unwrap();
+        harness.start("worker-two", "alpha").await.unwrap();
+        let response = harness
+            .service
+            .clean_project_impl(Request::new(CleanProjectRequest {
+                project: Some("alpha".to_string()),
+                force: true,
+                ..Default::default()
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let registry_empty = harness
+            .service
+            .process_manager
+            .get_all_processes()
+            .is_empty();
+        harness.cleanup().await;
+
+        assert_eq!(response.processes_stopped, 2);
+        let mut names = response.stopped_process_names;
+        names.sort();
+        assert_eq!(names, ["worker-one", "worker-two"]);
+        assert!(registry_empty);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn grpc_rpc_daemon_status_reports_current_pid_and_active_process_count() {
+        let harness = TestHarness::new();
+        harness.start("worker-one", "alpha").await.unwrap();
+        harness.start("worker-two", "beta").await.unwrap();
+        let response = harness
+            .service
+            .get_daemon_status_impl(Request::new(GetDaemonStatusRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+        harness.cleanup().await;
+
+        assert_eq!(response.pid, std::process::id());
+        assert_eq!(response.active_processes, 2);
     }
 }

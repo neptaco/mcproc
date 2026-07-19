@@ -79,7 +79,11 @@ impl ToolHandler for StartTool {
                         "description": format!("Version management tool to use for executing the command. Supported tools: {}. When specified, the command will be executed through the tool (e.g., 'mise exec -- <command>'). This ensures proper PATH resolution for tool-managed environments.", crate::daemon::process::toolchain::Toolchain::all_supported())
                     }
                 },
-                "required": ["name"]
+                "required": ["name"],
+                "anyOf": [
+                    { "required": ["cmd"] },
+                    { "required": ["args"] }
+                ]
             }),
         }
     }

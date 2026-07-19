@@ -885,23 +885,10 @@ impl ProcessManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::daemon::stream::StreamEventHub;
-    use uuid::Uuid;
+    use crate::test_support::ProcessTestFixture;
 
-    fn test_manager() -> (ProcessManager, PathBuf) {
-        let root = std::env::temp_dir().join(format!("mcproc-manager-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let mut config = Config::default();
-        config.paths.data_dir = root.clone();
-        config.paths.log_dir = root.join("logs");
-        config.process.restart.process_stop_timeout_ms = 500;
-        let config = Arc::new(config);
-        let event_hub = Arc::new(StreamEventHub::new());
-        let log_hub = Arc::new(LogHub::with_event_hub(config.clone(), event_hub.clone()));
-        (
-            ProcessManager::with_event_hub(config, log_hub, event_hub),
-            root,
-        )
+    fn test_manager() -> ProcessTestFixture {
+        ProcessTestFixture::new("mcproc-manager", 500)
     }
 
     async fn start_sleep(
@@ -927,9 +914,11 @@ mod tests {
 
     #[tokio::test]
     async fn permits_same_process_name_in_different_projects() {
-        let (manager, root) = test_manager();
-        let first = start_sleep(&manager, "shared-name", "a").await.unwrap();
-        let second = start_sleep(&manager, "shared-name", "b").await.unwrap();
+        let fixture = test_manager();
+        let manager = &fixture.process_manager;
+        let root = fixture.root.clone();
+        let first = start_sleep(manager, "shared-name", "a").await.unwrap();
+        let second = start_sleep(manager, "shared-name", "b").await.unwrap();
         assert_eq!(manager.registry.get_all_processes().len(), 2);
         manager
             .stop_process(&first.id, Some("a"), true)
@@ -945,10 +934,12 @@ mod tests {
     #[tokio::test]
     async fn concurrent_starts_reserve_name_atomically() {
         for _ in 0..10 {
-            let (manager, root) = test_manager();
+            let fixture = test_manager();
+            let manager = &fixture.process_manager;
+            let root = fixture.root.clone();
             let (first, second) = tokio::join!(
-                start_sleep(&manager, "same-name", "same-project"),
-                start_sleep(&manager, "same-name", "same-project")
+                start_sleep(manager, "same-name", "same-project"),
+                start_sleep(manager, "same-name", "same-project")
             );
             assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
             let error = match (first, second) {
@@ -967,5 +958,135 @@ mod tests {
                 .unwrap();
             tokio::fs::remove_dir_all(root).await.unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn wait_for_log_returns_matching_line_and_running_process() {
+        let fixture = test_manager();
+        let manager = &fixture.process_manager;
+        let root = fixture.root.clone();
+        let result = manager
+            .start_process_with_log_stream(
+                "wait-match".to_string(),
+                Some("wait-for-log".to_string()),
+                Some("echo BOOT; echo READY line; sleep 30".to_string()),
+                Vec::new(),
+                None,
+                None,
+                Some("READY".to_string()),
+                None,
+                None,
+            )
+            .await;
+        let (process, timeout_occurred, pattern_matched, _, matched_line) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("failed to start process: {error:?}");
+            }
+        };
+        let status = process.get_status();
+
+        let stop_result = manager
+            .stop_process(&process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(pattern_matched);
+        assert!(!timeout_occurred);
+        assert!(matched_line.is_some_and(|line| line.contains("READY")));
+        assert_eq!(status, ProcessStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn wait_for_log_timeout_returns_running_process() {
+        let fixture = test_manager();
+        let manager = &fixture.process_manager;
+        let root = fixture.root.clone();
+        let result = manager
+            .start_process_with_log_stream(
+                "wait-timeout".to_string(),
+                Some("wait-for-log".to_string()),
+                None,
+                vec!["sleep".to_string(), "30".to_string()],
+                None,
+                None,
+                Some("NEVER_APPEARS".to_string()),
+                Some(1),
+                None,
+            )
+            .await;
+        let (process, timeout_occurred, pattern_matched, _, matched_line) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("failed to start process: {error:?}");
+            }
+        };
+        let status = process.get_status();
+
+        let stop_result = manager
+            .stop_process(&process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(timeout_occurred);
+        assert!(!pattern_matched);
+        assert!(matched_line.is_none());
+        assert_eq!(status, ProcessStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn wait_for_log_invalid_regex_releases_process_name() {
+        let fixture = test_manager();
+        let manager = &fixture.process_manager;
+        let root = fixture.root.clone();
+        let invalid_result = manager
+            .start_process_with_log_stream(
+                "invalid-wait-pattern".to_string(),
+                Some("wait-for-log".to_string()),
+                None,
+                vec!["sleep".to_string(), "30".to_string()],
+                None,
+                None,
+                Some("[unclosed".to_string()),
+                None,
+                None,
+            )
+            .await;
+        let invalid_error = match invalid_result {
+            Err(error) => error,
+            Ok((process, _, _, _, _)) => {
+                manager
+                    .stop_process(&process.id, Some("wait-for-log"), true)
+                    .await
+                    .unwrap();
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("invalid regex unexpectedly started a process");
+            }
+        };
+        let registry_was_empty = manager.registry.get_all_processes().is_empty();
+
+        let restart_result = start_sleep(manager, "invalid-wait-pattern", "wait-for-log").await;
+        let restarted_process = match restart_result {
+            Ok(process) => process,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("process name reservation was not released: {error:?}");
+            }
+        };
+        let stop_result = manager
+            .stop_process(&restarted_process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(matches!(invalid_error, McprocdError::InvalidRegex { .. }));
+        assert!(registry_was_empty);
     }
 }

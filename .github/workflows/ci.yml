@@ -42,6 +42,33 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+  integration-tests:
+    name: Integration tests (installed binary)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build debug binary
+        run: cargo build -p mcproc
+
+      - name: Add debug binary to PATH
+        run: echo "$GITHUB_WORKSPACE/target/debug" >> "$GITHUB_PATH"
+
+      - name: Run ignored integration tests
+        run: cargo test --test process_stop_test --test daemon_shutdown_test -- --ignored --test-threads=1
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
