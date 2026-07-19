@@ -93,3 +93,75 @@ impl Default for StreamEventHub {
 }
 
 pub type SharedStreamEventHub = Arc<StreamEventHub>;
+
+#[cfg(test)]
+mod tests {
+    use super::StreamFilter;
+
+    #[test]
+    fn added_log_tests_stream_filter_matches_process_table() {
+        struct Case {
+            project_filter: Option<&'static str>,
+            process_names: &'static [&'static str],
+            event_project: &'static str,
+            event_name: &'static str,
+            expected: bool,
+        }
+
+        let cases = [
+            Case {
+                project_filter: Some("alpha"),
+                process_names: &[],
+                event_project: "alpha",
+                event_name: "worker-a",
+                expected: true,
+            },
+            Case {
+                project_filter: Some("alpha"),
+                process_names: &["worker-a", "worker-b"],
+                event_project: "alpha",
+                event_name: "worker-b",
+                expected: true,
+            },
+            Case {
+                project_filter: Some("alpha"),
+                process_names: &["worker-a"],
+                event_project: "alpha",
+                event_name: "worker-b",
+                expected: false,
+            },
+            Case {
+                project_filter: Some("alpha"),
+                process_names: &[],
+                event_project: "beta",
+                event_name: "worker-a",
+                expected: false,
+            },
+            Case {
+                project_filter: Some("alpha"),
+                process_names: &["worker-a"],
+                event_project: "beta",
+                event_name: "worker-a",
+                expected: false,
+            },
+        ];
+
+        for case in cases {
+            let filter = StreamFilter {
+                project: case.project_filter.map(str::to_string),
+                process_names: case.process_names.iter().map(ToString::to_string).collect(),
+                include_events: false,
+            };
+
+            assert_eq!(
+                filter.matches_process(case.event_project, case.event_name),
+                case.expected,
+                "project={:?}, names={:?}, event={}/{}",
+                case.project_filter,
+                case.process_names,
+                case.event_project,
+                case.event_name,
+            );
+        }
+    }
+}

@@ -710,11 +710,66 @@ mod tests {
     };
     use crate::common::config::Config;
     use crate::common::process_key::ProcessKey;
+    use crate::daemon::api::grpc::test_support::TestHarness;
     use crate::daemon::log::LogHub;
-    use crate::daemon::stream::StreamEventHub;
-    use chrono::{Local, TimeZone};
+    use crate::daemon::process::event::ProcessEvent;
+    use crate::daemon::stream::{StreamEvent, StreamEventHub};
+    use chrono::{Local, TimeZone, Utc};
+    use proto::{get_logs_response, GetLogsRequest, GrepLogsRequest};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use tokio_stream::StreamExt;
+    use tonic::{Code, Request};
+
+    fn log_path(harness: &TestHarness, project: &str, name: &str) -> std::path::PathBuf {
+        harness
+            .service
+            .config
+            .paths
+            .log_dir
+            .join(project)
+            .join(format!("{name}.log"))
+    }
+
+    fn write_log(harness: &TestHarness, project: &str, name: &str, contents: &str) {
+        let path = log_path(harness, project, name);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+    }
+
+    fn get_logs_request(project: &str, name: &str) -> GetLogsRequest {
+        GetLogsRequest {
+            process_names: vec![name.to_string()],
+            tail: Some(0),
+            follow: Some(false),
+            project: project.to_string(),
+            include_events: Some(false),
+        }
+    }
+
+    fn grep_logs_request(project: &str, name: &str, pattern: &str) -> GrepLogsRequest {
+        GrepLogsRequest {
+            name: name.to_string(),
+            pattern: pattern.to_string(),
+            project: project.to_string(),
+            context: Some(0),
+            before: None,
+            after: None,
+            since: None,
+            until: None,
+            last: None,
+        }
+    }
+
+    async fn next_follow_response(
+        mut stream: <super::GrpcService as proto::process_manager_server::ProcessManager>::GetLogsStream,
+    ) -> proto::GetLogsResponse {
+        tokio::time::timeout(Duration::from_secs(10), stream.next())
+            .await
+            .expect("follow stream exceeded deadline")
+            .expect("follow stream ended before yielding a response")
+            .expect("follow stream returned an error")
+    }
 
     #[test]
     fn grep_log_path_rejects_traversal_and_stays_under_log_dir() {
@@ -869,5 +924,276 @@ mod tests {
             .with_timezone(&chrono::Utc);
 
         assert_eq!(parse_time_string("2026-01-01 12:00").unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_get_logs_tails_unregistered_process_file() {
+        let harness = TestHarness::new();
+        let contents = (1..=10)
+            .map(|line| format!("2025-07-15T03:13:{line:02}.375+00:00 [INFO] line {line}\n"))
+            .collect::<String>();
+        write_log(&harness, "alpha", "worker", &contents);
+        let mut request = get_logs_request("alpha", "worker");
+        request.tail = Some(10);
+
+        let mut stream = harness
+            .service
+            .get_logs_impl(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner();
+        let mut responses = Vec::new();
+        while let Some(response) = stream.next().await {
+            responses.push(response.unwrap());
+        }
+
+        assert_eq!(responses.len(), 10);
+        for (offset, response) in responses.into_iter().enumerate() {
+            let Some(get_logs_response::Content::LogEntry(entry)) = response.content else {
+                panic!("expected log entry response");
+            };
+            let expected_line = offset + 1;
+            assert_eq!(entry.content, format!("line {expected_line}"));
+            assert_eq!(entry.line_number, expected_line as u32);
+            assert_eq!(entry.process_name.as_deref(), Some("worker"));
+        }
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_get_logs_handles_zero_tail_empty_and_missing_files() {
+        let harness = TestHarness::new();
+        write_log(
+            &harness,
+            "alpha",
+            "nonempty",
+            "2025-07-15T03:13:12.375+00:00 [INFO] hidden\n",
+        );
+        write_log(&harness, "alpha", "empty", "");
+
+        for (name, tail) in [("nonempty", 0), ("empty", 10), ("missing", 10)] {
+            let mut request = get_logs_request("alpha", name);
+            request.tail = Some(tail);
+            let mut stream = harness
+                .service
+                .get_logs_impl(Request::new(request))
+                .await
+                .unwrap()
+                .into_inner();
+            let mut responses = Vec::new();
+            while let Some(response) = stream.next().await {
+                responses.push(response.unwrap());
+            }
+            assert!(responses.is_empty(), "{name} unexpectedly returned logs");
+        }
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_get_logs_follow_filters_project_and_receives_log_hub_event() {
+        let harness = TestHarness::new();
+        let mut request = get_logs_request("alpha", "worker");
+        request.follow = Some(true);
+        let stream = harness
+            .service
+            .get_logs_impl(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner();
+        let reader = tokio::spawn(next_follow_response(stream));
+
+        harness.service.log_hub.publish_log_event(
+            &ProcessKey::new("other-project", "worker"),
+            "wrong project",
+            false,
+        );
+        harness.service.log_hub.publish_log_event(
+            &ProcessKey::new("alpha", "worker"),
+            "expected log",
+            false,
+        );
+
+        let response = reader.await.unwrap();
+        let Some(get_logs_response::Content::LogEntry(entry)) = response.content else {
+            panic!("expected log entry response");
+        };
+        assert_eq!(entry.content, "expected log");
+        assert_eq!(entry.process_name.as_deref(), Some("worker"));
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_get_logs_include_events_controls_process_events() {
+        let harness = TestHarness::new();
+        let process_event = || ProcessEvent::Started {
+            process_id: "process-id".to_string(),
+            name: "worker".to_string(),
+            project: "alpha".to_string(),
+            pid: 42,
+        };
+
+        let mut included_request = get_logs_request("alpha", "worker");
+        included_request.follow = Some(true);
+        included_request.include_events = Some(true);
+        let included_stream = harness
+            .service
+            .get_logs_impl(Request::new(included_request))
+            .await
+            .unwrap()
+            .into_inner();
+        let included_reader = tokio::spawn(next_follow_response(included_stream));
+        harness
+            .service
+            .event_hub
+            .publish(StreamEvent::Process(process_event()));
+
+        let included_response = included_reader.await.unwrap();
+        let Some(get_logs_response::Content::Event(event)) = included_response.content else {
+            panic!("expected lifecycle event response");
+        };
+        assert_eq!(event.process_id, "process-id");
+        assert_eq!(event.name, "worker");
+        assert_eq!(event.project, "alpha");
+        assert_eq!(event.pid, Some(42));
+
+        let mut excluded_request = get_logs_request("alpha", "worker");
+        excluded_request.follow = Some(true);
+        let excluded_stream = harness
+            .service
+            .get_logs_impl(Request::new(excluded_request))
+            .await
+            .unwrap()
+            .into_inner();
+        let excluded_reader = tokio::spawn(next_follow_response(excluded_stream));
+        harness
+            .service
+            .event_hub
+            .publish(StreamEvent::Process(process_event()));
+        harness.service.log_hub.publish_log_event(
+            &ProcessKey::new("alpha", "worker"),
+            "event was filtered",
+            false,
+        );
+
+        let excluded_response = excluded_reader.await.unwrap();
+        let Some(get_logs_response::Content::LogEntry(entry)) = excluded_response.content else {
+            panic!("process event must be excluded when include_events is false");
+        };
+        assert_eq!(entry.content, "event was filtered");
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_grep_logs_returns_match_with_before_and_after_context() {
+        let harness = TestHarness::new();
+        write_log(
+            &harness,
+            "alpha",
+            "worker",
+            concat!(
+                "2025-07-15T03:13:10.375+00:00 [INFO] first\n",
+                "2025-07-15T03:13:11.375+00:00 [INFO] before\n",
+                "2025-07-15T03:13:12.375+00:00 [ERROR] needle\n",
+                "2025-07-15T03:13:13.375+00:00 [INFO] after\n",
+                "2025-07-15T03:13:14.375+00:00 [INFO] last\n",
+            ),
+        );
+        let mut request = grep_logs_request("alpha", "worker", "needle");
+        request.before = Some(1);
+        request.after = Some(1);
+
+        let response = harness
+            .service
+            .grep_logs_impl(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.matches.len(), 1);
+        let grep_match = &response.matches[0];
+        let matched = grep_match.matched_line.as_ref().unwrap();
+        assert_eq!(matched.content, "needle");
+        assert_eq!(matched.line_number, 3);
+        assert_eq!(grep_match.context_before.len(), 1);
+        assert_eq!(grep_match.context_before[0].content, "before");
+        assert_eq!(grep_match.context_before[0].line_number, 2);
+        assert_eq!(grep_match.context_after.len(), 1);
+        assert_eq!(grep_match.context_after[0].content, "after");
+        assert_eq!(grep_match.context_after[0].line_number, 4);
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_grep_logs_rejects_invalid_regex() {
+        let harness = TestHarness::new();
+        write_log(&harness, "alpha", "worker", "log line\n");
+
+        let error = harness
+            .service
+            .grep_logs_impl(Request::new(grep_logs_request("alpha", "worker", "[")))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), Code::InvalidArgument);
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_grep_logs_missing_file_is_not_found() {
+        let harness = TestHarness::new();
+
+        let error = harness
+            .service
+            .grep_logs_impl(Request::new(grep_logs_request(
+                "alpha", "missing", "needle",
+            )))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code(), Code::NotFound);
+        harness.cleanup().await;
+    }
+
+    #[tokio::test]
+    async fn added_log_tests_grep_logs_filters_since_and_until_using_local_input() {
+        let harness = TestHarness::new();
+        write_log(
+            &harness,
+            "alpha",
+            "worker",
+            concat!(
+                "2025-07-15T03:13:10.375+00:00 [INFO] needle past\n",
+                "2025-07-15T03:13:12.375+00:00 [INFO] needle target\n",
+                "2025-07-15T03:13:14.375+00:00 [INFO] needle future\n",
+            ),
+        );
+        let since_utc = Utc.with_ymd_and_hms(2025, 7, 15, 3, 13, 11).unwrap();
+        let until_utc = Utc.with_ymd_and_hms(2025, 7, 15, 3, 13, 13).unwrap();
+        let mut request = grep_logs_request("alpha", "worker", "needle");
+        request.since = Some(
+            since_utc
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        );
+        request.until = Some(
+            until_utc
+                .with_timezone(&Local)
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
+        );
+
+        let response = harness
+            .service
+            .grep_logs_impl(Request::new(request))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.matches.len(), 1);
+        let matched = response.matches[0].matched_line.as_ref().unwrap();
+        assert_eq!(matched.content, "needle target");
+        assert_eq!(matched.line_number, 2);
+        harness.cleanup().await;
     }
 }

@@ -42,6 +42,48 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
 
+  integration-tests:
+    name: Integration tests (installed binary)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release -p mcproc
+
+      - name: Add release binary to PATH
+        run: echo "$GITHUB_WORKSPACE/target/release" >> "$GITHUB_PATH"
+
+      - name: Run ignored integration tests
+        run: cargo test --test process_stop_test --test daemon_shutdown_test -- --ignored --test-threads=1
+
+      - name: Stop daemon
+        if: always()
+        run: mcproc daemon stop || true
+
+      - name: Show daemon log on failure
+        if: failure()
+        run: |
+          state_home="${XDG_STATE_HOME:-$HOME/.local/state}"
+          log_file="$state_home/mcproc/log/mcprocd.log"
+          if [[ -f "$log_file" ]]; then
+            cat "$log_file"
+          else
+            echo "Daemon log not found at $log_file; skipping."
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest

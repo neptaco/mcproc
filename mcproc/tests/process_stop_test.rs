@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 use std::process::Command;
 use std::time::Duration;
 use tokio::time::timeout;
@@ -197,20 +199,14 @@ async fn test_yes_command_stop() {
 
     // Stop the process with timeout
     let stop_result = timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         tokio::process::Command::new("mcproc")
             .args(["stop", "test-yes", "--project", "test-stop"])
             .output(),
     )
     .await;
 
-    // This test is expected to fail with current implementation
-    if let Ok(inner_result) = stop_result {
-        let output = inner_result.expect("Failed to execute stop command");
-        assert!(output.status.success(), "Failed to stop yes process");
-    } else {
-        eprintln!("WARNING: yes command stop timed out (known issue)");
-
+    if stop_result.is_err() {
         // Force cleanup
         Command::new("mcproc")
             .args(["clean", "--project", "test-stop", "--force"])
@@ -224,6 +220,15 @@ async fn test_yes_command_stop() {
             .output()
             .ok();
     }
+
+    assert!(
+        stop_result.is_ok(),
+        "Stop command timed out after 30 seconds"
+    );
+    let output = stop_result
+        .unwrap()
+        .expect("Failed to execute stop command");
+    assert!(output.status.success(), "Failed to stop yes process");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -249,19 +254,14 @@ async fn test_pipe_command_stop() {
 
     // Stop the process with timeout
     let stop_result = timeout(
-        Duration::from_secs(5),
+        Duration::from_secs(30),
         tokio::process::Command::new("mcproc")
             .args(["stop", "test-pipe", "--project", "test-stop"])
             .output(),
     )
     .await;
 
-    if let Ok(inner_result) = stop_result {
-        let output = inner_result.expect("Failed to execute stop command");
-        assert!(output.status.success(), "Failed to stop pipe process");
-    } else {
-        eprintln!("WARNING: pipe command stop timed out");
-
+    if stop_result.is_err() {
         // Force cleanup
         Command::new("mcproc")
             .args(["clean", "--project", "test-stop", "--force"])
@@ -275,4 +275,13 @@ async fn test_pipe_command_stop() {
             .output()
             .ok();
     }
+
+    assert!(
+        stop_result.is_ok(),
+        "Stop command timed out after 30 seconds"
+    );
+    let output = stop_result
+        .unwrap()
+        .expect("Failed to execute stop command");
+    assert!(output.status.success(), "Failed to stop pipe process");
 }

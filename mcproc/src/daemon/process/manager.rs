@@ -968,4 +968,128 @@ mod tests {
             tokio::fs::remove_dir_all(root).await.unwrap();
         }
     }
+
+    #[tokio::test]
+    async fn wait_for_log_returns_matching_line_and_running_process() {
+        let (manager, root) = test_manager();
+        let result = manager
+            .start_process_with_log_stream(
+                "wait-match".to_string(),
+                Some("wait-for-log".to_string()),
+                Some("echo BOOT; echo READY line; sleep 30".to_string()),
+                Vec::new(),
+                None,
+                None,
+                Some("READY".to_string()),
+                None,
+                None,
+            )
+            .await;
+        let (process, timeout_occurred, pattern_matched, _, matched_line) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("failed to start process: {error:?}");
+            }
+        };
+        let status = process.get_status();
+
+        let stop_result = manager
+            .stop_process(&process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(pattern_matched);
+        assert!(!timeout_occurred);
+        assert!(matched_line.is_some_and(|line| line.contains("READY")));
+        assert_eq!(status, ProcessStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn wait_for_log_timeout_returns_running_process() {
+        let (manager, root) = test_manager();
+        let result = manager
+            .start_process_with_log_stream(
+                "wait-timeout".to_string(),
+                Some("wait-for-log".to_string()),
+                None,
+                vec!["sleep".to_string(), "30".to_string()],
+                None,
+                None,
+                Some("NEVER_APPEARS".to_string()),
+                Some(1),
+                None,
+            )
+            .await;
+        let (process, timeout_occurred, pattern_matched, _, matched_line) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("failed to start process: {error:?}");
+            }
+        };
+        let status = process.get_status();
+
+        let stop_result = manager
+            .stop_process(&process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(timeout_occurred);
+        assert!(!pattern_matched);
+        assert!(matched_line.is_none());
+        assert_eq!(status, ProcessStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn wait_for_log_invalid_regex_releases_process_name() {
+        let (manager, root) = test_manager();
+        let invalid_result = manager
+            .start_process_with_log_stream(
+                "invalid-wait-pattern".to_string(),
+                Some("wait-for-log".to_string()),
+                None,
+                vec!["sleep".to_string(), "30".to_string()],
+                None,
+                None,
+                Some("[unclosed".to_string()),
+                None,
+                None,
+            )
+            .await;
+        let invalid_error = match invalid_result {
+            Err(error) => error,
+            Ok((process, _, _, _, _)) => {
+                manager
+                    .stop_process(&process.id, Some("wait-for-log"), true)
+                    .await
+                    .unwrap();
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("invalid regex unexpectedly started a process");
+            }
+        };
+        let registry_was_empty = manager.registry.get_all_processes().is_empty();
+
+        let restart_result = start_sleep(&manager, "invalid-wait-pattern", "wait-for-log").await;
+        let restarted_process = match restart_result {
+            Ok(process) => process,
+            Err(error) => {
+                tokio::fs::remove_dir_all(root).await.unwrap();
+                panic!("process name reservation was not released: {error:?}");
+            }
+        };
+        let stop_result = manager
+            .stop_process(&restarted_process.id, Some("wait-for-log"), true)
+            .await;
+        let remove_result = tokio::fs::remove_dir_all(root).await;
+
+        stop_result.unwrap();
+        remove_result.unwrap();
+        assert!(matches!(invalid_error, McprocdError::InvalidRegex { .. }));
+        assert!(registry_was_empty);
+    }
 }
