@@ -3,6 +3,9 @@ mod client;
 mod common;
 mod daemon;
 
+#[cfg(test)]
+mod test_support;
+
 fn is_daemon_invocation(args: &[String]) -> bool {
     args.get(1).is_some_and(|arg| arg == "--daemon")
 }

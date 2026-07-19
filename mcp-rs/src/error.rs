@@ -20,6 +20,9 @@ pub enum Error {
     #[error("Invalid params: {0}")]
     InvalidParams(String),
 
+    #[error("Tool not found: {0}")]
+    ToolNotFound(String),
+
     #[error("Internal error: {0}")]
     Internal(String),
 

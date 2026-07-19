@@ -1,14 +1,9 @@
 use crate::client::DaemonClient;
-use crate::common::config::Config;
-use crate::daemon::api::grpc::service::GrpcService;
-use crate::daemon::log::LogHub;
-use crate::daemon::process::ProcessManager;
-use crate::daemon::stream::StreamEventHub;
+use crate::test_support::ProcessTestFixture;
 use hyper_util::rt::tokio::TokioIo;
 use mcp_rs::notification::QueuedNotificationSender;
 use mcp_rs::ToolContext;
 use proto::process_manager_server::ProcessManagerServer;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{UnixListener, UnixStream};
@@ -19,36 +14,16 @@ use tower::service_fn;
 
 pub(super) struct McpTestHarness {
     pub client: DaemonClient,
-    process_manager: Arc<ProcessManager>,
-    root: PathBuf,
+    fixture: ProcessTestFixture,
     server_task: JoinHandle<()>,
 }
 
 impl McpTestHarness {
     pub async fn new() -> Self {
-        let root = PathBuf::from(format!("/tmp/mcp-{}", uuid::Uuid::new_v4()));
-        let socket_path = root.join("s");
-
-        let mut config = Config::default();
-        config.paths.data_dir = root.join("data");
-        config.paths.log_dir = root.join("log");
-        config.paths.socket_path = socket_path.clone();
-        config.paths.pid_file = root.join("pid");
-        config.paths.daemon_log_file = root.join("daemon.log");
-        config.process.restart.delay_ms = 0;
-        config.process.restart.process_stop_timeout_ms = 10_000;
-        config.ensure_directories().unwrap();
-
+        let fixture = ProcessTestFixture::new("mcp", 10_000);
+        let socket_path = fixture.socket_path();
         let listener = UnixListener::bind(&socket_path).unwrap();
-        let config = Arc::new(config);
-        let event_hub = Arc::new(StreamEventHub::new());
-        let log_hub = Arc::new(LogHub::with_event_hub(config.clone(), event_hub.clone()));
-        let process_manager = Arc::new(ProcessManager::with_event_hub(
-            config.clone(),
-            log_hub.clone(),
-            event_hub.clone(),
-        ));
-        let service = GrpcService::new(process_manager.clone(), log_hub, config, event_hub);
+        let service = fixture.grpc_service();
 
         let server_task = tokio::spawn(async move {
             Server::builder()
@@ -72,8 +47,7 @@ impl McpTestHarness {
 
         Self {
             client: DaemonClient::from_channel(channel),
-            process_manager,
-            root,
+            fixture,
             server_task,
         }
     }
@@ -97,39 +71,15 @@ impl McpTestHarness {
     }
 
     pub async fn cleanup(mut self) {
-        self.stop_all().await;
+        self.fixture.stop_all().await;
         self.server_task.abort();
         let _ = (&mut self.server_task).await;
-        std::fs::remove_dir_all(&self.root).unwrap();
-        self.root = PathBuf::new();
-    }
-
-    async fn stop_all(&self) {
-        for process in self.process_manager.get_all_processes() {
-            let stop = self
-                .process_manager
-                .stop_process(&process.id, Some(&process.project), true);
-            tokio::time::timeout(Duration::from_secs(15), stop)
-                .await
-                .expect("managed process stop exceeded cleanup deadline")
-                .expect("managed process cleanup failed");
-        }
+        self.fixture.remove_root();
     }
 }
 
 impl Drop for McpTestHarness {
     fn drop(&mut self) {
         self.server_task.abort();
-
-        #[cfg(unix)]
-        for process in self.process_manager.get_all_processes() {
-            unsafe {
-                libc::kill(-(process.pid as i32), libc::SIGKILL);
-            }
-        }
-
-        if !self.root.as_os_str().is_empty() {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
     }
 }

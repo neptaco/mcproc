@@ -23,6 +23,18 @@ async fn start_process(harness: &McpTestHarness, name: &str, command: &str) -> V
 #[tokio::test]
 async fn all_tools_publish_nonempty_object_schemas_with_declared_required_fields() {
     let harness = McpTestHarness::new().await;
+    let start_info = StartTool::new(harness.client.clone()).tool_info();
+    let start_any_of = start_info.input_schema["anyOf"]
+        .as_array()
+        .expect("start_process schema must declare anyOf");
+    assert_eq!(start_any_of.len(), 2);
+    assert!(start_any_of
+        .iter()
+        .any(|alternative| alternative["required"] == json!(["cmd"])));
+    assert!(start_any_of
+        .iter()
+        .any(|alternative| alternative["required"] == json!(["args"])));
+
     let tools: Vec<(Box<dyn ToolHandler>, &[&str])> = vec![
         (Box::new(StartTool::new(harness.client.clone())), &["name"]),
         (Box::new(StopTool::new(harness.client.clone())), &["name"]),

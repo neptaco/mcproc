@@ -314,7 +314,7 @@ impl Protocol {
             }
         } else {
             // MCP spec: unknown tool is an Invalid params error, not Method not found
-            Err(Error::InvalidParams(format!("Unknown tool: {}", tool_name)))
+            Err(Error::ToolNotFound(tool_name.to_string()))
         }
     }
 
@@ -367,6 +367,11 @@ impl Protocol {
             Error::InvalidParams(msg) => JsonRpcError {
                 code: error_codes::INVALID_PARAMS,
                 message: msg,
+                data: None,
+            },
+            Error::ToolNotFound(tool_name) => JsonRpcError {
+                code: error_codes::INVALID_PARAMS,
+                message: Error::ToolNotFound(tool_name).to_string(),
                 data: None,
             },
             Error::Internal(msg) => JsonRpcError {
@@ -653,6 +658,10 @@ mod tests {
             ),
             (
                 Error::InvalidParams("invalid".to_string()),
+                error_codes::INVALID_PARAMS,
+            ),
+            (
+                Error::ToolNotFound("missing-tool".to_string()),
                 error_codes::INVALID_PARAMS,
             ),
             (

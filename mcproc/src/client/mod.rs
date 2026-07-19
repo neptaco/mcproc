@@ -152,29 +152,7 @@ impl DaemonClient {
 
             eprintln!("Started mcprocd daemon");
             eprintln!("Daemon logs: {}", config.daemon_log_file().display());
-
-            let max_attempts = 10;
-            let check_interval = Duration::from_millis(100);
-            let mut socket_ready = false;
-
-            for attempt in 0..max_attempts {
-                if socket_path.exists() {
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    socket_ready = true;
-                    break;
-                }
-                tokio::time::sleep(check_interval).await;
-                if attempt == max_attempts / 2 {
-                    eprintln!("Waiting for daemon to start...");
-                }
-            }
-
-            if !socket_ready {
-                eprintln!(
-                    "Warning: Daemon socket not found after {} attempts",
-                    max_attempts
-                );
-            }
+            eprintln!("Waiting for daemon to start...");
 
             connect_with_retry(
                 &socket_path,
@@ -187,9 +165,7 @@ impl DaemonClient {
 
         let mut daemon_client = Self::from_channel(channel);
 
-        if let Err(error) =
-            Self::check_and_restart_if_needed(&mut daemon_client, &socket_path).await
-        {
+        if let Err(error) = daemon_client.check_and_restart_if_needed().await {
             if error.downcast_ref::<DaemonRestartedForUpgrade>().is_some() {
                 return Err(error);
             }
@@ -205,12 +181,9 @@ impl DaemonClient {
         }
     }
 
-    async fn check_and_restart_if_needed(
-        client: &mut Self,
-        _socket_path: &Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    async fn check_and_restart_if_needed(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let request = proto::GetDaemonStatusRequest {};
-        match client.inner().get_daemon_status(request).await {
+        match self.inner().get_daemon_status(request).await {
             Ok(response) => {
                 let status = response.into_inner();
                 if status.version != VERSION {
@@ -354,6 +327,33 @@ mod tests {
         .await;
 
         accept_task.abort();
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn connect_with_retry_connects_when_listener_binds_later() {
+        let (_directory, socket_path) = temporary_path("delayed-retry.sock");
+        let listener_path = socket_path.clone();
+        let listener_task = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let listener = UnixListener::bind(listener_path).unwrap();
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _stream = stream;
+                    pending::<()>().await;
+                });
+            }
+        });
+
+        let result = connect_with_retry(
+            &socket_path,
+            50,
+            Duration::from_millis(100),
+            Duration::from_secs(2),
+        )
+        .await;
+
+        listener_task.abort();
         assert!(result.is_ok());
     }
 
