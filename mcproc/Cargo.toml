@@ -85,7 +85,7 @@ bytes.workspace = true
 fs2 = "0.4"
 
 # Process inspection (daemon PID validation)
-sysinfo = "0.38"
+sysinfo = "0.39"
 
 # Platform specific
 [target.'cfg(unix)'.dependencies]
